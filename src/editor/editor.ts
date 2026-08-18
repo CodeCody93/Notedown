@@ -1,0 +1,239 @@
+﻿/**
+ * CodeMirror 6 editor controller (M2 â€” Editor core).
+ *
+ * Creates the CM6 `EditorView` mounted into the `#editor` pane, wires the markdown
+ * language, the live-preview extensions (via `livePreview.ts`, the only swap/fork
+ * point for codemirror-live-markdown), our theme (`cmTheme.ts`), undo history + keymap,
+ * a placeholder, and change/selection callbacks.
+ *
+ * The controller is the app-facing seam: `app.ts` / `main.ts` drive it through the
+ * `EditorController` interface only â€” no CM6 types leak to the host.
+ */
+import { EditorState, Prec, StateEffect, Transaction, type Extension, type TransactionSpec } from '@codemirror/state'
+import { EditorView, keymap, placeholder, type Command, type KeyBinding, ViewUpdate } from '@codemirror/view'
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
+import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from '@codemirror/commands'
+import { livePreviewExtensions, wireMouseSelection } from './livePreview'
+import { editorThemeExtension } from './cmTheme'
+
+export interface EditorCursor {
+  /** 1-based */
+  line: number
+  /** 1-based */
+  col: number
+}
+
+export interface EditorCreateOptions {
+  content?: string
+  mode?: 'live' | 'source'
+  wrap?: boolean
+  fontSize?: number
+  lineHeight?: number
+  /** Resolve a markdown image src (relative path) to a webview-renderable URL, or null when unresolvable (browser dev mode, unsaved doc, http/data/absolute/rooted paths). Consumed by the live-preview image widgets. */
+  imageResolver?: (src: string) => Promise<string | null>
+  /** Extra CM6 keymap groups (each a KeyBinding[] — e.g. formatting hotkeys + list-Enter keymap from M3); each group is wrapped with keymap.of by the editor. */
+  extraKeymaps?: KeyBinding[][]
+  /** Fires when the user pastes something whose clipboard contains an image file; return nothing. Used by paste-image (M3). */
+  onPasteImage?: (event: ClipboardEvent) => void
+}
+
+/** True when the paste event's clipboard holds at least one image file. */
+function hasImage(e: ClipboardEvent): boolean {
+  const files = e.clipboardData?.files
+  if (!files) return false
+  for (let i = 0; i < files.length; i++) {
+    if (files[i].type.startsWith('image/')) return true
+  }
+  return false
+}
+
+export interface EditorController {
+  /** Programmatic replace of the whole doc. MUST NOT fire the onChange callbacks. */
+  setContent(text: string): void
+  getContent(): string
+  focus(): void
+  destroy(): void
+  setMode(mode: 'live' | 'source'): void
+  setWrapping(wrap: boolean): void
+  /** Sets --cm-font-size on the editor DOM (px) */
+  setFontSize(px: number): void
+  /** Sets --cm-line-height on the editor DOM (view.dom + view.contentDOM) */
+  setLineHeight(n: number): void
+  /** Register a callback for USER edits (fires with the full new content). */
+  onChange(cb: (content: string) => void): void
+  /** Register a callback for cursor moves (fires on selection/doc change). */
+  onCursorChange(cb: (cursor: EditorCursor) => void): void
+  /** Build a transaction from the current state via `fn` and dispatch it (single undo step, selection preserved). Used by formatting commands. */
+  runFormatting(fn: (state: EditorState) => TransactionSpec): void
+  /** Run a CM6 command (e.g. undo/redo/copy/cut from @codemirror/commands) against the view. Returns whether it applied. */
+  runCommand(cmd: Command): boolean
+  /** Undo the last history step (delegates to the `undo` command from @codemirror/commands). Returns whether it applied. */
+  undo(): boolean
+  /** Redo the last undone history step (delegates to the `redo` command from @codemirror/commands). Returns whether it applied. */
+  redo(): boolean
+  /** Replace the current selection with text (used by emoji picker / paste). */
+  replaceSelection(text: string): void
+}
+
+export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): EditorController {
+  // Clear any stale children (e.g. the M0 `.editor-placeholder` div) from the mount.
+  mount.textContent = ''
+
+  // Per-instance state: callbacks and the change-suppression flag are owned by this
+  // controller, so the update listener and extension builder live in this closure.
+  let suppressChange = false
+  const onChangeCbs = new Set<(content: string) => void>()
+  const onCursorCbs = new Set<(cursor: EditorCursor) => void>()
+
+  const updateListener = EditorView.updateListener.of((update: ViewUpdate) => {
+    if (update.docChanged && !suppressChange) {
+      const text = update.state.doc.toString()
+      for (const cb of onChangeCbs) cb(text)
+    }
+    if ((update.docChanged || update.selectionSet) && onCursorCbs.size > 0) {
+      const head = update.state.selection.main.head
+      const line = update.state.doc.lineAt(head)
+      const cursor: EditorCursor = { line: line.number, col: head - line.from + 1 }
+      for (const cb of onCursorCbs) cb(cursor)
+    }
+  })
+
+  // Built as a function so setMode/setWrapping can reconfigure with a fresh extension
+  // list. `EditorView.lineWrapping` is included only when wrapping is enabled.
+  function buildExtensions(mode: 'live' | 'source', wrap: boolean): Extension[] {
+    const extensions: Extension[] = [
+      // GFM base (markdownLanguage): the default `markdown()` uses the CommonMark
+      // parser, which lacks strikethrough (`~~x~~` rendered as plain text).
+      markdown({ base: markdownLanguage }),
+      ...livePreviewExtensions({ collapse: mode === 'live', imageResolver: opts?.imageResolver }),
+      editorThemeExtension(),
+      history(),
+      keymap.of([
+        // App-level bindings run BEFORE the base keymaps (first match wins):
+        // - Mod-/ is handled at the window level (mode toggle); swallow it here so
+        //   defaultKeymap's toggleComment (inserts `<!-- -->`) never fires.
+        // - Mod-Shift-z: historyKeymap only binds Mod-y on Windows/Linux; bind
+        //   redo for all platforms (on mac this is the same binding, earlier).
+        { key: 'Mod-/', run: () => true },
+        { key: 'Mod-Shift-z', run: redo },
+        ...defaultKeymap,
+        ...historyKeymap,
+        indentWithTab,
+      ]),
+      placeholder('Start typing your markdown here'),
+      updateListener,
+    ]
+    // Extra keymap groups (formatting hotkeys + list-Enter continuation) are
+    // each wrapped individually with keymap.of and raised to HIGH precedence
+    // (`Prec.high`), so they are checked BEFORE the base keymap above — the
+    // app's formatting chords (Mod-u underline, Mod-Shift-k code block, ...)
+    // must beat the base keymaps' defaults (undoSelection, deleteLine, ...).
+    if (opts?.extraKeymaps !== undefined && opts.extraKeymaps.length > 0) {
+      extensions.push(...opts.extraKeymaps.map((bindings) => Prec.high(keymap.of(bindings))))
+    }
+    // Paste-image interception: when an image is pasted and the host provided an
+    // onPasteImage callback, hand the event off and block the default text paste.
+    // Lives in buildExtensions so reconfigures (setMode/setWrapping) keep it.
+    if (opts?.onPasteImage) {
+      extensions.push(
+        EditorView.domEventHandlers({
+          paste: (event: ClipboardEvent) => {
+            if (hasImage(event)) {
+              opts.onPasteImage?.(event)
+              return true
+            }
+            return false
+          },
+        }),
+      )
+    }
+    if (wrap) extensions.push(EditorView.lineWrapping)
+    return extensions
+  }
+
+  let mode: 'live' | 'source' = opts?.mode ?? 'live'
+  let wrap = opts?.wrap ?? true
+
+  const view = new EditorView({
+    parent: mount,
+    state: EditorState.create({
+      doc: opts?.content ?? '',
+      extensions: buildExtensions(mode, wrap),
+    }),
+  })
+
+  // Apply the CSS-var sizing immediately; defaults live in cmTheme.ts.
+  const setFontSize = (px: number) => view.dom.style.setProperty('--cm-font-size', `${px}px`)
+  // --cm-line-height is defined on BOTH view.dom and view.contentDOM: the
+  // plugin's editorTheme sets `.cm-line { line-height: 1.75 }` explicitly, so
+  // cmTheme resolves the var directly on `.cm-line` — the var is looked up from
+  // the nearest ancestor that defines it, and both elements are ancestors of
+  // every `.cm-line`.
+  const setLineHeight = (n: number) => {
+    view.dom.style.setProperty('--cm-line-height', `${n}`)
+    view.contentDOM.style.setProperty('--cm-line-height', `${n}`)
+  }
+  setFontSize(opts?.fontSize ?? 15)
+  setLineHeight(opts?.lineHeight ?? 1.6)
+
+  const cleanupMouseSelection = wireMouseSelection(view)
+
+  return {
+    setContent(text: string): void {
+      if (text === view.state.doc.toString()) return
+      suppressChange = true
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: text },
+        annotations: Transaction.addToHistory.of(false),
+      })
+      suppressChange = false
+    },
+    getContent(): string {
+      return view.state.doc.toString()
+    },
+    focus(): void {
+      view.focus()
+    },
+    destroy(): void {
+      cleanupMouseSelection()
+      view.destroy()
+    },
+    setMode(nextMode: 'live' | 'source'): void {
+      if (nextMode === mode) return
+      mode = nextMode
+      view.dispatch({ effects: StateEffect.reconfigure.of(buildExtensions(mode, wrap)) })
+    },
+    setWrapping(nextWrap: boolean): void {
+      if (nextWrap === wrap) return
+      wrap = nextWrap
+      view.dispatch({ effects: StateEffect.reconfigure.of(buildExtensions(mode, wrap)) })
+    },
+    setFontSize,
+    setLineHeight,
+    onChange(cb: (content: string) => void): void {
+      onChangeCbs.add(cb)
+    },
+    onCursorChange(cb: (cursor: EditorCursor) => void): void {
+      onCursorCbs.add(cb)
+    },
+    runFormatting(fn: (state: EditorState) => TransactionSpec): void {
+      view.dispatch(fn(view.state))
+    },
+    runCommand(cmd: Command): boolean {
+      return cmd(view)
+    },
+    undo(): boolean {
+      return undo(view)
+    },
+    redo(): boolean {
+      return redo(view)
+    },
+    replaceSelection(text: string): void {
+      const sel = view.state.selection.main
+      view.dispatch({
+        changes: { from: sel.from, to: sel.to, insert: text },
+        selection: { anchor: sel.from + text.length },
+      })
+    },
+  }
+}

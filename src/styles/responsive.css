@@ -1,0 +1,35 @@
+@media (max-width: 640px) {
+  .toolbar {
+    flex-wrap: wrap;
+  }
+
+  #extra-row {
+    flex-wrap: wrap;
+  }
+
+  .hotkey {
+    display: none;
+  }
+
+  #status-mode,
+  #status-ln,
+  #status-col,
+  #status-words,
+  #status-chars {
+    display: none;
+  }
+}
+
+@media (hover: none) {
+  .toolbar {
+    flex-wrap: wrap;
+  }
+
+  #extra-row {
+    flex-wrap: wrap;
+  }
+
+  .hotkey {
+    display: none;
+  }
+}

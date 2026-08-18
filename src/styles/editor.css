@@ -1,0 +1,50 @@
+/* Editor area / CodeMirror 6 shell. Layout structure only — all colors and
+   typography come from theme.css tokens via [data-theme] (see cmTheme.ts). */
+
+#editor-area {
+  height: 100%;
+  overflow: hidden;
+}
+
+.editor-pane {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  /* Padding lives on .cm-content (below) so CM6 fills the pane edge-to-edge. */
+}
+
+/* CodeMirror 6 fills the pane. Selectors are scoped under `.cm-editor` to match
+   the (0,2,0) specificity of CM6's generated theme rules, so these overrides
+   reliably win regardless of stylesheet order. */
+.cm-editor {
+  height: 100%;
+}
+
+.cm-editor .cm-scroller {
+  overflow: auto;
+}
+
+/* Comfortable writing area; the 24px/32px padding replaces the old
+   .editor-pane padding. */
+.cm-editor .cm-content {
+  padding: 24px 32px;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+/* Neutralize the plugin's per-line `padding: 0 16px` so the writing area is
+   defined solely by the .cm-content padding above. */
+.cm-editor .cm-line {
+  padding: 0;
+}
+
+/* CM6 draws its own focus affordance; avoid a double outline with our global
+   :focus-visible rule. */
+.cm-editor.cm-focused {
+  outline: none;
+}
+
+.mono {
+  font-family: var(--mono);
+}

@@ -1,0 +1,276 @@
+#menubar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  padding: 4px 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+.dropdown {
+  position: relative;
+}
+
+.dropdown-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.dropdown-trigger:hover {
+  background: var(--surface-2);
+}
+
+.dropdown-trigger svg {
+  width: 10px;
+  height: 10px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 6px;
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+}
+
+.toolbar-group:first-child {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: 0;
+}
+
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  min-width: 32px;
+  padding: 0 6px;
+  border-radius: 6px;
+  color: var(--text);
+}
+
+.tool-btn:hover {
+  background: var(--surface-2);
+}
+
+.tool-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.tool-btn .glyph {
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.tool-btn.dropdown-trigger {
+  padding: 0 8px;
+}
+
+.dropdown-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 100;
+  min-width: 220px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--menu-radius);
+  box-shadow: var(--shadow);
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.12s ease, visibility 0.12s ease;
+}
+
+.dropdown.open > .dropdown-panel {
+  visibility: visible;
+  opacity: 1;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 5px;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.menu-item:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.menu-item:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.menu-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+
+.menu-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.menu-label {
+  flex: 1 1 auto;
+}
+
+.hotkey {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.submenu-toggle {
+  position: relative;
+}
+
+.submenu-arrow {
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+}
+
+.submenu-panel {
+  top: -6px;
+  left: calc(100% + 6px);
+}
+
+.submenu-toggle.open > .dropdown-panel {
+  visibility: visible;
+  opacity: 1;
+}
+
+.dropdown-panel hr {
+  border-top: 1px solid var(--border);
+  margin: 4px 6px;
+}
+
+/* ---------------------------------------------------------------------------
+   M3 additions: menubar-root container, pinned extra row, submenu hover, emoji
+   picker popover.
+   --------------------------------------------------------------------------- */
+
+/* Let the rendered children lay out as flex items of #menubar itself. */
+#menubar-root {
+  display: contents;
+}
+
+/* When the Extra menu is pinned as a second row, allow the menubar to wrap so
+   the row is never clipped by the fixed 40px header. */
+#menubar {
+  flex-wrap: wrap;
+  height: auto;
+  min-height: 40px;
+}
+
+#extra-row.extra-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+/* Nested submenus (Open Recent / Header / List / Extra children) open on hover. */
+.submenu-toggle:hover > .dropdown-panel {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* Glyph cells (H1..H6, ¶) in menu rows need more room than the fixed 16px icon slot. */
+.menu-icon-glyph {
+  flex: 0 0 auto;
+  width: auto;
+}
+
+.menu-icon .glyph {
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* Emoji picker popover (anchored near the triggering button, above menus). */
+.emoji-picker {
+  position: absolute;
+  z-index: 200;
+  width: 244px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--menu-radius);
+  box-shadow: var(--shadow);
+}
+
+.emoji-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.emoji-search::placeholder {
+  color: var(--muted);
+}
+
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.emoji-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  border-radius: 6px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--text);
+}
+
+.emoji-cell:hover {
+  background: var(--surface-2);
+}

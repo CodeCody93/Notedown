@@ -1,0 +1,645 @@
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import type { EditorController } from '../editor/editor'
+import { getFileIO } from '../platform'
+import type { FileIO, OpenResult } from '../platform/types'
+import {
+  SESSION_KEY,
+  clearDraft,
+  clearSession,
+  draftKey,
+  parseSession,
+  saveDraft,
+  shouldRecover,
+  writeSession,
+} from './draft'
+import { renderStandaloneHtml } from './export'
+import { addRecent, parseRecents, removeRecent } from './recent'
+import { applyTheme, loadSettings, resolveTheme } from './settings'
+import type { Settings } from './settings'
+import { appState } from './state'
+import type { CurrentDoc } from './state'
+import { detectLineEnding, stripBom } from './text'
+import { copySelection, cutSelection, pasteImage, pasteText } from './clipboard'
+import { FORMATTING_COMMANDS, markdownListKeymap } from './formatting'
+import { formattingHotkeyMap, openEmojiPicker, renderMenubar } from './menu'
+import { resolveAgainstDocDir, togglePreview, wirePreview } from './preview'
+import { openSettingsModal, wireSettingsModal } from './settingsUI'
+import { getPlatform, matches } from './shortcuts'
+
+const AUTOSAVE_DEBOUNCE_MS = 3000
+
+let io: FileIO
+let draftTimer: number | null = null
+let editor: EditorController | null = null
+
+// Last value of the extra-pinned menubar setting, so the subscribe re-renders the
+// menubar only when the setting actually changes (not on every keystroke/state change).
+let lastExtraPinned = false
+
+// Last serialized recents, so the subscribe re-renders the recent list only
+// when the list actually changes (not on every keystroke/state change).
+let lastRecentsJson = ''
+
+// Cache of resolved image URLs keyed by `${docPath}::${absPath}` — resolving a
+// local image to a data: URL is expensive, and the same image typically appears
+// many times in a live-preview doc.
+const imageCache = new Map<string, string>()
+
+// Tracks the previous doc.dirty so the subscribe can detect the dirty→clean
+// transition (e.g. undo back to the saved content) and drop the autosaved
+// draft. Init false is fine: the subscribe fires only after initApp.
+let lastDirty = false
+
+function byId(id: string): HTMLElement {
+  const node = document.getElementById(id)
+  if (node === null) throw new Error(`Missing element #${id}`)
+  return node
+}
+
+export function getEditor(): EditorController | null {
+  return editor
+}
+
+function docFromContent(content: string, path: string | null, name: string, dirty: boolean): CurrentDoc {
+  const { text, hadBom } = stripBom(content)
+  return {
+    path,
+    name,
+    content: text,
+    savedContent: text,
+    dirty,
+    lineEnding: detectLineEnding(text),
+    encoding: hadBom ? 'utf-8-bom' : 'utf-8',
+  }
+}
+
+async function confirmDiscard(): Promise<boolean> {
+  const doc = appState.get().doc
+  if (!doc.dirty) return true
+  return io.confirm(`Discard unsaved changes to ${doc.name}?`)
+}
+
+async function newDoc(): Promise<void> {
+  if (!(await confirmDiscard())) return
+  await clearDraft(io, appState.get().doc.path)
+  appState.set({
+    doc: {
+      path: null,
+      name: 'untitled.md',
+      content: '',
+      savedContent: '',
+      dirty: false,
+      lineEnding: 'LF',
+      encoding: 'utf-8',
+    },
+  })
+  await writeSession(io, { path: null, name: 'untitled.md', ts: Date.now() })
+}
+
+async function openDoc(): Promise<void> {
+  if (!(await confirmDiscard())) return
+  const prevPath = appState.get().doc.path
+  let result: OpenResult
+  try {
+    const opened = await io.openFile()
+    if (opened === null) return
+    result = opened
+  } catch (err) {
+    window.alert(`Open failed: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
+  await clearDraft(io, prevPath)
+  appState.set({ doc: docFromContent(result.content, result.path, result.name, false) })
+  const recents = addRecent(appState.get().recents, { path: result.path ?? '', name: result.name })
+  appState.set({ recents })
+  await io.writeRecents(JSON.stringify(recents))
+  await writeSession(io, { path: result.path, name: result.name, ts: Date.now() })
+}
+
+async function saveDoc(): Promise<void> {
+  const doc = appState.get().doc
+  if (doc.path === null) {
+    await saveAsDoc()
+    return
+  }
+  const saved = await io.saveFile(doc.path, doc.content)
+  if (saved === null) return
+  appState.set({ doc: { ...doc, dirty: false, savedContent: doc.content } })
+  const recents = addRecent(appState.get().recents, { path: doc.path, name: doc.name })
+  appState.set({ recents })
+  await io.writeRecents(JSON.stringify(recents))
+  await clearDraft(io, doc.path)
+  await writeSession(io, { path: doc.path, name: doc.name, ts: Date.now() })
+}
+
+async function saveAsDoc(): Promise<void> {
+  const doc = appState.get().doc
+  const saved = await io.saveFile(doc.path, doc.content, doc.name, { alwaysPick: true })
+  if (saved === null) return
+  appState.set({ doc: { ...doc, path: saved, dirty: false, savedContent: doc.content } })
+  const recents = addRecent(appState.get().recents, { path: saved, name: doc.name })
+  appState.set({ recents })
+  await io.writeRecents(JSON.stringify(recents))
+  if (doc.path !== null) await clearDraft(io, doc.path)
+  await writeSession(io, { path: saved, name: doc.name, ts: Date.now() })
+}
+
+async function openRecent(path: string): Promise<void> {
+  if (!(await confirmDiscard())) return
+  let content: string
+  try {
+    content = await io.readFile(path)
+  } catch (err) {
+    window.alert(`Could not open: ${err instanceof Error ? err.message : String(err)}`)
+    const recents = removeRecent(appState.get().recents, path)
+    appState.set({ recents })
+    await io.writeRecents(JSON.stringify(recents))
+    return
+  }
+  const prevRecents = appState.get().recents
+  const entry = prevRecents.find((r) => r.path === path)
+  const name = entry?.name ?? path.split(/[\\/]/).pop() ?? path
+  appState.set({ doc: docFromContent(content, path, name, false) })
+  const recents = addRecent(prevRecents, { path, name })
+  appState.set({ recents })
+  await io.writeRecents(JSON.stringify(recents))
+  await writeSession(io, { path, name, ts: Date.now() })
+}
+
+async function clearRecents(): Promise<void> {
+  appState.set({ recents: [] })
+  await io.writeRecents('[]')
+}
+
+// Export the current doc as a standalone, styled HTML file (PLAN §14 / §19).
+async function exportHtml(): Promise<void> {
+  const doc = appState.get().doc
+  const html = renderStandaloneHtml(doc.content, {
+    title: doc.name,
+    theme: resolveTheme(appState.get().settings.theme),
+  })
+  const htmlName = doc.name.replace(/\.[^./\\]+$/, '') + '.html'
+  try {
+    const saved = await io.saveFile(null, html, htmlName, { html: true })
+    if (saved === null) return // user cancelled the save dialog
+  } catch (err) {
+    window.alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export function setContent(content: string): void {
+  const doc = appState.get().doc
+  // dirty derives from the savedContent baseline, so undoing back to the last
+  // saved state clears the dirty dot (and the autosaved draft gets dropped).
+  appState.set({ doc: { ...doc, content, dirty: content !== doc.savedContent } })
+}
+
+export function updateSettings(patch: Partial<Settings>): void {
+  const settings = { ...appState.get().settings, ...patch }
+  appState.set({ settings })
+  applyTheme(settings.theme)
+  applyEditorSettings(settings)
+  io.writeSettings(JSON.stringify(settings)).catch((err) => {
+    console.warn('Settings save failed', err)
+  })
+}
+
+function applyEditorSettings(s: Settings): void {
+  if (s.defaultMode !== appState.get().mode) {
+    editor?.setMode(s.defaultMode)
+  }
+  editor?.setWrapping(s.lineWrapping)
+  editor?.setFontSize(s.fontSize)
+  editor?.setLineHeight(s.lineHeight)
+}
+
+export function setMode(mode: 'live' | 'source'): void {
+  appState.set({ mode })
+  editor?.setMode(mode)
+}
+
+function scheduleDraftSave(doc: CurrentDoc): void {
+  if (draftTimer !== null) {
+    clearTimeout(draftTimer)
+  }
+  draftTimer = window.setTimeout(() => {
+    draftTimer = null
+    saveDraft(io, doc.path, doc.content)
+      .then(() => writeSession(io, { path: doc.path, name: doc.name, ts: Date.now() }))
+      .catch((err) => {
+        console.warn('Draft save failed', err)
+      })
+  }, AUTOSAVE_DEBOUNCE_MS)
+}
+
+async function recover(): Promise<void> {
+  try {
+    const session = parseSession(await io.readDraft(SESSION_KEY))
+    if (session === null) return
+    const draft = await io.readDraft(draftKey(session.path))
+    if (!shouldRecover(session, draft)) return
+    const ok = await io.confirm(`Recover unsaved changes to ${session.name}?`)
+    if (ok) {
+      // The recovered draft becomes the new savedContent baseline
+      // (docFromContent sets savedContent = content), so undoing back to the
+      // draft clears the dirty flag — the draft is the reference point, not
+      // the possibly-stale file on disk.
+      appState.set({ doc: docFromContent(draft ?? '', session.path, session.name, true) })
+    } else {
+      await clearDraft(io, session.path)
+    }
+  } catch (err) {
+    console.warn('Recovery failed', err)
+  } finally {
+    try {
+      await clearSession(io)
+    } catch (err) {
+      console.warn('Clearing session failed', err)
+    }
+  }
+}
+
+function renderRecents(): void {
+  const container = document.getElementById('recent-list')
+  if (container === null) return
+  container.textContent = ''
+  const recents = appState.get().recents
+  if (recents.length === 0) {
+    const empty = document.createElement('button')
+    empty.type = 'button'
+    empty.className = 'menu-item'
+    empty.disabled = true
+    empty.textContent = 'No recent files'
+    container.appendChild(empty)
+    return
+  }
+  for (const rec of recents) {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'menu-item'
+    btn.dataset.path = rec.path
+    btn.title = rec.path
+    btn.style.flexDirection = 'column'
+    btn.style.alignItems = 'flex-start'
+    btn.style.gap = '1px'
+    const label = document.createElement('span')
+    label.className = 'menu-label'
+    label.textContent = rec.name
+    const pathEl = document.createElement('span')
+    pathEl.className = 'recent-path'
+    pathEl.textContent = rec.path
+    pathEl.style.color = 'var(--muted)'
+    pathEl.style.fontSize = '11px'
+    pathEl.style.maxWidth = '100%'
+    pathEl.style.overflow = 'hidden'
+    pathEl.style.textOverflow = 'ellipsis'
+    pathEl.style.whiteSpace = 'nowrap'
+    btn.append(label, pathEl)
+    btn.addEventListener('click', () => {
+      void openRecent(rec.path)
+    })
+    container.appendChild(btn)
+    // Async existence probe: disable the entry when the file can no longer be
+    // read. Guard btn.isConnected because renderRecents can re-run mid-probe
+    // (the button may have been replaced before the promise settles).
+    io.readFile(rec.path)
+      .then(() => {
+        if (btn.isConnected) btn.disabled = false
+      })
+      .catch(() => {
+        if (btn.isConnected) btn.disabled = true
+      })
+  }
+}
+
+// Every data-action id that maps 1:1 to a FORMATTING_COMMANDS command.
+const FORMATTING_ACTION_IDS = [
+  'bold',
+  'italic',
+  'underline',
+  'strikethrough',
+  'header-cycle',
+  'header-0',
+  'header-1',
+  'header-2',
+  'header-3',
+  'header-4',
+  'header-5',
+  'header-6',
+  'list',
+  'list-unordered',
+  'list-ordered',
+  'list-task',
+  'blockquote',
+  'inline-code',
+  'code-block',
+  'link',
+  'image',
+  'table',
+  'hr',
+  'footnote',
+  'task-list',
+  'heading-id',
+  'def-list',
+  'sub',
+  'sup',
+  'highlight',
+]
+
+function runFormatting(id: string): void {
+  const factory = FORMATTING_COMMANDS[id]
+  const ed = getEditor()
+  if (factory !== undefined && ed !== null) ed.runFormatting(factory)
+}
+
+function wireMenu(): void {
+  const actions: Record<string, (ev: MouseEvent) => void> = {
+    new: () => {
+      void newDoc()
+    },
+    open: () => {
+      void openDoc()
+    },
+    save: () => {
+      void saveDoc()
+    },
+    'save-as': () => {
+      void saveAsDoc()
+    },
+    'export-html': () => {
+      void exportHtml()
+    },
+    'toggle-preview': () => togglePreview(),
+    settings: () => openSettingsModal(),
+    'clear-recents': () => {
+      void clearRecents()
+    },
+    undo: () => {
+      editor?.undo()
+    },
+    redo: () => {
+      editor?.redo()
+    },
+    copy: () => {
+      const ed = getEditor()
+      if (ed !== null) void copySelection(ed)
+    },
+    cut: () => {
+      const ed = getEditor()
+      if (ed !== null) void cutSelection(ed)
+    },
+    paste: () => {
+      const ed = getEditor()
+      if (ed !== null) void pasteText(ed)
+    },
+    emoji: (ev) => {
+      // Anchor the picker to the clicked button, falling back to the clicked
+      // element itself, then to document.body.
+      const target = ev.target
+      let anchor: HTMLElement = document.body
+      if (target instanceof HTMLElement) {
+        const btn = target.closest('button')
+        anchor = btn instanceof HTMLElement ? btn : target
+      }
+      openEmojiPicker(anchor, (emoji) => {
+        const ed = getEditor()
+        if (ed !== null) ed.replaceSelection(emoji)
+      })
+    },
+  }
+  for (const id of FORMATTING_ACTION_IDS) {
+    actions[id] = () => runFormatting(id)
+  }
+  document.querySelectorAll<HTMLElement>('[data-action]').forEach((el) => {
+    const action = el.dataset.action
+    if (action !== undefined && Object.prototype.hasOwnProperty.call(actions, action)) {
+      el.addEventListener('click', actions[action])
+    }
+  })
+}
+
+// App-level chords handled at the window level (menu/file/mode/settings/toggle).
+// Formatting chords (bold, italic, headers, lists, …) live in the editor's CM6
+// keymap via extraKeymaps, and undo/redo/copy/cut/paste are CM6 defaults — none
+// of those belong in the window set (they would double-fire when the editor is
+// focused).
+const APP_HOTKEY_IDS = [
+  'new',
+  'open',
+  'open-recent',
+  'save',
+  'save-as',
+  'export-html',
+  'settings',
+  'toggle-mode',
+  'toggle-preview',
+]
+
+function wireHotkeys(): void {
+  const handlers: Record<string, () => void> = {
+    new: () => {
+      void newDoc()
+    },
+    open: () => {
+      void openDoc()
+    },
+    'open-recent': () => {
+      // The File menu renders first, so it is the FIRST `.dropdown` in the
+      // document. Toggle it; when opening, also open the recents submenu so
+      // its panel shows without hover. (CSS: `.dropdown.open > .dropdown-panel`
+      // and `.submenu-toggle.open > .dropdown-panel`.)
+      const fileDropdown = document.querySelector<HTMLElement>('.dropdown')
+      if (fileDropdown === null) return
+      const trigger = fileDropdown.querySelector<HTMLElement>('.dropdown-trigger')
+      if (fileDropdown.classList.contains('open')) {
+        fileDropdown.classList.remove('open')
+        trigger?.setAttribute('aria-expanded', 'false')
+        return
+      }
+      fileDropdown.classList.add('open')
+      trigger?.setAttribute('aria-expanded', 'true')
+      const submenu = document.querySelector<HTMLElement>('.submenu-toggle[data-action="open-recent"]')
+      if (submenu !== null) {
+        submenu.classList.add('open')
+        submenu.setAttribute('aria-expanded', 'true')
+      }
+    },
+    save: () => {
+      void saveDoc()
+    },
+    'save-as': () => {
+      void saveAsDoc()
+    },
+    'export-html': () => {
+      void exportHtml()
+    },
+    settings: () => openSettingsModal(),
+    'toggle-mode': () => setMode(appState.get().mode === 'live' ? 'source' : 'live'),
+    'toggle-preview': () => togglePreview(),
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat) return
+    // Bail only on real form inputs (input/textarea). CM6's `.cm-content` is
+    // contenteditable=true and must NOT bail — while the editor is focused is
+    // exactly when Mod-S / Mod-N / Mod-O / Mod-, are most likely to be pressed.
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      return
+    }
+    const platform = getPlatform()
+    for (const id of APP_HOTKEY_IDS) {
+      if (matches(id, e, platform)) {
+        e.preventDefault()
+        handlers[id]()
+        return
+      }
+    }
+  })
+}
+
+function wireCloseGuard(): void {
+  try {
+    // Documented Tauri close pattern: preventDefault ONLY when the user
+    // declines the discard prompt; an accepted prompt lets the window close
+    // naturally (never call getCurrentWindow().destroy()).
+    getCurrentWindow().onCloseRequested(async (e) => {
+      const doc = appState.get().doc
+      if (!doc.dirty) return
+      const ok = await io.confirm(`Discard unsaved changes to ${doc.name}?`)
+      if (!ok) e.preventDefault()
+    })
+  } catch {
+  }
+  window.addEventListener('beforeunload', (e) => {
+    if (appState.get().doc.dirty) {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+  })
+}
+
+function wireStatusMode(): void {
+  const modeEl = document.getElementById('status-mode')
+  modeEl?.addEventListener('click', () => setMode(appState.get().mode === 'live' ? 'source' : 'live'))
+}
+
+/**
+ * Refocus the editor when the window regains focus — but only in edit view,
+ * never while the settings modal is open (settingsUI toggles the hidden
+ * attribute on #settings-modal-root) and only once the editor exists.
+ */
+function wireWindowFocus(): void {
+  window.addEventListener('focus', () => {
+    if (editor === null) return
+    if (appState.get().view !== 'edit') return
+    const modalRoot = document.getElementById('settings-modal-root')
+    if (modalRoot !== null && !modalRoot.hidden) return
+    editor.focus()
+  })
+}
+
+function wireStatusEye(): void {
+  byId('status-eye')?.addEventListener('click', () => togglePreview())
+}
+
+export async function initApp(): Promise<void> {
+  // The editor module pulls in the ~518 KB cm-editor chunk (CM6 +
+  // codemirror-live-markdown + its inlined hljs languages); kicking off the
+  // import immediately lets the chunk fetch in parallel with loadSettings,
+  // while the app shell (menubar/status bar) stays independent.
+  const editorModule = import('../editor/editor')
+  io = getFileIO()
+
+  const settings = await loadSettings(io)
+  appState.set({ settings, mode: settings.defaultMode })
+  applyTheme(settings.theme)
+
+  const { createEditor } = await editorModule
+  editor = createEditor(byId('editor'), {
+    content: appState.get().doc.content,
+    mode: settings.defaultMode,
+    wrap: settings.lineWrapping,
+    fontSize: settings.fontSize,
+    lineHeight: settings.lineHeight,
+    extraKeymaps: [formattingHotkeyMap(), markdownListKeymap()],
+    onPasteImage: (event) => {
+      const ed = editor
+      const doc = appState.get().doc
+      if (ed !== null) void pasteImage(ed, io, { name: doc.name, path: doc.path }, event)
+    },
+    // Live-preview images: resolve a relative markdown src against the doc's
+    // directory into a URL the webview can render (data: URL via exposeImage),
+    // or null when unresolvable (unsaved doc, absolute/http/data/blob/asset
+    // srcs, browser dev mode). Results are cached per doc-path + absolute path.
+    imageResolver: async (src: string) => {
+      const doc = appState.get().doc
+      if (doc.path === null) return null
+      if (/^(https?:|data:|blob:|asset:|\/|#)/i.test(src)) return null
+      const abs = resolveAgainstDocDir(doc.path, src)
+      const key = `${doc.path}::${abs}`
+      const hit = imageCache.get(key)
+      if (hit !== undefined) return hit
+      try {
+        const url = await io.exposeImage(abs)
+        imageCache.set(key, url)
+        return url
+      } catch {
+        return null
+      }
+    },
+  })
+  editor.onChange((content) => setContent(content))
+  applyEditorSettings(settings)
+  wirePreview(io)
+  wireSettingsModal({ getSettings: () => appState.get().settings, onApply: (patch) => updateSettings(patch) })
+
+  // Render the menubar once before wiring; recents + data-action clicks live inside it.
+  const menubarRoot = byId('menubar-root')
+  renderMenubar(menubarRoot, { extraPinned: settings.extraMenuAlwaysVisible })
+  lastExtraPinned = settings.extraMenuAlwaysVisible
+
+  // Subscribe early so ANY doc.content change (recovery, open, new, open-recent)
+  // flows into the editor. The controller's setContent never fires onChange, so
+  // this cannot create a feedback loop and cannot flip the dirty flag.
+  appState.subscribe((s) => {
+    if (s.settings.extraMenuAlwaysVisible !== lastExtraPinned) {
+      lastExtraPinned = s.settings.extraMenuAlwaysVisible
+      renderMenubar(byId('menubar-root'), { extraPinned: s.settings.extraMenuAlwaysVisible })
+      // Rebuilding the menubar replaces its data-action buttons, so re-attach listeners.
+      wireMenu()
+    }
+    const recentsJson = JSON.stringify(s.recents)
+    if (recentsJson !== lastRecentsJson) {
+      lastRecentsJson = recentsJson
+      renderRecents()
+    }
+    // Dirty→clean transition (save, undo back to the saved content): drop the
+    // autosaved draft. Idempotent — clearDraft on a missing draft is a no-op.
+    if (lastDirty && !s.doc.dirty) {
+      void clearDraft(io, s.doc.path).catch((err) => {
+        console.warn('Draft clear failed', err)
+      })
+    }
+    editor?.setContent(s.doc.content)
+    if (s.doc.dirty && s.settings.autosaveDrafts) {
+      scheduleDraftSave(s.doc)
+    } else if (draftTimer !== null) {
+      clearTimeout(draftTimer)
+      draftTimer = null
+    }
+    lastDirty = s.doc.dirty
+  })
+
+  const recents = parseRecents(await io.readRecents())
+  appState.set({ recents })
+
+  await recover()
+
+  wireStatusMode()
+  wireStatusEye()
+  wireMenu()
+  wireHotkeys()
+  wireWindowFocus()
+  wireCloseGuard()
+  renderRecents()
+}
