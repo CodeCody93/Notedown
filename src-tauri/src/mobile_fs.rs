@@ -59,7 +59,7 @@ fn mobile_not_implemented(url: &str) -> String {
 // directly to a URI returned by `dialog.save()` on Android can produce a **0-byte
 // file**. That is exactly why save must go through `tauri-plugin-android-fs` or a
 // ContentResolver copy workaround instead of a naive `std::fs::write`. This is a
-// **required manual QA test** (PLAN.md §7/§18), not an optional nice-to-have.
+// **required manual QA test** (see AGENTS.md "Gotchas"), not an optional nice-to-have.
 //
 // ## iOS — `file://` + security-scoped resources
 // iOS pickers return a `file://` URL that may live outside the app sandbox.

@@ -240,7 +240,7 @@ Open with File → Settings or `Mod+,`. Every control applies immediately and pe
 
 ## Changes from feedback round (implemented)
 
-This batch implements fixes for every feedback item recorded in this report. The changes follow the file layout of PLAN.md's milestone order (platform, state, editor/formatting, styles).
+This batch implements fixes for every feedback item recorded in this report. The changes follow the package boundaries in AGENTS.md (platform, state, editor/formatting, styles).
 
 - A2 — Hotkey hints missing on Extra menu items (Table, Horizontal Rule, Footnote, Task List, Emoji Picker, Heading ID, Definition List, Subscript, Superscript, Highlight) → chords assigned to all ten items in `src/app/shortcuts.ts`; hints render on the menu items via `labelFor`.
 - A3 — Document name not shown in the window title → `getCurrentWindow().setTitle()` called on every doc name change; title reads `<name> — MarkItDown` with a `• ` prefix while dirty.
