@@ -21,7 +21,6 @@ export interface RecentEntry {
 export interface AppState {
   doc: CurrentDoc
   mode: 'live' | 'source'
-  view: 'edit' | 'preview'
   settings: Settings
   recents: RecentEntry[]
 }
@@ -65,7 +64,6 @@ export const appState: Store<AppState> = createStore<AppState>({
     encoding: 'utf-8',
   },
   mode: 'live',
-  view: 'edit',
   settings: DEFAULT_SETTINGS,
   recents: [],
 })

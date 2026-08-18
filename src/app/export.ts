@@ -104,6 +104,94 @@ md.use(sup)
 md.use(emoji)
 
 /**
+ * E3 — the editor's underline command writes `__text__`, and `__` is also a
+ * CommonMark strong marker, so markdown-it parses it as `<strong>`. Only the
+ * `**` form may stay strong: re-route tokens whose markup is `__` to `<u>`.
+ * Verified against markdown-it@15: strong_open/strong_close tokens carry the
+ * original marker in `Token.markup` (`'**'` vs `'__'`).
+ */
+md.renderer.rules.strong_open = (tokens, idx) =>
+  tokens[idx].markup === '__' ? '<u>' : '<strong>'
+md.renderer.rules.strong_close = (tokens, idx) =>
+  tokens[idx].markup === '__' ? '</u>' : '</strong>'
+
+/**
+ * User-results Other #4 — accept `-[]` / `-[ ]` / `-[x]` task markers (no
+ * space after the dash). CommonMark only recognises `- ` as a list marker and
+ * markdown-it-task-lists only matches `[ ] `/`[x] `/`[X] ` inline content, so
+ * the shorthand forms parse as plain paragraphs. Normalise them to the
+ * standard `- [ ] ` spelling in the source BEFORE block parsing. Fenced code
+ * blocks and indented code lines are left untouched so their content stays
+ * literal.
+ */
+const TASK_MARKER_RE = /^(\s*)-\[([ xX]?)\](?=\s|$)/
+
+function normalizeTaskListMarkers(src: string): string {
+  const lines = src.split('\n')
+  let inFence = false
+  let fenceChar = ''
+  let fenceLen = 0
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line)
+    if (fence) {
+      const marker = fence[1]
+      if (inFence) {
+        // A closing fence: only the same char, at least as long, nothing else.
+        if (
+          marker[0] === fenceChar &&
+          marker.length >= fenceLen &&
+          /^ {0,3}[`~]+[ \t]*$/.test(line)
+        ) {
+          inFence = false
+        }
+      } else {
+        inFence = true
+        fenceChar = marker[0]
+        fenceLen = marker.length
+      }
+      continue
+    }
+    if (inFence) continue
+    if (/^ {4,}/.test(line)) continue // indented code block
+    lines[i] = line.replace(TASK_MARKER_RE, (_, indent, label) => `${indent}- [${label || ' '}]`)
+  }
+  return lines.join('\n')
+}
+
+md.core.ruler.before('block', 'task-list-markers', (state) => {
+  state.src = normalizeTaskListMarkers(state.src)
+})
+
+/**
+ * User-results Other #5 — `-# text` subtext paragraphs. Runs LAST in the core
+ * chain (after 'text_join') so it sees the final inline tokens: a paragraph
+ * whose first inline child is a text token starting with `-# ` (or exactly
+ * `-#`) gets the prefix stripped and the paragraph_open token gets
+ * `class="md-subtext"` (the default renderer emits it via renderAttrs). A
+ * marker with no content at all renders as a plain empty paragraph — no class.
+ */
+md.core.ruler.push('md-subtext', (state) => {
+  const tokens = state.tokens
+  for (let i = 0; i < tokens.length - 1; i++) {
+    if (tokens[i].type !== 'paragraph_open') continue
+    const inline = tokens[i + 1]
+    if (inline.type !== 'inline' || !inline.children || inline.children.length === 0) continue
+    const first = inline.children[0]
+    if (first.type !== 'text') continue
+    const content = first.content
+    let rest: string
+    if (content === '-#') rest = ''
+    else if (content.startsWith('-# ')) rest = content.slice(3)
+    else continue
+    first.content = rest
+    inline.content = rest + inline.content.slice(content.length)
+    const hasContent = inline.children.some((child) => child.content.trim() !== '')
+    if (hasContent) tokens[i].attrSet('class', 'md-subtext')
+  }
+})
+
+/**
  * Render markdown to sanitized HTML.
  *
  * SECURITY (PLAN §16): `html: true` is on, so raw HTML in the document would
@@ -317,6 +405,10 @@ export const MARKDOWN_BODY_CSS: string = `
  * the tokens itself. Mirror of src/styles/theme.css — keep in sync when
  * tokens change. `--mono` is included in both blocks because the dark block
  * in theme.css inherits it from the light/:root block.
+ *
+ * G2 — the export no longer bakes one theme: the light block is the default
+ * `:root` and the dark block rides inside a `prefers-color-scheme: dark`
+ * media query so the document follows the system/browser setting.
  */
 const THEME_TOKENS: Record<'dark' | 'light', string> = {
   light: `:root {
@@ -359,7 +451,12 @@ const THEME_TOKENS: Record<'dark' | 'light', string> = {
 export interface StandaloneHtmlOptions {
   /** Document title — HTML-escaped into `<title>`; may be a filename. */
   title: string
-  /** Which theme token set + hljs stylesheet the document should use. */
+  /**
+   * Kept for call-site compatibility (the export command passes the resolved
+   * app theme in `{ title, theme }`). G2: the standalone document no longer
+   * bakes a theme — it ships BOTH token sets and follows the system/browser
+   * preference via `prefers-color-scheme`, so this field is ignored.
+   */
   theme: 'dark' | 'light'
 }
 
@@ -379,25 +476,37 @@ export function escapeHtml(s: string): string {
 /**
  * Wrap `renderMarkdown()` output in a complete standalone HTML document.
  *
- * The document is self-contained: theme tokens (:root), the shared
- * `.md-body` stylesheet, the hljs theme CSS for the requested theme, and a
- * CSP meta that permits no scripts and no remote resources
- * (`default-src 'none'`; inline styles for the theme, `data:`/`blob:` images
- * only) — rendered output is sanitized by DOMPurify inside renderMarkdown,
- * and the CSP is the second layer of defense.
+ * The document is self-contained: light theme tokens (:root) with dark
+ * overrides via `@media (prefers-color-scheme: dark)` (G2 — no baked app
+ * theme; the export follows the system/browser setting), the shared
+ * `.md-body` stylesheet, BOTH hljs theme stylesheets (light default, dark
+ * switched in by the same media query), and a CSP meta that permits no
+ * scripts and no remote resources (`default-src 'none'`; inline styles for
+ * the theme, `data:`/`blob:` images only) — rendered output is sanitized by
+ * DOMPurify inside renderMarkdown, and the CSP is the second layer of
+ * defense.
  */
 export function renderStandaloneHtml(markdown: string, opts: StandaloneHtmlOptions): string {
   const body = renderMarkdown(markdown)
-  const hljsCss = opts.theme === 'dark' ? HLJS_CSS_DARK : HLJS_CSS_LIGHT
+  const themeCss =
+    THEME_TOKENS.light +
+    '@media (prefers-color-scheme: dark) {\n' +
+    THEME_TOKENS.dark +
+    '}\n'
+  const hljsCss =
+    HLJS_CSS_LIGHT +
+    '@media (prefers-color-scheme: dark) {\n' +
+    HLJS_CSS_DARK +
+    '}\n'
   return [
     '<!doctype html>',
-    `<html lang="en" data-theme="${opts.theme}">`,
+    '<html lang="en">',
     '<head>',
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     `<title>${escapeHtml(opts.title)}</title>`,
     `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:">`,
-    `<style>${THEME_TOKENS[opts.theme]}${MARKDOWN_BODY_CSS}${hljsCss}` +
+    `<style>${themeCss}${MARKDOWN_BODY_CSS}${hljsCss}` +
       'body { margin: 0; background: var(--bg); color: var(--text); }\n' +
       'main.md-body { padding: 32px 40px; max-width: 860px; margin: 0 auto; }\n' +
       '</style>',

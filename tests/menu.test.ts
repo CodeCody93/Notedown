@@ -14,8 +14,7 @@ import {
   TOOLBAR_GROUPS,
 } from '../src/app/menu'
 import type { MenuEntry } from '../src/app/menu'
-import { labelFor, SHORTCUTS } from '../src/app/shortcuts'
-import { FORMATTING_COMMANDS } from '../src/app/formatting'
+import { labelFor } from '../src/app/shortcuts'
 
 afterEach(() => {
   document.body.textContent = ''
@@ -166,7 +165,40 @@ describe('renderMenubar', () => {
 
 describe('formattingHotkeyMap', () => {
   it('returns a non-null extension covering SHORTCUTS ∩ FORMATTING ids', () => {
-    const expected = SHORTCUTS.filter((s) => s.id in FORMATTING_COMMANDS).map((s) => s.id)
+    // Expected final set: every SHORTCUTS id that also exists in
+    // FORMATTING_COMMANDS, in SHORTCUTS order. 'emoji' is intentionally absent
+    // (the emoji picker binds its own keymap), 'toggle-preview' was removed, and
+    // 'list-unordered'/'list-task' have no SHORTCUTS entry.
+    const expected = [
+      'bold',
+      'italic',
+      'underline',
+      'strikethrough',
+      'header-cycle',
+      'header-1',
+      'header-2',
+      'header-3',
+      'header-4',
+      'header-5',
+      'header-6',
+      'header-0',
+      'list',
+      'list-ordered',
+      'blockquote',
+      'inline-code',
+      'code-block',
+      'link',
+      'image',
+      'table',
+      'hr',
+      'footnote',
+      'task-list',
+      'heading-id',
+      'def-list',
+      'sub',
+      'sup',
+      'highlight',
+    ]
     expect(expected.length).toBeGreaterThan(0)
     expect(formattingHotkeyIds()).toEqual(expected)
     expect(formattingHotkeyMap()).toBeTruthy()

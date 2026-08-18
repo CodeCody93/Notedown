@@ -17,7 +17,6 @@
     <link rel="stylesheet" href="/src/styles/menu.css" />
     <link rel="stylesheet" href="/src/styles/editor.css" />
     <link rel="stylesheet" href="/src/styles/responsive.css" />
-    <link rel="stylesheet" href="/src/styles/preview.css" />
     <link rel="stylesheet" href="/src/styles/settings.css" />
   </head>
   <body>
@@ -27,16 +26,11 @@
       </header>
       <main id="editor-area">
         <div id="editor" class="editor-pane" aria-label="Editor"></div>
-        <div id="preview-pane" class="preview-pane" hidden aria-label="Preview">
-          <div id="preview-stale" class="preview-stale" hidden>Rendering…</div>
-          <div id="preview-body" class="md-body"></div>
-        </div>
       </main>
       <footer id="statusbar" class="statusbar" role="status">
         <span id="status-filename">untitled.md</span>
         <span id="status-dirty" class="dirty-dot" hidden title="Unsaved changes"></span>
         <span class="status-spacer"></span>
-        <button id="status-eye" class="status-eye" type="button" aria-label="Toggle preview" title="Toggle preview (Ctrl+Shift+P)"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1.8 8s2.4-4.2 6.2-4.2 6.2 4.2 6.2 4.2-2.4 4.2-6.2 4.2S1.8 8 1.8 8z"/><circle cx="8" cy="8" r="1.7"/></svg></button>
         <span id="status-mode">Live</span>
         <span id="status-ln">Ln 1</span>
         <span id="status-col">Col 1</span>

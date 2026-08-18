@@ -39,6 +39,10 @@ export const tauriIO: FileIO = {
     return call<boolean>('confirm_dialog', { message })
   },
 
+  async alert(message): Promise<void> {
+    await call<void>('alert_dialog', { message })
+  },
+
   async readSettings(): Promise<string | null> {
     return call<string | null>('read_settings')
   },

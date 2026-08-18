@@ -1,7 +1,9 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import type { KeyBinding } from '@codemirror/view'
 import type { EditorController } from '../editor/editor'
 import { getFileIO } from '../platform'
 import type { FileIO, OpenResult } from '../platform/types'
+import { runtime } from '../platform/detect'
 import {
   SESSION_KEY,
   clearDraft,
@@ -18,13 +20,12 @@ import { applyTheme, loadSettings, resolveTheme } from './settings'
 import type { Settings } from './settings'
 import { appState } from './state'
 import type { CurrentDoc } from './state'
-import { detectLineEnding, stripBom } from './text'
+import { detectLineEnding, resolveAgainstDocDir, stripBom } from './text'
 import { copySelection, cutSelection, pasteImage, pasteText } from './clipboard'
 import { FORMATTING_COMMANDS, markdownListKeymap } from './formatting'
 import { formattingHotkeyMap, openEmojiPicker, renderMenubar } from './menu'
-import { resolveAgainstDocDir, togglePreview, wirePreview } from './preview'
 import { openSettingsModal, wireSettingsModal } from './settingsUI'
-import { getPlatform, matches } from './shortcuts'
+import { SHORTCUTS, getPlatform, matches } from './shortcuts'
 
 const AUTOSAVE_DEBOUNCE_MS = 3000
 
@@ -54,6 +55,26 @@ function byId(id: string): HTMLElement {
   const node = document.getElementById(id)
   if (node === null) throw new Error(`Missing element #${id}`)
   return node
+}
+
+/** Current editor cursor (1-based line/col), or null when the editor is not up yet. */
+function currentCursor(): { line: number; col: number } | null {
+  return editor?.getCursor() ?? null
+}
+
+/**
+ * Platform message dialog. FileIO.alert is the native dialog in Tauri
+ * (window.alert is a no-op inside the webview — user-results C9); the local
+ * fallback keeps this compiling/running even if a FileIO implementation lacks
+ * `alert`.
+ */
+async function showAlert(message: string): Promise<void> {
+  const alertFn = (io as FileIO & { alert?: (message: string) => Promise<void> }).alert
+  if (alertFn !== undefined) {
+    await alertFn(message)
+  } else {
+    window.alert(message)
+  }
 }
 
 export function getEditor(): EditorController | null {
@@ -93,7 +114,7 @@ async function newDoc(): Promise<void> {
       encoding: 'utf-8',
     },
   })
-  await writeSession(io, { path: null, name: 'untitled.md', ts: Date.now() })
+  await writeSession(io, { path: null, name: 'untitled.md', ts: Date.now(), cursor: currentCursor() })
 }
 
 async function openDoc(): Promise<void> {
@@ -105,7 +126,7 @@ async function openDoc(): Promise<void> {
     if (opened === null) return
     result = opened
   } catch (err) {
-    window.alert(`Open failed: ${err instanceof Error ? err.message : String(err)}`)
+    await showAlert(`Open failed: ${err instanceof Error ? err.message : String(err)}`)
     return
   }
   await clearDraft(io, prevPath)
@@ -113,7 +134,7 @@ async function openDoc(): Promise<void> {
   const recents = addRecent(appState.get().recents, { path: result.path ?? '', name: result.name })
   appState.set({ recents })
   await io.writeRecents(JSON.stringify(recents))
-  await writeSession(io, { path: result.path, name: result.name, ts: Date.now() })
+  await writeSession(io, { path: result.path, name: result.name, ts: Date.now(), cursor: currentCursor() })
 }
 
 async function saveDoc(): Promise<void> {
@@ -129,7 +150,7 @@ async function saveDoc(): Promise<void> {
   appState.set({ recents })
   await io.writeRecents(JSON.stringify(recents))
   await clearDraft(io, doc.path)
-  await writeSession(io, { path: doc.path, name: doc.name, ts: Date.now() })
+  await writeSession(io, { path: doc.path, name: doc.name, ts: Date.now(), cursor: currentCursor() })
 }
 
 async function saveAsDoc(): Promise<void> {
@@ -141,7 +162,7 @@ async function saveAsDoc(): Promise<void> {
   appState.set({ recents })
   await io.writeRecents(JSON.stringify(recents))
   if (doc.path !== null) await clearDraft(io, doc.path)
-  await writeSession(io, { path: saved, name: doc.name, ts: Date.now() })
+  await writeSession(io, { path: saved, name: doc.name, ts: Date.now(), cursor: currentCursor() })
 }
 
 async function openRecent(path: string): Promise<void> {
@@ -150,7 +171,14 @@ async function openRecent(path: string): Promise<void> {
   try {
     content = await io.readFile(path)
   } catch (err) {
-    window.alert(`Could not open: ${err instanceof Error ? err.message : String(err)}`)
+    // C9: the entry must be removed from recents, and the user must SEE an error
+    // (window.alert is a no-op in the Tauri webview → FileIO.alert).
+    const entry = appState.get().recents.find((r) => r.path === path)
+    const label = entry?.name ?? path
+    await showAlert(
+      `Could not open "${label}": the file was not found or could not be read. It has been removed from Open Recent.`
+    )
+    console.warn('Open recent failed', err)
     const recents = removeRecent(appState.get().recents, path)
     appState.set({ recents })
     await io.writeRecents(JSON.stringify(recents))
@@ -163,7 +191,7 @@ async function openRecent(path: string): Promise<void> {
   const recents = addRecent(prevRecents, { path, name })
   appState.set({ recents })
   await io.writeRecents(JSON.stringify(recents))
-  await writeSession(io, { path, name, ts: Date.now() })
+  await writeSession(io, { path, name, ts: Date.now(), cursor: currentCursor() })
 }
 
 async function clearRecents(): Promise<void> {
@@ -183,7 +211,7 @@ async function exportHtml(): Promise<void> {
     const saved = await io.saveFile(null, html, htmlName, { html: true })
     if (saved === null) return // user cancelled the save dialog
   } catch (err) {
-    window.alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
+    await showAlert(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
 
@@ -206,11 +234,14 @@ export function updateSettings(patch: Partial<Settings>): void {
 
 function applyEditorSettings(s: Settings): void {
   if (s.defaultMode !== appState.get().mode) {
-    editor?.setMode(s.defaultMode)
+    editor?.setMode(s.defaultMode === 'source' ? 'source' : 'live')
   }
   editor?.setWrapping(s.lineWrapping)
   editor?.setFontSize(s.fontSize)
   editor?.setLineHeight(s.lineHeight)
+  // Other #6: spell check toggle. `?? true` guards a persisted value missing the
+  // key (mergeSettings fills defaults, but the guard is free).
+  editor?.setSpellCheck(s.spellCheck ?? true)
 }
 
 export function setMode(mode: 'live' | 'source'): void {
@@ -225,7 +256,12 @@ function scheduleDraftSave(doc: CurrentDoc): void {
   draftTimer = window.setTimeout(() => {
     draftTimer = null
     saveDraft(io, doc.path, doc.content)
-      .then(() => writeSession(io, { path: doc.path, name: doc.name, ts: Date.now() }))
+      .then(() => {
+        // I1/I2: capture the cursor AT SAVE time (not at schedule time — the
+        // timer is re-armed on every keystroke) so recovery can restore it.
+        const cursor = editor?.getCursor() ?? null
+        return writeSession(io, { path: doc.path, name: doc.name, ts: Date.now(), cursor })
+      })
       .catch((err) => {
         console.warn('Draft save failed', err)
       })
@@ -245,6 +281,12 @@ async function recover(): Promise<void> {
       // draft clears the dirty flag — the draft is the reference point, not
       // the possibly-stale file on disk.
       appState.set({ doc: docFromContent(draft ?? '', session.path, session.name, true) })
+      // I1/I2: restore the cursor saved with the draft. The subscribe above
+      // applies the content synchronously inside appState.set, so the editor
+      // is ready (and its undo history was just reset for the new document).
+      if (session.cursor !== null) {
+        editor?.setCursor(session.cursor.line, session.cursor.col)
+      }
     } else {
       await clearDraft(io, session.path)
     }
@@ -299,15 +341,21 @@ function renderRecents(): void {
       void openRecent(rec.path)
     })
     container.appendChild(btn)
-    // Async existence probe: disable the entry when the file can no longer be
-    // read. Guard btn.isConnected because renderRecents can re-run mid-probe
-    // (the button may have been replaced before the promise settles).
+    // Async existence probe: mark the entry as missing when the file can no
+    // longer be read. The entry stays CLICKABLE (a disabled button can't be
+    // clicked, so the stale entry could never be removed — user-results D3/C9);
+    // clicking routes to openRecent, which alerts and removes the entry.
+    // Guard btn.isConnected because renderRecents can re-run mid-probe (the
+    // button may have been replaced before the promise settles).
     io.readFile(rec.path)
       .then(() => {
-        if (btn.isConnected) btn.disabled = false
+        if (btn.isConnected) btn.classList.remove('missing')
       })
       .catch(() => {
-        if (btn.isConnected) btn.disabled = true
+        if (btn.isConnected) {
+          btn.classList.add('missing')
+          btn.title = 'File missing — click to remove it from recents'
+        }
       })
   }
 }
@@ -349,7 +397,13 @@ const FORMATTING_ACTION_IDS = [
 function runFormatting(id: string): void {
   const factory = FORMATTING_COMMANDS[id]
   const ed = getEditor()
-  if (factory !== undefined && ed !== null) ed.runFormatting(factory)
+  if (factory !== undefined && ed !== null) {
+    ed.runFormatting(factory)
+    // E13: after a toolbar/menu formatting action (table/hr/footnote/…), move
+    // the caret back into the editor so the inserted template is immediately
+    // editable without an extra click.
+    ed.focus()
+  }
 }
 
 function wireMenu(): void {
@@ -369,7 +423,6 @@ function wireMenu(): void {
     'export-html': () => {
       void exportHtml()
     },
-    'toggle-preview': () => togglePreview(),
     settings: () => openSettingsModal(),
     'clear-recents': () => {
       void clearRecents()
@@ -432,7 +485,6 @@ const APP_HOTKEY_IDS = [
   'export-html',
   'settings',
   'toggle-mode',
-  'toggle-preview',
 ]
 
 function wireHotkeys(): void {
@@ -475,7 +527,6 @@ function wireHotkeys(): void {
     },
     settings: () => openSettingsModal(),
     'toggle-mode': () => setMode(appState.get().mode === 'live' ? 'source' : 'live'),
-    'toggle-preview': () => togglePreview(),
   }
 
   window.addEventListener('keydown', (e) => {
@@ -498,18 +549,28 @@ function wireHotkeys(): void {
 }
 
 function wireCloseGuard(): void {
-  try {
-    // Documented Tauri close pattern: preventDefault ONLY when the user
-    // declines the discard prompt; an accepted prompt lets the window close
-    // naturally (never call getCurrentWindow().destroy()).
-    getCurrentWindow().onCloseRequested(async (e) => {
+  if (runtime === 'tauri') {
+    // Tauri v2 semantics (verified against tauri 2.11.5): once a JS
+    // close-requested listener exists, the Rust side ALWAYS calls
+    // api.prevent_close() before emitting the event — so the window never
+    // closes by itself; the handler must destroy() it explicitly. destroy()
+    // bypasses close-requested, so there is no re-entrancy. This fixes the
+    // X-button / Alt+F4 deadlock (user-results Other #3).
+    getCurrentWindow().onCloseRequested(async (event) => {
       const doc = appState.get().doc
-      if (!doc.dirty) return
+      if (!doc.dirty) {
+        await getCurrentWindow().destroy()
+        return
+      }
       const ok = await io.confirm(`Discard unsaved changes to ${doc.name}?`)
-      if (!ok) e.preventDefault()
+      if (ok) {
+        await getCurrentWindow().destroy()
+      } else {
+        event.preventDefault()
+      }
     })
-  } catch {
   }
+  // Browser dev mode: beforeunload keeps the tab from closing silently.
   window.addEventListener('beforeunload', (e) => {
     if (appState.get().doc.dirty) {
       e.preventDefault()
@@ -524,22 +585,41 @@ function wireStatusMode(): void {
 }
 
 /**
- * Refocus the editor when the window regains focus — but only in edit view,
- * never while the settings modal is open (settingsUI toggles the hidden
- * attribute on #settings-modal-root) and only once the editor exists.
+ * Refocus the editor when the window regains focus — but never while the
+ * settings modal is open (settingsUI toggles the hidden attribute on
+ * #settings-modal-root) and only once the editor exists.
  */
 function wireWindowFocus(): void {
   window.addEventListener('focus', () => {
     if (editor === null) return
-    if (appState.get().view !== 'edit') return
     const modalRoot = document.getElementById('settings-modal-root')
     if (modalRoot !== null && !modalRoot.hidden) return
     editor.focus()
   })
 }
 
-function wireStatusEye(): void {
-  byId('status-eye')?.addEventListener('click', () => togglePreview())
+/**
+ * Emoji-picker hotkey layer (user-results E21): a single CM6 keybinding built
+ * from the 'emoji' shortcut's chord looked up at RUNTIME from the shortcuts
+ * map (never hardcoded), so a future chord change needs no code change here.
+ * Opens the picker anchored to the editor and inserts the picked emoji into
+ * the document.
+ */
+function emojiHotkeyMap(): KeyBinding[] {
+  const chord = SHORTCUTS.find((s) => s.id === 'emoji')?.keys[0]
+  if (chord === undefined) return []
+  return [
+    {
+      key: chord,
+      run: (view) => {
+        openEmojiPicker(view.dom, (emoji) => {
+          view.dispatch(view.state.replaceSelection(emoji))
+          view.focus()
+        })
+        return true
+      },
+    },
+  ]
 }
 
 export async function initApp(): Promise<void> {
@@ -551,17 +631,20 @@ export async function initApp(): Promise<void> {
   io = getFileIO()
 
   const settings = await loadSettings(io)
-  appState.set({ settings, mode: settings.defaultMode })
+  // Defensive mode normalization: settings.defaultMode is 'live' | 'source'
+  // (a possibly-stored 'preview' from an older build is coerced by
+  // settings.mergeSettings), but treat anything else as 'live' regardless.
+  appState.set({ settings, mode: settings.defaultMode === 'source' ? 'source' : 'live' })
   applyTheme(settings.theme)
 
   const { createEditor } = await editorModule
   editor = createEditor(byId('editor'), {
     content: appState.get().doc.content,
-    mode: settings.defaultMode,
+    mode: settings.defaultMode === 'source' ? 'source' : 'live',
     wrap: settings.lineWrapping,
     fontSize: settings.fontSize,
     lineHeight: settings.lineHeight,
-    extraKeymaps: [formattingHotkeyMap(), markdownListKeymap()],
+    extraKeymaps: [formattingHotkeyMap(), markdownListKeymap(), emojiHotkeyMap()],
     onPasteImage: (event) => {
       const ed = editor
       const doc = appState.get().doc
@@ -590,7 +673,6 @@ export async function initApp(): Promise<void> {
   })
   editor.onChange((content) => setContent(content))
   applyEditorSettings(settings)
-  wirePreview(io)
   wireSettingsModal({ getSettings: () => appState.get().settings, onApply: (patch) => updateSettings(patch) })
 
   // Render the menubar once before wiring; recents + data-action clicks live inside it.
@@ -620,7 +702,14 @@ export async function initApp(): Promise<void> {
         console.warn('Draft clear failed', err)
       })
     }
-    editor?.setContent(s.doc.content)
+    // C1: any full-document replace (new/open/open-recent/recover) flows
+    // through this subscription, and setContent returns true exactly when it
+    // actually replaced the document — reset the undo history there so Ctrl+Z
+    // can never undo back into the previous document.
+    const ed = editor
+    if (ed !== null && ed.setContent(s.doc.content)) {
+      ed.resetHistory()
+    }
     if (s.doc.dirty && s.settings.autosaveDrafts) {
       scheduleDraftSave(s.doc)
     } else if (draftTimer !== null) {
@@ -636,7 +725,6 @@ export async function initApp(): Promise<void> {
   await recover()
 
   wireStatusMode()
-  wireStatusEye()
   wireMenu()
   wireHotkeys()
   wireWindowFocus()

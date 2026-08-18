@@ -19,6 +19,7 @@ pub fn run() {
             io::write_draft,
             io::clear_draft,
             io::confirm_dialog,
+            io::alert_dialog,
             io::expose_image,
             io::open_external,
             io::write_image

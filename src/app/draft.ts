@@ -2,10 +2,18 @@ import type { FileIO } from '../platform/types'
 
 export const SESSION_KEY = '__session__'
 
+/** Editor cursor position stored with a session (1-based line/col — matches EditorCursor). */
+export interface SessionCursor {
+  line: number
+  col: number
+}
+
 export interface Session {
   path: string | null
   name: string
   ts: number
+  /** Cursor at draft time (1-based line/col), or null when unknown (pre-cursor sessions, no editor). */
+  cursor: SessionCursor | null
 }
 
 export function draftKey(path: string | null): string {
@@ -24,10 +32,18 @@ export function parseSession(json: string | null): Session | null {
   if (data === null || typeof data !== 'object') return null
   const rec = data as Partial<Session>
   if (typeof rec.name !== 'string') return null
+  let cursor: SessionCursor | null = null
+  if (rec.cursor !== null && typeof rec.cursor === 'object') {
+    const c = rec.cursor as Partial<SessionCursor>
+    if (typeof c.line === 'number' && typeof c.col === 'number') {
+      cursor = { line: c.line, col: c.col }
+    }
+  }
   return {
     path: typeof rec.path === 'string' ? rec.path : null,
     name: rec.name,
     ts: typeof rec.ts === 'number' ? rec.ts : 0,
+    cursor,
   }
 }
 

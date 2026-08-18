@@ -194,6 +194,10 @@ export const browserIO: FileIO = {
     return window.confirm(message)
   },
 
+  async alert(message): Promise<void> {
+    window.alert(message)
+  },
+
   async readSettings(): Promise<string | null> {
     return readRaw(SETTINGS_KEY)
   },

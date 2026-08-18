@@ -155,4 +155,141 @@ describe('M2 editor smoke', () => {
     expect(unresolved?.textContent).toContain('![alt]')
     clean(view)
   })
+
+  it('live mode: tables render as a widget when the caret is outside, raw when inside', () => {
+    const view = mountEditor(
+      [markdown({ base: markdownLanguage }), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\n| a | b |\n| --- | --- |\n| 1 | 2 |'
+    )
+    // Caret on line 1: every table line is inactive → rendered widget.
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    const widget = view.contentDOM.querySelector('.cm-table-widget')
+    expect(widget).toBeTruthy()
+    // Header row bold cell class present on the grid.
+    expect(view.contentDOM.querySelector('.cm-table-head')).toBeTruthy()
+    // Caret inside the table (position 11 = 'b'): raw source, no widget.
+    view.dispatch({ selection: { anchor: 11, head: 11 } })
+    view.requestMeasure()
+    expect(view.contentDOM.querySelector('.cm-table-widget')).toBeNull()
+    clean(view)
+  })
+
+  it('live mode: --- renders as a horizontal rule widget when the caret is elsewhere', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\n---'
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    expect(view.contentDOM.querySelector('.cm-hr-widget')).toBeTruthy()
+    // Caret on the rule line: the raw '---' re-appears.
+    view.dispatch({ selection: { anchor: 7, head: 7 } })
+    view.requestMeasure()
+    expect(view.contentDOM.querySelector('.cm-hr-widget')).toBeNull()
+    clean(view)
+  })
+
+  it('live mode: inactive blockquote lines get the .cm-blockquote style', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\n> quote'
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    expect(view.contentDOM.querySelector('.cm-blockquote')).toBeTruthy()
+    clean(view)
+  })
+
+  it('live mode: trailing {#custom-id} on an inactive heading line is hidden', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\n## Head {#id}'
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    expect(view.contentDOM.textContent).not.toContain('{#id}')
+    // Caret on the heading line: raw text (attribute visible for editing).
+    view.dispatch({ selection: { anchor: 8, head: 8 } })
+    view.requestMeasure()
+    expect(view.contentDOM.textContent).toContain('{#id}')
+    clean(view)
+  })
+
+  it('live mode: <sub> tags are hidden and the enclosed text gets .cm-sub-content', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\na<sub>x</sub>b'
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    expect(view.contentDOM.textContent).not.toContain('<sub>')
+    expect(view.contentDOM.textContent).not.toContain('</sub>')
+    expect(view.contentDOM.querySelector('.cm-sub-content')?.textContent).toBe('x')
+    clean(view)
+  })
+
+  it('live mode: ==highlight== renders .cm-highlight-content on inactive lines', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\n==hi=='
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    expect(view.contentDOM.querySelector('.cm-highlight-content')?.textContent).toBe('hi')
+    clean(view)
+  })
+
+  it('live mode: __underline__ renders .cm-underline on inactive lines', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\n__und__'
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    const underline = view.contentDOM.querySelector('.cm-underline')
+    expect(underline).toBeTruthy()
+    expect(underline?.textContent).toBe('und')
+    clean(view)
+  })
+
+  it('live mode: -# subtext hides the prefix and styles the rest on inactive lines', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\n-# note'
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    expect(view.contentDOM.querySelector('.cm-subtext')?.textContent).toBe('note')
+    expect(view.contentDOM.textContent).not.toContain('-#')
+    clean(view)
+  })
+
+  it('live mode: -[] task markers render ☐ and toggle the bracket on mousedown', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\n-[] task'
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    const marker = view.contentDOM.querySelector('.cm-list-marker')
+    expect(marker).toBeTruthy()
+    expect(marker?.textContent).toContain('☐')
+    // Click the marker: the bracket toggles to [x] in the doc.
+    marker?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }))
+    expect(view.state.doc.toString()).toBe('para\n\n-[x] task')
+    clean(view)
+  })
+
+  it('cmTheme: the line-height rule uses .cm-content .cm-line to beat the package theme', () => {
+    const view = mountEditor([markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension()], '')
+    const sheets = Array.from(document.styleSheets)
+    const rules = sheets.flatMap((sheet) => Array.from(sheet.cssRules))
+    const lineHeightRule = rules
+      .filter((r): r is CSSStyleRule => r instanceof CSSStyleRule)
+      .find((r) => r.selectorText.includes('.cm-content .cm-line'))
+    expect(lineHeightRule).toBeTruthy()
+    expect(lineHeightRule?.cssText).toContain('var(--cm-line-height')
+    clean(view)
+  })
 })

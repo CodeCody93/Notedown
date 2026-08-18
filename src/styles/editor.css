@@ -48,3 +48,126 @@
 .mono {
   font-family: var(--mono);
 }
+
+/* ---------------------------------------------------------------------------
+   Live-preview rendered constructs (produced by src/editor/livePreview.ts in
+   collapsed mode). Scoped under .cm-editor so they win against the package's
+   generated theme rules and match the app look via theme.css tokens.
+   ------------------------------------------------------------------------- */
+
+/* Blockquote lines (E8): left border + muted text once the caret leaves the
+   line; the raw `>` mark is hidden by the package's cm-formatting-block. */
+.cm-editor .cm-line.cm-blockquote {
+  border-left: 3px solid var(--accent, #2563eb);
+  padding-left: 12px;
+  color: var(--muted, #6b7280);
+}
+
+/* Rendered GFM table (E13) — simple div grid. */
+.cm-editor .cm-table-widget {
+  display: block;
+  border: 1px solid var(--border, #e3e3df);
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 4px 0;
+  color: var(--text, #1f2328);
+}
+.cm-editor .cm-table-row {
+  display: flex;
+  border-bottom: 1px solid var(--border, #e3e3df);
+}
+.cm-editor .cm-table-row:last-child {
+  border-bottom: none;
+}
+.cm-editor .cm-table-cell {
+  flex: 1 1 0;
+  min-width: 40px;
+  padding: 6px 10px;
+  border-right: 1px solid var(--border, #e3e3df);
+}
+.cm-editor .cm-table-cell:last-child {
+  border-right: none;
+}
+.cm-editor .cm-table-head {
+  font-weight: 600;
+  background: var(--surface, #f8f8f6);
+}
+
+/* Horizontal rule (E14). */
+.cm-editor .cm-hr-widget {
+  height: 0;
+  border-top: 2px solid var(--muted, #6b7280);
+  margin: 10px 0;
+}
+
+/* Subscript / superscript content (E18/E19); the literal tags themselves are
+   replaced by zero-size widgets and never visible. */
+.cm-editor .cm-sub-content {
+  vertical-align: sub;
+  font-size: 75%;
+}
+.cm-editor .cm-sup-content {
+  vertical-align: super;
+  font-size: 75%;
+}
+
+/* ==highlight== content (E20). */
+.cm-editor .cm-highlight-content {
+  background: rgba(255, 213, 0, 0.35);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* __underline__ content (E3): nested inside the package's .cm-strong span, so
+   the explicit font-weight overrides the inherited bold. */
+.cm-editor .cm-underline {
+  text-decoration: underline;
+  font-weight: 400;
+}
+
+/* `-# subtext` (Other Noted Issues #5). */
+.cm-editor .cm-subtext {
+  color: var(--muted, #6b7280);
+  font-style: italic;
+}
+
+/* ---------------------------------------------------------------------------
+   CodeMirror search panel (@codemirror/search, wired up by another packet).
+   ------------------------------------------------------------------------- */
+.cm-editor .cm-panel.cm-search {
+  background: var(--surface, #f8f8f6);
+  border: 1px solid var(--border, #e3e3df);
+  border-radius: var(--menu-radius, 8px);
+  box-shadow: var(--shadow, 0 4px 16px rgba(0, 0, 0, 0.12));
+  padding: 6px 10px;
+  color: var(--text, #1f2328);
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+}
+.cm-editor .cm-panel.cm-search input,
+.cm-editor .cm-panel.cm-search .cm-textfield {
+  background: var(--bg, #ffffff);
+  color: var(--text, #1f2328);
+  border: 1px solid var(--border, #e3e3df);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font: inherit;
+}
+.cm-editor .cm-panel.cm-search button {
+  background: var(--surface, #f8f8f6);
+  color: var(--text, #1f2328);
+  border: 1px solid var(--border, #e3e3df);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font: inherit;
+}
+.cm-editor .cm-panel.cm-search button:hover {
+  border-color: var(--accent, #2563eb);
+  color: var(--accent, #2563eb);
+}
+.cm-editor .cm-panel.cm-search label {
+  color: var(--muted, #6b7280);
+}

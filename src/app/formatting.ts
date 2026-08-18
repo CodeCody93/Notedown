@@ -88,10 +88,13 @@ function finalizeChanges(
 /**
  * Syntax-tree-based unwrap for native markdown nodes (bold/italic/strikethrough).
  * Finds the innermost ancestor of the caret/selection whose node name is in
- * `nodeNames` and whose marker delimiters strictly CONTAIN the selection; when
- * found, removes the markers and maps the selection left by `open.length`.
- * Returns null when no such node exists (e.g. no markdown language configured,
- * or the selection covers a marker itself).
+ * `nodeNames` and whose range contains the selection (loose containment: an empty
+ * caret ANYWHERE inside the node, including on the marker characters, unwraps —
+ * user-results E1/E4); when found, removes the markers and maps the selection left
+ * by `open.length`. The source text must still start with `open` and end with
+ * `close` (the delimiter predicate): this is what keeps `**` bold separate from
+ * `__` underline even though lezer parses both as `StrongEmphasis`.
+ * Returns null when no such node exists (e.g. no markdown language configured).
  */
 function treeUnwrap(state: EditorState, open: string, close: string, nodeNames: string[]): TransactionSpec | null {
   const range = state.selection.main
@@ -100,16 +103,74 @@ function treeUnwrap(state: EditorState, open: string, close: string, nodeNames: 
   const tree = syntaxTree(state)
   let node: SyntaxNode | null = tree.resolveInner(from, 1)
   while (node !== null) {
-    if (nodeNames.includes(node.name) && node.from + open.length <= from && to <= node.to - close.length) break
+    if (nodeNames.includes(node.name) && node.from <= from && to <= node.to) break
     node = node.parent
   }
   if (node === null) return null
   const text = state.doc.sliceString(node.from, node.to)
   if (!text.startsWith(open) || !text.endsWith(close)) return null
-  // Selection mapped through the marker removal: everything shifts left by open.length.
+  const innerLen = text.length - open.length - close.length
+  const contentEnd = node.from + innerLen
+  const caret = Math.max(node.from, Math.min(from - open.length, contentEnd))
+  const head = Math.max(node.from, Math.min(to - open.length, contentEnd))
   return {
     changes: { from: node.from, to: node.to, insert: text.slice(open.length, text.length - close.length) },
-    selection: { anchor: from - open.length, head: to - open.length },
+    selection: { anchor: caret, head },
+  }
+}
+
+/**
+ * True when the caret/selection head sits inside a syntax node of `nodeName`
+ * whose source text is wrapped in the given `mark` delimiters on both sides
+ * (used to keep `**` bold and `__` underline apart — each command refuses to
+ * touch the other's territory).
+ */
+function insideMarkedNode(state: EditorState, nodeName: string, mark: string): boolean {
+  const head = state.selection.main.head
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(head, 1)
+  while (node !== null && node.name !== nodeName) node = node.parent
+  if (node === null) return false
+  const text = state.doc.sliceString(node.from, node.to)
+  return text.startsWith(mark) && text.endsWith(mark)
+}
+
+/**
+ * Text-based unwrap for literal pair regions (`<sub>…</sub>`, `<sup>…</sup>`,
+ * `==…==`, `__…__`) that live in the caret's line. Finds the LAST `open` at/before
+ * the selection start and the FIRST `close` at/after the selection end, removes
+ * both, and maps the selection through the removals (user-results E18/E19/E20).
+ * Returns null when no valid pair wraps the selection.
+ */
+function textRegionUnwrap(state: EditorState, open: string, close: string): TransactionSpec | null {
+  const range = state.selection.main
+  const line = state.doc.lineAt(range.head)
+  const text = line.text
+  const relFrom = range.from - line.from
+  const relTo = range.to - line.from
+  const openIdx = text.lastIndexOf(open, relFrom)
+  if (openIdx < 0) return null
+  const closeIdx = text.indexOf(close, relTo)
+  if (closeIdx < 0) return null
+  const innerStart = line.from + openIdx + open.length
+  const innerEnd = line.from + closeIdx
+  if (innerEnd <= innerStart) return null
+  // The selection must sit inside the open..close+close.length span.
+  if (relFrom < openIdx || relTo > closeIdx + close.length) return null
+  // Map the original selection through the two removals (positions inside a
+  // removed tag collapse to the tag's start).
+  const anchor = range.from >= innerStart ? range.from - open.length : line.from + openIdx
+  const head =
+    range.to < innerStart
+      ? line.from + openIdx
+      : range.to <= innerEnd
+        ? range.to - open.length
+        : innerEnd - open.length
+  return {
+    changes: [
+      { from: line.from + openIdx, to: innerStart, insert: '' },
+      { from: innerEnd, to: innerEnd + close.length, insert: '' },
+    ],
+    selection: { anchor, head },
   }
 }
 
@@ -151,8 +212,10 @@ function wrapUnwrap(state: EditorState, open: string, close: string, nodeNames?:
   }
 }
 
-/** Toggle bold `**x**`. Empty selection inserts `****` with the caret between the pairs. */
+/** Toggle bold `**x**`. Empty selection inserts `****` with the caret between the pairs.
+ * `__`-marked StrongEmphasis belongs to underline — left untouched (E3/E4 split). */
 export function toggleBoldSpec(state: EditorState): TransactionSpec {
+  if (insideMarkedNode(state, 'StrongEmphasis', '__')) return noChangeSpec(state)
   return wrapUnwrap(state, '**', '**', ['StrongEmphasis'])
 }
 
@@ -161,9 +224,30 @@ export function toggleItalicSpec(state: EditorState): TransactionSpec {
   return wrapUnwrap(state, '*', '*', ['Emphasis'])
 }
 
-/** Toggle underline `<u>x</u>`. Empty selection inserts `<u></u>`, caret between the tags. */
+/** Toggle underline `__x__`. Empty selection inserts `____`, caret between the pairs. */
 export function toggleUnderlineSpec(state: EditorState): TransactionSpec {
-  return wrapUnwrap(state, '<u>', '</u>')
+  // `**`-marked StrongEmphasis belongs to bold — left untouched (E3/E4 split).
+  if (insideMarkedNode(state, 'StrongEmphasis', '**')) return noChangeSpec(state)
+  // Tree path: unwrap a `__`-marked StrongEmphasis containing the selection (E1).
+  const range = state.selection.main
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(range.from, 1)
+  while (node !== null && node.name !== 'StrongEmphasis') node = node.parent
+  if (node !== null && node.from <= range.from && range.to <= node.to) {
+    const text = state.doc.sliceString(node.from, node.to)
+    if (text.startsWith('__') && text.endsWith('__')) {
+      const contentEnd = node.from + text.length - 4
+      const caret = Math.max(node.from, Math.min(range.from - 2, contentEnd))
+      const head = Math.max(node.from, Math.min(range.to - 2, contentEnd))
+      return {
+        changes: { from: node.from, to: node.to, insert: text.slice(2, text.length - 2) },
+        selection: { anchor: caret, head },
+      }
+    }
+  }
+  // Text fallback: `__…__` runs that lezer does not parse as StrongEmphasis.
+  const t = textRegionUnwrap(state, '__', '__')
+  if (t !== null) return t
+  return wrapUnwrap(state, '__', '__')
 }
 
 /** Toggle strikethrough `~~x~~`. Empty selection inserts `~~~~`, caret between the pairs. */
@@ -171,18 +255,24 @@ export function toggleStrikethroughSpec(state: EditorState): TransactionSpec {
   return wrapUnwrap(state, '~~', '~~', ['Strikethrough'])
 }
 
-/** Toggle subscript `<sub>x</sub>`. */
+/** Toggle subscript `<sub>x</sub>`. Caret inside an existing pair unwraps it (E18). */
 export function toggleSubscriptSpec(state: EditorState): TransactionSpec {
+  const t = textRegionUnwrap(state, '<sub>', '</sub>')
+  if (t !== null) return t
   return wrapUnwrap(state, '<sub>', '</sub>')
 }
 
-/** Toggle superscript `<sup>x</sup>`. */
+/** Toggle superscript `<sup>x</sup>`. Caret inside an existing pair unwraps it (E19). */
 export function toggleSuperscriptSpec(state: EditorState): TransactionSpec {
+  const t = textRegionUnwrap(state, '<sup>', '</sup>')
+  if (t !== null) return t
   return wrapUnwrap(state, '<sup>', '</sup>')
 }
 
 /** Toggle highlight `==x==`. Empty selection inserts `====`, caret between the pairs. */
 export function toggleHighlightSpec(state: EditorState): TransactionSpec {
+  const t = textRegionUnwrap(state, '==', '==')
+  if (t !== null) return t
   return wrapUnwrap(state, '==', '==')
 }
 
@@ -247,15 +337,18 @@ interface ListMarker {
   marker: string
 }
 
-/** Detect a list marker at the start of a line (after leading whitespace). */
+/** Detect a list marker at the start of a line (after leading whitespace).
+ * Task markers accept all four user-results #4 spellings: `-[]`, `- []`, `-[ ]`,
+ * `- [ ]`. The unordered pattern also consumes a task checkbox so toggling
+ * unordered OFF removes the whole `- [ ]` marker instead of leaving `[ ]` (E7). */
 function listMarker(text: string, kind: ListKind): ListMarker | null {
   let m: RegExpExecArray | null
   if (kind === 'task') {
-    m = /^(\s*)(- \[[ xX]\]\s+)/.exec(text)
+    m = /^(\s*)([-*+]\s*\[[ xX]?\]\s+)/.exec(text)
   } else if (kind === 'ordered') {
     m = /^(\s*)(\d+\.\s+)/.exec(text)
   } else {
-    m = /^(\s*)([-*+]\s+)/.exec(text)
+    m = /^(\s*)([-*+]\s*(\[[ xX]?\]\s*)?)/.exec(text)
   }
   if (!m) return null
   return { indent: m[1], marker: m[2] }
@@ -264,8 +357,8 @@ function listMarker(text: string, kind: ListKind): ListMarker | null {
 /**
  * Smart list toggle. If EVERY selected line already carries the marker of `kind`,
  * remove the markers (toggle off); otherwise add the marker to every selected line
- * (ordered: sequential numbers starting at 1; task: `- [ ] `). Empty selection
- * operates on the caret's line.
+ * (ordered: sequential numbers starting at 1; task: `-[] ` — the user-results #4
+ * default form). Empty selection operates on the caret's line.
  */
 export function toggleListSpec(state: EditorState, kind: ListKind): TransactionSpec {
   const range = state.selection.main
@@ -289,7 +382,7 @@ export function toggleListSpec(state: EditorState, kind: ListKind): TransactionS
       const indent = /^\s*/.exec(line.text)![0]
       let markerText: string
       if (kind === 'ordered') markerText = `${counter++}. `
-      else if (kind === 'task') markerText = '- [ ] '
+      else if (kind === 'task') markerText = '-[] '
       else markerText = '- '
       changes.push({ from: line.from + indent.length, to: line.from + indent.length, insert: markerText })
     }
@@ -332,12 +425,42 @@ export function toggleBlockquoteSpec(state: EditorState): TransactionSpec {
 // ---------------------------------------------------------------------------
 
 /**
+ * Syntax-tree unwrap for InlineCode: when the caret/selection is inside an
+ * InlineCode node, remove ONE pair of backticks (the node spans the delimiters;
+ * for `n`-backtick runs remove `n` at each end) — user-results E9.
+ */
+function codeNodeUnwrap(state: EditorState): TransactionSpec | null {
+  const range = state.selection.main
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(range.from, 1)
+  while (node !== null && node.name !== 'InlineCode') node = node.parent
+  if (node === null) return null
+  if (!(node.from <= range.from && range.to <= node.to)) return null
+  const text = state.doc.sliceString(node.from, node.to)
+  if (!text.startsWith('`')) return null
+  let n1 = 0
+  while (text[n1] === '`') n1++
+  let n2 = 0
+  while (text[text.length - 1 - n2] === '`') n2++
+  if (n1 === 0 || n2 === 0) return null
+  const contentEnd = node.from + text.length - n1 - n2
+  const caret = Math.max(node.from, Math.min(range.from - n1, contentEnd))
+  const head = Math.max(node.from, Math.min(range.to - n1, contentEnd))
+  return {
+    changes: { from: node.from, to: node.to, insert: text.slice(n1, text.length - n2) },
+    selection: { anchor: caret, head },
+  }
+}
+
+/**
  * Toggle inline code. Single backticks by default; if the selected text contains a
- * backtick, use double backticks. Unwrap when already wrapped in backticks. Empty
+ * backtick, use double backticks. Unwrap when already wrapped in backticks (tree
+ * unwrap first — an empty caret inside a code span now unwraps, E9). Empty
  * selection inserts two backticks with the caret between.
  */
 export function toggleInlineCodeSpec(state: EditorState): TransactionSpec {
   const range = state.selection.main
+  const t = codeNodeUnwrap(state)
+  if (t !== null) return t
   const from = range.from
   const to = range.to
   if (range.empty) {
@@ -362,16 +485,26 @@ export function toggleInlineCodeSpec(state: EditorState): TransactionSpec {
 }
 
 /**
- * Toggle a fenced code block. If the selection already spans a fenced block (any line
- * starting with ```), remove the fence lines. Otherwise wrap the selection (or the
- * caret line when empty) in a fence. Empty selection inserts a two-line template with
- * the caret on the empty middle line.
+ * Toggle a fenced code block. Caret inside an existing FencedCode node → remove
+ * the WHOLE block (fences + content, user-results E10). Otherwise: if the
+ * selection already spans a fenced block (any line starting with ```), remove the
+ * fence lines. Otherwise wrap the selection (or the caret line when empty) in a
+ * fence. Empty selection inserts a two-line template with the caret on the empty
+ * middle line.
  */
 export function toggleCodeBlockSpec(state: EditorState): TransactionSpec {
   const range = state.selection.main
   const from = range.from
   const to = range.to
   if (range.empty) {
+    let node: SyntaxNode | null = syntaxTree(state).resolveInner(range.head, -1)
+    while (node !== null && node.name !== 'FencedCode') node = node.parent
+    if (node !== null && node.from < range.head && range.head <= node.to) {
+      return {
+        changes: { from: node.from, to: node.to, insert: '' },
+        selection: { anchor: node.from },
+      }
+    }
     const pos = range.head
     const insert = '```\n\n```'
     return { changes: { from: pos, to: pos, insert }, selection: { anchor: pos + 4 } }
@@ -396,31 +529,91 @@ export function toggleCodeBlockSpec(state: EditorState): TransactionSpec {
 // Link / image
 // ---------------------------------------------------------------------------
 
-/** Insert a link. Non-empty selection → `[selected](url)` with `url` selected; empty → `[text](url)` with `text` selected. */
+/**
+ * Tree-based toggle-off for Link/Image: when the selection is inside a parsed
+ * Link (or Image) node, replace the whole node with its inner text (Link → link
+ * text, Image → alt text) — user-results E11/E12.
+ */
+function linkImageToggleOff(state: EditorState, image: boolean): TransactionSpec | null {
+  const range = state.selection.main
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(range.from, 1)
+  while (node !== null && node.name !== (image ? 'Image' : 'Link')) node = node.parent
+  if (node === null) return null
+  if (!(node.from <= range.from && range.to <= node.to)) return null
+  let url: SyntaxNode | null = null
+  for (let child = node.firstChild; child !== null; child = child.nextSibling) {
+    if (child.name === 'URL') {
+      url = child
+      break
+    }
+  }
+  if (url === null) return null
+  const prefixLen = image ? 2 : 1 // `![` vs `[`
+  const inner = state.doc.sliceString(node.from + prefixLen, url.from - 2)
+  const contentEnd = node.from + inner.length
+  const caret = Math.max(node.from, Math.min(range.from - prefixLen, contentEnd))
+  const head = Math.max(node.from, Math.min(range.to - prefixLen, contentEnd))
+  return {
+    changes: { from: node.from, to: node.to, insert: inner },
+    selection: { anchor: caret, head },
+  }
+}
+
+/**
+ * Insert a link. Re-invoking on an untouched template deletes it; caret inside an
+ * existing link replaces it with its text (E11). Non-empty selection →
+ * `[selected](url)` with `url` selected; empty → `[text](url)` with `text` selected.
+ */
 export function insertLinkSpec(state: EditorState): TransactionSpec {
   const range = state.selection.main
   const from = range.from
   const to = range.to
   if (range.empty) {
     const pos = range.head
-    const insert = '[text](url)'
+    const template = '[text](url)'
+    if (pos >= template.length && state.doc.sliceString(pos - template.length, pos) === template) {
+      return {
+        changes: { from: pos - template.length, to: pos, insert: '' },
+        selection: { anchor: pos - template.length },
+      }
+    }
+    const t = linkImageToggleOff(state, false)
+    if (t !== null) return t
+    const insert = template
     return { changes: { from: pos, to: pos, insert }, selection: { anchor: pos + 1, head: pos + 5 } }
   }
+  const t = linkImageToggleOff(state, false)
+  if (t !== null) return t
   const text = state.doc.sliceString(from, to)
   const insert = '[' + text + '](url)'
   return { changes: { from, to, insert }, selection: { anchor: from + text.length + 3, head: from + text.length + 6 } }
 }
 
-/** Insert an image. Non-empty selection → `![selected](image.png)`; empty → `![alt](image.png)` with `alt` selected. */
+/**
+ * Insert an image. Re-invoking on an untouched template deletes it; caret inside an
+ * existing image replaces it with its alt text (E12). Non-empty selection →
+ * `![selected](image.png)`; empty → `![alt](image.png)` with `alt` selected.
+ */
 export function insertImageSpec(state: EditorState): TransactionSpec {
   const range = state.selection.main
   const from = range.from
   const to = range.to
   if (range.empty) {
     const pos = range.head
-    const insert = '![alt](image.png)'
+    const template = '![alt](image.png)'
+    if (pos >= template.length && state.doc.sliceString(pos - template.length, pos) === template) {
+      return {
+        changes: { from: pos - template.length, to: pos, insert: '' },
+        selection: { anchor: pos - template.length },
+      }
+    }
+    const t = linkImageToggleOff(state, true)
+    if (t !== null) return t
+    const insert = template
     return { changes: { from: pos, to: pos, insert }, selection: { anchor: pos + 2, head: pos + 5 } }
   }
+  const t = linkImageToggleOff(state, true)
+  if (t !== null) return t
   const text = state.doc.sliceString(from, to)
   const insert = '![' + text + '](image.png)'
   return {
@@ -556,7 +749,7 @@ interface ListItemInfo {
 }
 
 function listItemInfo(text: string): ListItemInfo | null {
-  let m = /^(\s*)(- \[[ xX]\]\s+)/.exec(text)
+  let m = /^(\s*)([-*+]\s*\[[ xX]?\]\s+)/.exec(text)
   if (m) return { indent: m[1], marker: m[2], kind: 'task' }
   m = /^(\s*)(\d+\.\s+)/.exec(text)
   if (m) return { indent: m[1], marker: m[2], kind: 'ordered', number: parseInt(m[2], 10) }
@@ -569,8 +762,9 @@ function listItemInfo(text: string): ListItemInfo | null {
  * Enter-inside-a-list continuation, as a single transaction. If the caret line is NOT
  * a list item, returns `null` (let Enter fall through). If the item is empty, remove
  * its marker so the line becomes empty (second Enter exits the list). Otherwise insert
- * a newline + the same marker (task keeps `- [ ] `, ordered continues the sequence
- * number) and put the caret after the marker.
+ * a newline + the same marker (task keeps its own marker form — `-[]`, `- [ ]` etc. —
+ * per user-results #4; ordered continues the sequence number) and put the caret after
+ * the marker.
  */
 export function continueListSpec(state: EditorState): TransactionSpec | null {
   const range = state.selection.main
@@ -582,8 +776,7 @@ export function continueListSpec(state: EditorState): TransactionSpec | null {
     return { changes: { from: line.from, to: line.to, insert: '' }, selection: { anchor: line.from } }
   }
   let nextMarker = info.marker
-  if (info.kind === 'task') nextMarker = '- [ ] '
-  else if (info.kind === 'ordered' && info.number !== undefined) nextMarker = `${info.number + 1}. `
+  if (info.kind === 'ordered' && info.number !== undefined) nextMarker = `${info.number + 1}. `
   const insert = '\n' + info.indent + nextMarker
   return { changes: { from: line.to, to: line.to, insert }, selection: { anchor: line.to + insert.length } }
 }

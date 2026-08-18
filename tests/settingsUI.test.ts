@@ -66,6 +66,7 @@ describe('settings modal', () => {
     expect(byId<HTMLInputElement>('settings-line-height').value).toBe('1.6')
     expect(byId<HTMLInputElement>('settings-line-wrap').checked).toBe(true)
     expect(byId<HTMLInputElement>('settings-autosave').checked).toBe(true)
+    expect(byId<HTMLInputElement>('settings-spellcheck').checked).toBe(true)
     expect(byId<HTMLInputElement>('settings-extra-menu').checked).toBe(false)
     // opening/refreshing never fires onApply
     expect(deps.onApply).not.toHaveBeenCalled()
@@ -121,9 +122,13 @@ describe('settings modal', () => {
     const extra = byId<HTMLInputElement>('settings-extra-menu')
     extra.checked = true
     extra.dispatchEvent(new Event('change'))
+    const spellCheck = byId<HTMLInputElement>('settings-spellcheck')
+    spellCheck.checked = false
+    spellCheck.dispatchEvent(new Event('change'))
     expect(deps.onApply).toHaveBeenNthCalledWith(1, { lineWrapping: false })
     expect(deps.onApply).toHaveBeenNthCalledWith(2, { autosaveDrafts: false })
     expect(deps.onApply).toHaveBeenNthCalledWith(3, { extraMenuAlwaysVisible: true })
+    expect(deps.onApply).toHaveBeenNthCalledWith(4, { spellCheck: false })
   })
 
   it('applies default mode radio changes', () => {
@@ -188,6 +193,7 @@ describe('settings modal', () => {
       theme: 'dark',
       fontSize: 20,
       lineWrapping: false,
+      spellCheck: false,
       defaultMode: 'source',
     })
     openSettingsModal()
@@ -195,6 +201,7 @@ describe('settings modal', () => {
     expect(inputByName('settings-mode', 'source').checked).toBe(true)
     expect(byId<HTMLInputElement>('settings-font-size').value).toBe('20')
     expect(byId<HTMLInputElement>('settings-line-wrap').checked).toBe(false)
+    expect(byId<HTMLInputElement>('settings-spellcheck').checked).toBe(false)
   })
 
   it('removes the document keydown listener on close', () => {

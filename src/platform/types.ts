@@ -30,6 +30,8 @@ export interface FileIO {
   readFile(path: string): Promise<string>
   /** Platform confirm dialog (browser: window.confirm; Tauri: native dialog). */
   confirm(message: string): Promise<boolean>
+  /** Platform message dialog with an OK button (Tauri: native dialog — window.alert is a no-op in the webview, user-results C9; browser: window.alert). */
+  alert(message: string): Promise<void>
   /** Raw JSON settings blob, or null when nothing stored yet. */
   readSettings(): Promise<string | null>
   writeSettings(json: string): Promise<void>

@@ -74,6 +74,20 @@ describe('bold', () => {
     expect(tr.state.selection.main.head).toBe(7)
   })
 
+  it('unwraps with an empty caret inside the node (E1)', () => {
+    expect(applyTo('xx **bold** yy', 6, undefined, toggleBoldSpec(stateOf('xx **bold** yy', 6)))).toEqual({
+      doc: 'xx bold yy',
+      head: 4,
+    })
+  })
+
+  it('does NOT touch __-marked emphasis — underline owns it (E4)', () => {
+    const state = stateOf('xx __und__ yy', 6)
+    const tr = state.update(toggleBoldSpec(state))
+    expect(tr.state.doc.toString()).toBe('xx __und__ yy')
+    expect(tr.state.selection.main.head).toBe(6)
+  })
+
   it('wrapping still works when the selection is NOT inside an existing node', () => {
     expect(applyTo('ab', 0, 2, toggleBoldSpec(stateOf('ab', 0, 2)))).toEqual({ doc: '**ab**', head: 4 })
   })
@@ -98,18 +112,39 @@ describe('italic', () => {
 })
 
 describe('underline', () => {
-  it('wraps a selection', () => {
-    expect(applyTo('b', 0, 1, toggleUnderlineSpec(stateOf('b', 0, 1)))).toEqual({ doc: '<u>b</u>', head: 4 })
+  it('wraps a selection in __ (E3)', () => {
+    expect(applyTo('b', 0, 1, toggleUnderlineSpec(stateOf('b', 0, 1)))).toEqual({ doc: '__b__', head: 3 })
   })
 
   it('unwraps when already wrapped', () => {
-    expect(applyTo('<u>b</u>', 0, 8, toggleUnderlineSpec(stateOf('<u>b</u>', 0, 8)))).toEqual({ doc: 'b', head: 1 })
+    expect(applyTo('__b__', 0, 5, toggleUnderlineSpec(stateOf('__b__', 0, 5)))).toEqual({ doc: 'b', head: 1 })
   })
 
-  it('empty selection inserts <u></u> with the caret between the tags', () => {
+  it('empty selection inserts ____ with the caret between the pairs', () => {
     expect(applyTo('ab', 1, undefined, toggleUnderlineSpec(stateOf('ab', 1)))).toEqual({
-      doc: 'a<u></u>b',
+      doc: 'a____b',
+      head: 3,
+    })
+  })
+
+  it('unwraps with an empty caret inside __-emphasis (E1/E3)', () => {
+    expect(applyTo('xx __und__ yy', 6, undefined, toggleUnderlineSpec(stateOf('xx __und__ yy', 6)))).toEqual({
+      doc: 'xx und yy',
       head: 4,
+    })
+  })
+
+  it('does NOT touch **-marked emphasis — bold owns it (E4)', () => {
+    const state = stateOf('xx **bold** yy', 6)
+    const tr = state.update(toggleUnderlineSpec(state))
+    expect(tr.state.doc.toString()).toBe('xx **bold** yy')
+    expect(tr.state.selection.main.head).toBe(6)
+  })
+
+  it('unwraps a literal __ pair that lezer does not parse as emphasis', () => {
+    expect(applyTo('a__run__b', 4, undefined, toggleUnderlineSpec(stateOf('a__run__b', 4)))).toEqual({
+      doc: 'arunb',
+      head: 2,
     })
   })
 })
@@ -185,8 +220,8 @@ describe('toggleList', () => {
     })
   })
 
-  it('adds task markers', () => {
-    expect(applyTo('a', 0, 1, toggleListSpec(stateOf('a', 0, 1), 'task'))).toEqual({ doc: '- [ ] a', head: 7 })
+  it('adds task markers with the default -[] form (Other #4)', () => {
+    expect(applyTo('a', 0, 1, toggleListSpec(stateOf('a', 0, 1), 'task'))).toEqual({ doc: '-[] a', head: 5 })
   })
 
   it('toggles off when every selected line already has the marker', () => {
@@ -194,6 +229,26 @@ describe('toggleList', () => {
       doc: 'a\nb',
       head: 3,
     })
+  })
+
+  it('unordered toggle removes the whole task marker, checkbox included (E7)', () => {
+    for (const marker of ['- [ ] ', '-[] ', '- [ ]', '-[]']) {
+      const doc = marker + 'task'
+      expect(applyTo(doc, 1, undefined, toggleListSpec(stateOf(doc, 1), 'unordered'))).toEqual({
+        doc: 'task',
+        head: 0,
+      })
+    }
+  })
+
+  it('task toggle-off removes the whole marker on every spelling (Other #4)', () => {
+    for (const marker of ['- [ ] ', '-[] ', '- [ ] ', '-[ ] ']) {
+      const doc = marker + 'task'
+      expect(applyTo(doc, 1, undefined, toggleListSpec(stateOf(doc, 1), 'task'))).toEqual({
+        doc: 'task',
+        head: 0,
+      })
+    }
   })
 
   it('operates on the caret line when the selection is empty', () => {
@@ -230,6 +285,27 @@ describe('toggleInlineCode', () => {
   it('empty selection inserts `` with the caret between', () => {
     expect(applyTo('ab', 1, undefined, toggleInlineCodeSpec(stateOf('ab', 1)))).toEqual({ doc: 'a``b', head: 2 })
   })
+
+  it('unwraps with an empty caret inside a code span (E9)', () => {
+    expect(applyTo('xx `code` yy', 6, undefined, toggleInlineCodeSpec(stateOf('xx `code` yy', 6)))).toEqual({
+      doc: 'xx code yy',
+      head: 5,
+    })
+  })
+
+  it('unwraps with a selection inside a code span (E9)', () => {
+    expect(applyTo('xx `code` yy', 5, 8, toggleInlineCodeSpec(stateOf('xx `code` yy', 5, 8)))).toEqual({
+      doc: 'xx code yy',
+      head: 7,
+    })
+  })
+
+  it('unwraps a double-backtick span with both delimiter pairs', () => {
+    expect(applyTo('a ``b`` c', 4, undefined, toggleInlineCodeSpec(stateOf('a ``b`` c', 4)))).toEqual({
+      doc: 'a b c',
+      head: 2,
+    })
+  })
 })
 
 describe('toggleCodeBlock', () => {
@@ -253,6 +329,13 @@ describe('toggleCodeBlock', () => {
       head: 6,
     })
   })
+
+  it('removes the WHOLE fenced block with an empty caret inside (E10)', () => {
+    expect(applyTo('```\ncode\n```', 5, undefined, toggleCodeBlockSpec(stateOf('```\ncode\n```', 5)))).toEqual({
+      doc: '',
+      head: 0,
+    })
+  })
 })
 
 describe('insertLink', () => {
@@ -267,6 +350,24 @@ describe('insertLink', () => {
     expect(result.doc).toBe('[text](url)')
     expect(result.head).toBe(5)
   })
+
+  it('re-invoking on the untouched template deletes it (E11)', () => {
+    const result = applyTo('[text](url)', 11, undefined, insertLinkSpec(stateOf('[text](url)', 11)))
+    expect(result.doc).toBe('')
+    expect(result.head).toBe(0)
+  })
+
+  it('a caret inside an existing link replaces it with its text (E11)', () => {
+    const result = applyTo('see [link](url) end', 8, undefined, insertLinkSpec(stateOf('see [link](url) end', 8)))
+    expect(result.doc).toBe('see link end')
+    expect(result.head).toBe(7)
+  })
+
+  it('a selection inside an existing link replaces it with its text (E11)', () => {
+    const result = applyTo('[link](url)', 1, 5, insertLinkSpec(stateOf('[link](url)', 1, 5)))
+    expect(result.doc).toBe('link')
+    expect(result.head).toBe(4)
+  })
 })
 
 describe('insertImage', () => {
@@ -280,6 +381,18 @@ describe('insertImage', () => {
     const result = applyTo('', 0, undefined, insertImageSpec(stateOf('', 0)))
     expect(result.doc).toBe('![alt](image.png)')
     expect(result.head).toBe(5)
+  })
+
+  it('re-invoking on the untouched template deletes it (E12)', () => {
+    const result = applyTo('![alt](image.png)', 17, undefined, insertImageSpec(stateOf('![alt](image.png)', 17)))
+    expect(result.doc).toBe('')
+    expect(result.head).toBe(0)
+  })
+
+  it('a caret inside an existing image replaces it with its alt text (E12)', () => {
+    const result = applyTo('![alt](image.png)', 4, undefined, insertImageSpec(stateOf('![alt](image.png)', 4)))
+    expect(result.doc).toBe('alt')
+    expect(result.head).toBe(2)
   })
 })
 
@@ -384,6 +497,27 @@ describe('sub/sup/highlight', () => {
     expect(applyTo('==b==', 0, 5, toggleHighlightSpec(stateOf('==b==', 0, 5)))).toEqual({ doc: 'b', head: 1 })
     expect(applyTo('ab', 1, undefined, toggleHighlightSpec(stateOf('ab', 1)))).toEqual({ doc: 'a====b', head: 3 })
   })
+
+  it('sub unwraps with an empty caret inside the tags (E18)', () => {
+    expect(applyTo('a<sub>x</sub>b', 5, undefined, toggleSubscriptSpec(stateOf('a<sub>x</sub>b', 5)))).toEqual({
+      doc: 'axb',
+      head: 1,
+    })
+  })
+
+  it('sup unwraps with an empty caret inside the tags (E19)', () => {
+    expect(applyTo('a<sup>x</sup>b', 5, undefined, toggleSuperscriptSpec(stateOf('a<sup>x</sup>b', 5)))).toEqual({
+      doc: 'axb',
+      head: 1,
+    })
+  })
+
+  it('highlight unwraps with an empty caret inside the pair (E20)', () => {
+    expect(applyTo('a==hi==b', 4, undefined, toggleHighlightSpec(stateOf('a==hi==b', 4)))).toEqual({
+      doc: 'ahib',
+      head: 2,
+    })
+  })
 })
 
 describe('insertText', () => {
@@ -429,6 +563,13 @@ describe('continueList', () => {
     expect(continueListSpec(stateOf('- [ ] item', 10))).toEqual({
       changes: { from: 10, to: 10, insert: '\n- [ ] ' },
       selection: { anchor: 17 },
+    })
+  })
+
+  it('task items keep the -[] marker form (Other #4)', () => {
+    expect(continueListSpec(stateOf('-[] item', 7))).toEqual({
+      changes: { from: 8, to: 8, insert: '\n-[] ' },
+      selection: { anchor: 13 },
     })
   })
 

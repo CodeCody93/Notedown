@@ -36,15 +36,49 @@ describe('parseSession', () => {
     expect(parseSession('{ not json')).toBeNull()
   })
 
-  it('parses a minimal session with null path', () => {
-    expect(parseSession('{"name":"x","ts":1}')).toEqual({ path: null, name: 'x', ts: 1 })
+  it('parses a minimal session with null path (old format, no cursor → null)', () => {
+    expect(parseSession('{"name":"x","ts":1}')).toEqual({ path: null, name: 'x', ts: 1, cursor: null })
   })
 
-  it('parses a session with a path', () => {
+  it('parses a session with a path (old format, no cursor → null)', () => {
     expect(parseSession('{"path":"/a.md","name":"a.md","ts":3}')).toEqual({
       path: '/a.md',
       name: 'a.md',
       ts: 3,
+      cursor: null,
+    })
+  })
+
+  it('parses a cursor (1-based line/col) when present', () => {
+    expect(parseSession('{"path":"/a.md","name":"a.md","ts":3,"cursor":{"line":4,"col":12}}')).toEqual({
+      path: '/a.md',
+      name: 'a.md',
+      ts: 3,
+      cursor: { line: 4, col: 12 },
+    })
+  })
+
+  it('cursor null in JSON → cursor null', () => {
+    expect(parseSession('{"name":"x","ts":1,"cursor":null}')).toEqual({
+      path: null,
+      name: 'x',
+      ts: 1,
+      cursor: null,
+    })
+  })
+
+  it('malformed cursor (missing/NaN fields) → cursor null, session still parses', () => {
+    expect(parseSession('{"name":"x","ts":1,"cursor":{"line":"4"}}')).toEqual({
+      path: null,
+      name: 'x',
+      ts: 1,
+      cursor: null,
+    })
+    expect(parseSession('{"name":"x","ts":1,"cursor":42}')).toEqual({
+      path: null,
+      name: 'x',
+      ts: 1,
+      cursor: null,
     })
   })
 
@@ -54,7 +88,7 @@ describe('parseSession', () => {
 })
 
 describe('shouldRecover', () => {
-  const session = { path: null, name: 'x', ts: 1 }
+  const session = { path: null, name: 'x', ts: 1, cursor: null }
 
   it('null session → false', () => {
     expect(shouldRecover(null, 'x')).toBe(false)

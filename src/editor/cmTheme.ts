@@ -35,12 +35,17 @@ export function editorThemeExtension(): Extension {
       lineHeight: 'var(--cm-line-height, 1.6)',
       caretColor: 'var(--accent)',
     },
-    // The plugin's theme sets `.cm-line { line-height: 1.75 }` explicitly, which
-    // would beat the inherited value from `.cm-content`; `editor.ts` defines
-    // `--cm-line-height` on BOTH `view.dom` and `view.contentDOM`, so resolving
-    // the var directly on `.cm-line` (later stylesheet, equal specificity) makes
-    // the user's line-height setting win over the plugin's hard-coded 1.75.
-    '.cm-line': {
+    // The plugin's theme sets `.cm-line { line-height: 1.75 }` explicitly. Each
+    // `EditorView.theme()` prefixes its selectors with a generated class, so the
+    // plugin's rule compiles to `.ͼX .cm-line` (0,2,0) and — because style-mod
+    // mounts its modules in reverse extension order — lands AFTER ours in the
+    // same `<style>` tag, beating an equal-specificity override (verified
+    // empirically: the H3 line-height setting appeared to do nothing).
+    // `.cm-content .cm-line` compiles to `.ͼY .cm-content .cm-line` (0,3,0),
+    // which wins regardless of stylesheet order. `editor.ts` defines
+    // `--cm-line-height` on BOTH `view.dom` and `view.contentDOM`, so the var
+    // resolves on every `.cm-line`.
+    '.cm-content .cm-line': {
       lineHeight: 'var(--cm-line-height, 1.6)',
     },
 

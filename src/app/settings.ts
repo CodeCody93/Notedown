@@ -9,6 +9,7 @@ export interface Settings {
   lineWrapping: boolean
   autosaveDrafts: boolean
   extraMenuAlwaysVisible: boolean
+  spellCheck: boolean
   defaultMode: 'live' | 'source'
 }
 
@@ -19,6 +20,7 @@ export const DEFAULT_SETTINGS: Settings = {
   lineWrapping: true,
   autosaveDrafts: true,
   extraMenuAlwaysVisible: false,
+  spellCheck: true,
   defaultMode: 'live',
 }
 
@@ -30,7 +32,9 @@ export function mergeSettings(stored: Partial<Settings> | null | undefined): Set
     const value = stored[key]
     if (value !== undefined) {
       const target = merged as unknown as Record<string, unknown>
-      target[key] = value
+      // 'preview' mode was removed — a stored value from an older build must not
+      // resurrect it, so coerce anything outside the narrowed union to 'live'.
+      target[key] = key === 'defaultMode' && value !== 'live' && value !== 'source' ? 'live' : value
     }
   }
   return merged

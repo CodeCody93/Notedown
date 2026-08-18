@@ -122,9 +122,9 @@ const HEADER_ITEMS: MenuEntry[] = [
 ]
 
 const LIST_ITEMS: MenuEntry[] = [
-  { id: 'list-unordered', label: 'Unordered' },
-  { id: 'list-ordered', label: 'Ordered' },
-  { id: 'list-task', label: 'Task' },
+  { id: 'list-unordered', label: 'Unordered', hotkey: 'list' },
+  { id: 'list-ordered', label: 'Ordered', hotkey: 'list-ordered' },
+  { id: 'list-task', label: 'Task', hotkey: 'task-list' },
 ]
 
 export const EXTRA_MENU: MenuEntry[] = [
@@ -133,16 +133,16 @@ export const EXTRA_MENU: MenuEntry[] = [
   { id: 'code-block', label: 'Code block', hotkey: 'code-block', icon: ICON.codeBlock },
   { id: 'link', label: 'Link', hotkey: 'link', icon: ICON.link },
   { id: 'image', label: 'Image', hotkey: 'image', icon: ICON.image },
-  { id: 'table', label: 'Table', icon: ICON.table },
-  { id: 'hr', label: 'Horizontal rule', icon: ICON.hr },
-  { id: 'footnote', label: 'Footnote', icon: ICON.footnote },
-  { id: 'task-list', label: 'Task list', icon: ICON.taskList },
-  { id: 'emoji', label: 'Emoji picker', icon: ICON.emoji },
-  { id: 'heading-id', label: 'Heading ID', icon: ICON.headingId },
-  { id: 'def-list', label: 'Definition list', icon: ICON.defList },
-  { id: 'sub', label: 'Subscript', icon: ICON.sub },
-  { id: 'sup', label: 'Superscript', icon: ICON.sup },
-  { id: 'highlight', label: 'Highlight', icon: ICON.highlight },
+  { id: 'table', label: 'Table', hotkey: 'table', icon: ICON.table },
+  { id: 'hr', label: 'Horizontal rule', hotkey: 'hr', icon: ICON.hr },
+  { id: 'footnote', label: 'Footnote', hotkey: 'footnote', icon: ICON.footnote },
+  { id: 'task-list', label: 'Task list', hotkey: 'task-list', icon: ICON.taskList },
+  { id: 'emoji', label: 'Emoji picker', hotkey: 'emoji', icon: ICON.emoji },
+  { id: 'heading-id', label: 'Heading ID', hotkey: 'heading-id', icon: ICON.headingId },
+  { id: 'def-list', label: 'Definition list', hotkey: 'def-list', icon: ICON.defList },
+  { id: 'sub', label: 'Subscript', hotkey: 'sub', icon: ICON.sub },
+  { id: 'sup', label: 'Superscript', hotkey: 'sup', icon: ICON.sup },
+  { id: 'highlight', label: 'Highlight', hotkey: 'highlight', icon: ICON.highlight },
 ]
 
 /** Toolbar groups: history/clipboard, inline, blocks (+ header/list), Extra dropdown. */

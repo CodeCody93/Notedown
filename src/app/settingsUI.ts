@@ -26,6 +26,7 @@ interface SettingsEls {
   lineHeight: HTMLInputElement
   lineWrapping: HTMLInputElement
   autosaveDrafts: HTMLInputElement
+  spellCheck: HTMLInputElement
   extraMenu: HTMLInputElement
 }
 
@@ -107,6 +108,7 @@ function buildEditingFieldset(): {
   lineHeight: HTMLInputElement
   lineWrapping: HTMLInputElement
   autosaveDrafts: HTMLInputElement
+  spellCheck: HTMLInputElement
 } {
   const fieldset = buildFieldset('Editing')
 
@@ -138,6 +140,11 @@ function buildEditingFieldset(): {
   autosaveDrafts.id = 'settings-autosave'
   fieldset.appendChild(row(autosaveDrafts, 'Autosave drafts'))
 
+  const spellCheck = document.createElement('input')
+  spellCheck.type = 'checkbox'
+  spellCheck.id = 'settings-spellcheck'
+  fieldset.appendChild(row(spellCheck, 'Spell check'))
+
   const modeLabel = document.createElement('div')
   modeLabel.className = 'settings-group-label'
   modeLabel.textContent = 'Default editing mode'
@@ -153,7 +160,7 @@ function buildEditingFieldset(): {
   }
   fieldset.appendChild(modeGroup)
 
-  return { fieldset, fontSize, lineHeight, lineWrapping, autosaveDrafts }
+  return { fieldset, fontSize, lineHeight, lineWrapping, autosaveDrafts, spellCheck }
 }
 
 function buildMenubarFieldset(): { fieldset: HTMLFieldSetElement; extraMenu: HTMLInputElement } {
@@ -214,6 +221,7 @@ function buildDialog(): SettingsEls {
     lineHeight: editing.lineHeight,
     lineWrapping: editing.lineWrapping,
     autosaveDrafts: editing.autosaveDrafts,
+    spellCheck: editing.spellCheck,
     extraMenu: menubar.extraMenu,
   }
 }
@@ -283,6 +291,10 @@ function onAutosaveChange(ev: Event): void {
   applyPatch({ autosaveDrafts: (ev.target as HTMLInputElement).checked })
 }
 
+function onSpellCheckChange(ev: Event): void {
+  applyPatch({ spellCheck: (ev.target as HTMLInputElement).checked })
+}
+
 function onExtraMenuChange(ev: Event): void {
   applyPatch({ extraMenuAlwaysVisible: (ev.target as HTMLInputElement).checked })
 }
@@ -299,6 +311,7 @@ function attachListeners(): void {
   els.lineHeight.addEventListener('input', onLineHeightInput)
   els.lineWrapping.addEventListener('change', onLineWrappingChange)
   els.autosaveDrafts.addEventListener('change', onAutosaveChange)
+  els.spellCheck.addEventListener('change', onSpellCheckChange)
   els.extraMenu.addEventListener('change', onExtraMenuChange)
   for (const radio of els.dialog.querySelectorAll<HTMLInputElement>('input[type="radio"]')) {
     radio.addEventListener('change', onRadioChange)
@@ -315,6 +328,7 @@ function detachListeners(): void {
   els.lineHeight.removeEventListener('input', onLineHeightInput)
   els.lineWrapping.removeEventListener('change', onLineWrappingChange)
   els.autosaveDrafts.removeEventListener('change', onAutosaveChange)
+  els.spellCheck.removeEventListener('change', onSpellCheckChange)
   els.extraMenu.removeEventListener('change', onExtraMenuChange)
   for (const radio of els.dialog.querySelectorAll<HTMLInputElement>('input[type="radio"]')) {
     radio.removeEventListener('change', onRadioChange)
@@ -339,6 +353,7 @@ function refreshValues(): void {
   els.lineHeight.value = String(s.lineHeight)
   els.lineWrapping.checked = s.lineWrapping
   els.autosaveDrafts.checked = s.autosaveDrafts
+  els.spellCheck.checked = s.spellCheck
   els.extraMenu.checked = s.extraMenuAlwaysVisible
 }
 

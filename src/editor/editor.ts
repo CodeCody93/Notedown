@@ -13,6 +13,7 @@ import { EditorState, Prec, StateEffect, Transaction, type Extension, type Trans
 import { EditorView, keymap, placeholder, type Command, type KeyBinding, ViewUpdate } from '@codemirror/view'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from '@codemirror/commands'
+import { search, searchKeymap } from '@codemirror/search'
 import { livePreviewExtensions, wireMouseSelection } from './livePreview'
 import { editorThemeExtension } from './cmTheme'
 
@@ -48,17 +49,27 @@ function hasImage(e: ClipboardEvent): boolean {
 }
 
 export interface EditorController {
-  /** Programmatic replace of the whole doc. MUST NOT fire the onChange callbacks. */
-  setContent(text: string): void
+  /** Programmatic replace of the whole doc. MUST NOT fire the onChange callbacks. Returns true when the content actually changed (false = no-op). */
+  setContent(text: string): boolean
   getContent(): string
   focus(): void
   destroy(): void
+  /** Root DOM element of the editor (anchor for popovers such as the emoji picker). */
+  getDom(): HTMLElement
   setMode(mode: 'live' | 'source'): void
   setWrapping(wrap: boolean): void
   /** Sets --cm-font-size on the editor DOM (px) */
   setFontSize(px: number): void
   /** Sets --cm-line-height on the editor DOM (view.dom + view.contentDOM) */
   setLineHeight(n: number): void
+  /** Clear the undo/redo history (after any full-document replace: new/open/recover). */
+  resetHistory(): void
+  /** Move the main selection to the given 1-based line/col (clamped to the document). */
+  setCursor(line: number, col: number): void
+  /** 1-based line/col of the main selection head. */
+  getCursor(): EditorCursor
+  /** Enable/disable native spell checking on the editable surface. */
+  setSpellCheck(enabled: boolean): void
   /** Register a callback for USER edits (fires with the full new content). */
   onChange(cb: (content: string) => void): void
   /** Register a callback for cursor moves (fires on selection/doc change). */
@@ -100,14 +111,20 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
 
   // Built as a function so setMode/setWrapping can reconfigure with a fresh extension
   // list. `EditorView.lineWrapping` is included only when wrapping is enabled.
-  function buildExtensions(mode: 'live' | 'source', wrap: boolean): Extension[] {
+  // `includeHistory=false` drops the undo-history field (used by resetHistory to
+  // wipe the stacks: the field is a module-level singleton, so reconfiguring with
+  // it present would carry the old history over).
+  function buildExtensions(mode: 'live' | 'source', wrap: boolean, includeHistory = true): Extension[] {
     const extensions: Extension[] = [
       // GFM base (markdownLanguage): the default `markdown()` uses the CommonMark
       // parser, which lacks strikethrough (`~~x~~` rendered as plain text).
       markdown({ base: markdownLanguage }),
       ...livePreviewExtensions({ collapse: mode === 'live', imageResolver: opts?.imageResolver }),
       editorThemeExtension(),
-      history(),
+      // Find/replace (user-results Other #8): Mod-f opens the search panel,
+      // Mod-h opens replace. No app shortcut uses Mod-h alone (header-cycle is
+      // Mod-Alt-h, hr is Mod-Shift-h). The .cm-search styles come from editor.css.
+      search(),
       keymap.of([
         // App-level bindings run BEFORE the base keymaps (first match wins):
         // - Mod-/ is handled at the window level (mode toggle); swallow it here so
@@ -117,12 +134,17 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
         { key: 'Mod-/', run: () => true },
         { key: 'Mod-Shift-z', run: redo },
         ...defaultKeymap,
-        ...historyKeymap,
+        ...searchKeymap,
+        ...(includeHistory ? historyKeymap : []),
         indentWithTab,
       ]),
       placeholder('Start typing your markdown here'),
       updateListener,
     ]
+    // The history field is a module-level singleton in @codemirror/commands, so a
+    // plain reconfigure would preserve it. Dropping it entirely is the only way to
+    // start a fresh (empty) undo/redo stack — see resetHistory.
+    if (includeHistory) extensions.push(history())
     // Extra keymap groups (formatting hotkeys + list-Enter continuation) are
     // each wrapped individually with keymap.of and raised to HIGH precedence
     // (`Prec.high`), so they are checked BEFORE the base keymap above — the
@@ -179,14 +201,15 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
   const cleanupMouseSelection = wireMouseSelection(view)
 
   return {
-    setContent(text: string): void {
-      if (text === view.state.doc.toString()) return
+    setContent(text: string): boolean {
+      if (text === view.state.doc.toString()) return false
       suppressChange = true
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: text },
         annotations: Transaction.addToHistory.of(false),
       })
       suppressChange = false
+      return true
     },
     getContent(): string {
       return view.state.doc.toString()
@@ -194,9 +217,38 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
     focus(): void {
       view.focus()
     },
+    getDom(): HTMLElement {
+      return view.dom
+    },
     destroy(): void {
       cleanupMouseSelection()
       view.destroy()
+    },
+    resetHistory(): void {
+      // history() wraps a module-level singleton StateField, so reconfiguring with
+      // a rebuilt extension list would KEEP the field and its undo/redo stacks.
+      // Two-step: drop the history extension (field removed → stacks gone), then
+      // re-add it (fresh field starts empty). Both dispatches are synchronous, so
+      // no intermediate state is ever observable.
+      view.dispatch({ effects: StateEffect.reconfigure.of(buildExtensions(mode, wrap, false)) })
+      view.dispatch({ effects: StateEffect.reconfigure.of(buildExtensions(mode, wrap, true)) })
+    },
+    setCursor(line: number, col: number): void {
+      const doc = view.state.doc
+      const lineNo = Math.max(1, Math.min(line, doc.lines))
+      const lineInfo = doc.line(lineNo)
+      const pos = Math.max(lineInfo.from, Math.min(lineInfo.to, lineInfo.from + Math.max(0, col - 1)))
+      view.dispatch({ selection: { anchor: pos, head: pos }, scrollIntoView: true })
+    },
+    getCursor(): EditorCursor {
+      const head = view.state.selection.main.head
+      const lineInfo = view.state.doc.lineAt(head)
+      return { line: lineInfo.number, col: head - lineInfo.from + 1 }
+    },
+    setSpellCheck(enabled: boolean): void {
+      const value = String(enabled)
+      view.dom.setAttribute('spellcheck', value)
+      view.contentDOM.setAttribute('spellcheck', value)
     },
     setMode(nextMode: 'live' | 'source'): void {
       if (nextMode === mode) return

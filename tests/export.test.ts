@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
-// M4 Packet 1 — shared markdown-it render pipeline (src/app/export.ts).
+// M4 Packet 4 — export fixes: E3 (__ renders <u>), Other #5 (-# subtext
+// paragraphs), G2 (standalone export follows system dark mode instead of
+// baking a theme), Other #4 (task-list shorthand markers -[] / -[ ] / -[x]).
 // DOMPurify needs a window, hence the jsdom environment.
 import { describe, it, expect } from 'vitest'
 import {
@@ -10,7 +12,6 @@ import {
   HLJS_CSS_DARK,
   escapeHtml,
 } from '../src/app/export'
-import { HLJS_CSS_LIGHT } from '../src/styles/hljs-themes'
 
 describe('renderMarkdown — cheat-sheet features (PLAN §6B)', () => {
   const cases: Array<{
@@ -70,6 +71,72 @@ describe('renderMarkdown — cheat-sheet features (PLAN §6B)', () => {
   })
 })
 
+describe('renderMarkdown — underline via __ (E3)', () => {
+  it('renders __x__ as <u>x</u> and keeps **y** as <strong>y</strong>', () => {
+    const html = renderMarkdown('__x__ and **y**')
+    expect(html).toContain('<u>x</u>')
+    expect(html).toContain('<strong>y</strong>')
+    expect(html).not.toContain('<strong>x</strong>')
+  })
+})
+
+describe('renderMarkdown — -# subtext paragraphs (Other #5)', () => {
+  it('renders "-# note" as <p class="md-subtext">note</p>', () => {
+    const html = renderMarkdown('-# note')
+    expect(html).toBe('<p class="md-subtext">note</p>\n')
+  })
+
+  it('keeps inline formatting inside a subtext paragraph', () => {
+    const html = renderMarkdown('-# *em* note')
+    expect(html).toBe('<p class="md-subtext"><em>em</em> note</p>\n')
+  })
+
+  it('renders a marker with no content as a plain empty paragraph (no class)', () => {
+    expect(renderMarkdown('-#')).toBe('<p></p>\n')
+    expect(renderMarkdown('-# ')).toBe('<p></p>\n')
+  })
+
+  it('leaves ordinary paragraphs untouched', () => {
+    const html = renderMarkdown('plain')
+    expect(html).toBe('<p>plain</p>\n')
+    expect(html).not.toContain('md-subtext')
+  })
+})
+
+describe('renderMarkdown — task-list shorthand markers (Other #4)', () => {
+  const cases: Array<[string, boolean]> = [
+    ['-[] task', false],
+    ['-[ ] task', false],
+    ['-[x] done', true],
+    ['-[X] done', true],
+  ]
+
+  it.each(cases)('turns %s into a task list item', (markdown, checked) => {
+    const html = renderMarkdown(markdown)
+    expect(html).toContain('<li class="task-list-item">')
+    expect(html).toContain('type="checkbox"')
+    if (checked) expect(html).toContain('checked=""')
+  })
+
+  it('still supports the standard "- [ ]" marker', () => {
+    const html = renderMarkdown('- [ ] task')
+    expect(html).toContain('<li class="task-list-item">')
+    expect(html).toContain('type="checkbox"')
+  })
+
+  it('leaves -[] markers inside fenced code blocks literal', () => {
+    const html = renderMarkdown('```\n-[] raw\n```')
+    expect(html).toContain('-[] raw')
+    expect(html).not.toContain('- [ ] raw')
+  })
+
+  it('leaves -[] markers inside indented code blocks literal', () => {
+    const html = renderMarkdown('    -[] code')
+    expect(html).toContain('-[] code')
+    expect(html).not.toContain('<ul')
+  })
+})
+
 describe('renderMarkdown — security (PLAN §16)', () => {
   it('strips <script> tags', () => {
     const html = renderMarkdown('<script>alert(1)</script>')
@@ -94,7 +161,7 @@ describe('renderStandaloneHtml', () => {
   it('produces a complete standalone document with CSP and rendered content', () => {
     const doc = renderStandaloneHtml('# Hi', { title: 'My Doc', theme: 'light' })
     expect(doc).toContain('<!doctype html>')
-    expect(doc).toContain('<html lang="en" data-theme="light">')
+    expect(doc).toContain('<html lang="en">')
     expect(doc).toContain("default-src 'none'")
     expect(doc).toContain('<title>My Doc</title>')
     expect(doc).toContain('<h1>Hi</h1>')
@@ -107,16 +174,24 @@ describe('renderStandaloneHtml', () => {
     expect(doc).toContain('<title>A &amp; B &lt;C&gt;&quot;&#39;</title>')
   })
 
-  it('light theme embeds the light hljs stylesheet only', () => {
+  it('does not bake a theme (G2): both hljs variants + prefers-color-scheme, no data-theme', () => {
     const doc = renderStandaloneHtml('# Hi', { title: 'T', theme: 'light' })
+    // Both hljs theme stylesheets are embedded.
     expect(doc).toContain(HLJS_CSS_LIGHT)
-    expect(doc).not.toContain(HLJS_CSS_DARK)
+    expect(doc).toContain(HLJS_CSS_DARK)
+    // Light tokens are the default :root; dark tokens ride in the media query.
+    expect(doc).toContain('--bg: #ffffff')
+    expect(doc).toContain('--bg: #1e1e1e')
+    // One media query for the theme tokens, one for the hljs themes.
+    expect(doc.match(/@media \(prefers-color-scheme: dark\)/g)).toHaveLength(2)
+    // No baked theme attribute on <html> and no single-variant selection.
+    expect(doc).not.toContain('data-theme')
   })
 
-  it('dark theme embeds the dark hljs stylesheet only', () => {
-    const doc = renderStandaloneHtml('# Hi', { title: 'T', theme: 'dark' })
-    expect(doc).toContain(HLJS_CSS_DARK)
-    expect(doc).not.toContain(HLJS_CSS_LIGHT)
+  it('ignores the theme option — light and dark exports are identical', () => {
+    const light = renderStandaloneHtml('# Hi', { title: 'T', theme: 'light' })
+    const dark = renderStandaloneHtml('# Hi', { title: 'T', theme: 'dark' })
+    expect(dark).toBe(light)
   })
 })
 

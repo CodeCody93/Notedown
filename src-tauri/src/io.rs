@@ -274,6 +274,18 @@ pub fn confirm_dialog(app: AppHandle, message: String) -> Result<bool, String> {
     Ok(reply == MessageDialogResult::Yes)
 }
 
+/// `alert_dialog(app, message)` — blocking native message dialog with a single
+/// OK button. The Tauri webview's `window.alert` is a no-op (user-results C9),
+/// so the UI routes through this command instead. Mirrors `confirm_dialog`.
+#[tauri::command]
+pub fn alert_dialog(app: AppHandle, message: String) -> Result<(), String> {
+    app.dialog()
+        .message(message)
+        .title("MarkItDown")
+        .blocking_show();
+    Ok(())
+}
+
 /// `open_external(app, url)` — open a URL in the default external browser only
 /// (never `window.open` into the app). No `javascript:` URLs.
 #[tauri::command]

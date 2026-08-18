@@ -36,13 +36,23 @@ const ALL_IDS = [
   'header-6',
   'header-0',
   'list',
+  'list-ordered',
   'blockquote',
   'inline-code',
   'code-block',
   'link',
   'image',
+  'table',
+  'hr',
+  'footnote',
+  'task-list',
+  'emoji',
+  'heading-id',
+  'def-list',
+  'sub',
+  'sup',
+  'highlight',
   'toggle-mode',
-  'toggle-preview',
 ]
 
 describe('SHORTCUTS table', () => {
@@ -56,6 +66,32 @@ describe('SHORTCUTS table', () => {
     for (const def of SHORTCUTS) {
       expect(def.keys.length).toBeGreaterThan(0)
       expect(def.label.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('has no toggle-preview shortcut (preview mode removed)', () => {
+    expect(SHORTCUTS.some((d) => d.id === 'toggle-preview')).toBe(false)
+  })
+
+  it('keeps the exact chords for the E6/E12 shortcut additions and image re-chord', () => {
+    const byId = new Map(SHORTCUTS.map((d) => [d.id, d]))
+    // E12: Ctrl+Shift+I collides with Chromium devtools → switch image to Mod-Alt-i.
+    expect(byId.get('image')?.keys).toEqual(['Mod-Alt-i'])
+    const chords: Record<string, string[]> = {
+      'list-ordered': ['Mod-Alt-o'],
+      'task-list': ['Mod-Alt-l'],
+      table: ['Mod-Alt-t'],
+      hr: ['Mod-Shift-h'],
+      footnote: ['Mod-Shift-f'],
+      emoji: ['Mod-Alt-e'],
+      'heading-id': ['Mod-Shift-2'],
+      'def-list': ['Mod-Alt-d'],
+      sub: ['Mod-Alt-s'],
+      sup: ['Mod-Alt-u'],
+      highlight: ['Mod-Alt-m'],
+    }
+    for (const [id, keys] of Object.entries(chords)) {
+      expect(byId.get(id)?.keys, `chord for "${id}"`).toEqual(keys)
     }
   })
 })
