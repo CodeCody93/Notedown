@@ -656,10 +656,186 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
     },
   })
 
+  // ---- Highlight (`==text==`) on ALL lines (E20) ---------------------------
+  // Unlike other line-text syntax, highlight renders on active lines too so the
+  // yellow background is visible while typing (matching bold/italic behavior).
+  // `==` marks are revealed faded when the caret is inside the region, hidden
+  // on inactive lines (same reveal logic as inline marks in the tree walk).
+  for (let lineNum = 1; lineNum <= state.doc.lines; lineNum++) {
+    if (skipLines.has(lineNum) || replacedLines.has(lineNum)) continue
+    const line = state.doc.line(lineNum)
+    const text = line.text
+    if (text.length === 0) continue
+
+    const eqRe = /==/g
+    const eqPositions: number[] = []
+    let eqMatch: RegExpExecArray | null
+    while ((eqMatch = eqRe.exec(text)) !== null) eqPositions.push(line.from + eqMatch.index)
+
+    // Content between paired == marks: always apply highlight styling
+    for (let i = 0; i + 1 < eqPositions.length; i += 2) {
+      const open = eqPositions[i]
+      const close = eqPositions[i + 1]
+      if (close > open + 2) {
+        decorations.push(Decoration.mark({ class: 'cm-highlight-content' }).range(open + 2, close))
+      }
+    }
+
+    // == marks: reveal faded when caret is inside the highlight region,
+    // hide on inactive lines otherwise.
+    const isActiveHL = activeLines.has(lineNum)
+    for (let i = 0; i + 1 < eqPositions.length; i += 2) {
+      const open = eqPositions[i]
+      const close = eqPositions[i + 1]
+      const caretInside =
+        !isDrag &&
+        isActiveHL &&
+        state.selection.ranges.some((r) => r.head >= open && r.head <= close + 2)
+      for (const pos of [open, close]) {
+        if (caretInside) {
+          decorations.push(
+            Decoration.mark({ class: 'cm-formatting-inline cm-formatting-inline-visible' }).range(pos, pos + 2),
+          )
+        } else {
+          decorations.push(
+            Decoration.replace({ widget: new EmptyInlineWidget(pos, pos + 2) }).range(pos, pos + 2),
+          )
+        }
+      }
+    }
+  }
+
+  // ---- Sub/sup on ALL lines (E18/E19/B17) ---------------------------------
+  // `<sub>/<sup>` tags, `~sub~` and `^sup^` render on active lines too so
+  // the styling is visible while typing. Delimiters are revealed faded when
+  // the caret is inside the region, hidden otherwise.
+  for (let lineNum = 1; lineNum <= state.doc.lines; lineNum++) {
+    if (skipLines.has(lineNum) || replacedLines.has(lineNum)) continue
+    const line = state.doc.line(lineNum)
+    const text = line.text
+    if (text.length === 0) continue
+    const isActiveLine = activeLines.has(lineNum)
+
+    // `<sub>…</sub>` / `<sup>…</sup>` tags
+    const tagRe = /<(\/)?(sub|sup)>/g
+    const tagPositions: { from: number; to: number; isClose: boolean; tag: 'sub' | 'sup' }[] = []
+    let tagMatch: RegExpExecArray | null
+    while ((tagMatch = tagRe.exec(text)) !== null) {
+      const from = line.from + tagMatch.index
+      const to = from + tagMatch[0].length
+      tagPositions.push({ from, to, isClose: tagMatch[1] === '/', tag: tagMatch[2] as 'sub' | 'sup' })
+    }
+    // Match open/close tags and style content between matched pairs
+    const matchedRanges: { from: number; to: number; tag: 'sub' | 'sup' }[] = []
+    const unmatchedTagIdxs = new Set<number>()
+    const opens: { tag: 'sub' | 'sup'; end: number; idx: number }[] = []
+    for (let i = 0; i < tagPositions.length; i++) {
+      const tp = tagPositions[i]
+      if (!tp.isClose) {
+        opens.push({ tag: tp.tag, end: tp.to, idx: i })
+      } else {
+        let matched = false
+        for (let j = opens.length - 1; j >= 0; j--) {
+          if (opens[j].tag === tp.tag) {
+            matchedRanges.push({ from: opens[j].end, to: tp.from, tag: tp.tag })
+            opens.splice(j, 1)
+            matched = true
+            break
+          }
+        }
+        if (!matched) unmatchedTagIdxs.add(i)
+      }
+    }
+    for (const o of opens) unmatchedTagIdxs.add(o.idx)
+    // Content between matched pairs: always style
+    for (const r of matchedRanges) {
+      if (r.to > r.from) {
+        decorations.push(
+          Decoration.mark({ class: r.tag === 'sub' ? 'cm-sub-content' : 'cm-sup-content' }).range(r.from, r.to),
+        )
+      }
+    }
+    // Tags: reveal faded when caret is inside, hide otherwise
+    for (let i = 0; i < tagPositions.length; i++) {
+      const tp = tagPositions[i]
+      const caretInside =
+        !isDrag && isActiveLine && state.selection.ranges.some((r) => r.head >= tp.from && r.head <= tp.to)
+      if (caretInside) {
+        decorations.push(
+          Decoration.mark({ class: 'cm-formatting-inline cm-formatting-inline-visible' }).range(tp.from, tp.to),
+        )
+      } else {
+        decorations.push(
+          Decoration.replace({ widget: new EmptyInlineWidget(tp.from, tp.to) }).range(tp.from, tp.to),
+        )
+      }
+    }
+
+    // `~sub~` : single-tilde delimiters (skip ~~)
+    {
+      const tildePositions: number[] = []
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] !== '~') continue
+        if ((i > 0 && text[i - 1] === '~') || (i + 1 < text.length && text[i + 1] === '~')) continue
+        tildePositions.push(line.from + i)
+      }
+      for (let i = 0; i + 1 < tildePositions.length; i += 2) {
+        const open = tildePositions[i]
+        const close = tildePositions[i + 1]
+        if (close > open + 1) {
+          decorations.push(Decoration.mark({ class: 'cm-sub-content' }).range(open + 1, close))
+        }
+        const caretInside =
+          !isDrag && isActiveLine && state.selection.ranges.some((r) => r.head >= open && r.head <= close + 1)
+        for (const pos of [open, close]) {
+          if (caretInside) {
+            decorations.push(
+              Decoration.mark({ class: 'cm-formatting-inline cm-formatting-inline-visible' }).range(pos, pos + 1),
+            )
+          } else {
+            decorations.push(
+              Decoration.replace({ widget: new EmptyInlineWidget(pos, pos + 1) }).range(pos, pos + 1),
+            )
+          }
+        }
+      }
+    }
+
+    // `^sup^` : single-caret delimiters; skip footnote [^...]
+    {
+      const caretPositions: number[] = []
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] !== '^') continue
+        if (i > 0 && text[i - 1] === '[') continue
+        caretPositions.push(line.from + i)
+      }
+      for (let i = 0; i + 1 < caretPositions.length; i += 2) {
+        const open = caretPositions[i]
+        const close = caretPositions[i + 1]
+        if (close > open + 1) {
+          decorations.push(Decoration.mark({ class: 'cm-sup-content' }).range(open + 1, close))
+        }
+        const caretInside =
+          !isDrag && isActiveLine && state.selection.ranges.some((r) => r.head >= open && r.head <= close + 1)
+        for (const pos of [open, close]) {
+          if (caretInside) {
+            decorations.push(
+              Decoration.mark({ class: 'cm-formatting-inline cm-formatting-inline-visible' }).range(pos, pos + 1),
+            )
+          } else {
+            decorations.push(
+              Decoration.replace({ widget: new EmptyInlineWidget(pos, pos + 1) }).range(pos, pos + 1),
+            )
+          }
+        }
+      }
+    }
+  }
+
   // ---- Line-text syntax (no dedicated tree nodes) ---------------------------
-  // `-# subtext`, `<sub>/<sup>` and `==highlight==` are plain text to lezer, so
-  // they are handled by scanning inactive lines directly. Active lines (being
-  // edited) and lines inside code blocks / table / hr / image widgets are skipped.
+  // `-# subtext` and definition lists are plain text to lezer, so they are
+  // handled by scanning inactive lines directly. Active lines (being edited)
+  // and lines inside code blocks / table / hr / image widgets are skipped.
   for (let lineNum = 1; lineNum <= state.doc.lines; lineNum++) {
     if (activeLines.has(lineNum) || skipLines.has(lineNum) || replacedLines.has(lineNum)) continue
     const line = state.doc.line(lineNum)
@@ -702,81 +878,6 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
       }
     }
 
-    // `<sub>…</sub>` / `<sup>…</sup>` (E18/E19): every tag occurrence is
-    // replaced by a zero-size widget; text between matched pairs gets the
-    // content class. Lone/unmatched tags are hidden too.
-    const tagRe = /<(\/)?(sub|sup)>/g
-    const openTags: { tag: 'sub' | 'sup'; end: number }[] = []
-    let tagMatch: RegExpExecArray | null
-    while ((tagMatch = tagRe.exec(text)) !== null) {
-      const from = line.from + tagMatch.index
-      const to = from + tagMatch[0].length
-      const isClose = tagMatch[1] === '/'
-      const tag = tagMatch[2] as 'sub' | 'sup'
-      decorations.push(Decoration.replace({ widget: new EmptyInlineWidget(from, to) }).range(from, to))
-      if (isClose) {
-        // Match the innermost still-open tag of the same type.
-        for (let i = openTags.length - 1; i >= 0; i--) {
-          if (openTags[i].tag === tag) {
-            const open = openTags[i]
-            openTags.splice(i, 1)
-            if (from > open.end) {
-              decorations.push(
-                Decoration.mark({ class: tag === 'sub' ? 'cm-sub-content' : 'cm-sup-content' }).range(open.end, from),
-              )
-            }
-            break
-          }
-        }
-      } else {
-        openTags.push({ tag, end: to })
-      }
-    }
-
-    // `~sub~` / `^sup^` (B17): single `~` and `^` delimiters pair up on
-    // inactive lines (markdown-it-sub / sup use ~ and ^); lone delimiters are
-    // hidden too. `~~` is strikethrough, not subscript — isolated tildes only.
-    // Backward compat: `<sub>/<sup>` tags above still work.
-    {
-      // ~subscript~ : collect isolated single-tilde positions (skip ~~)
-      const tildePositions: number[] = []
-      for (let i = 0; i < text.length; i++) {
-        if (text[i] !== '~') continue
-        const prevIsTilde = i > 0 && text[i - 1] === '~'
-        const nextIsTilde = i + 1 < text.length && text[i + 1] === '~'
-        if (prevIsTilde || nextIsTilde) continue
-        tildePositions.push(line.from + i)
-      }
-      for (let i = 0; i + 1 < tildePositions.length; i += 2) {
-        const open = tildePositions[i]
-        const close = tildePositions[i + 1]
-        if (close > open + 1) {
-          decorations.push(Decoration.mark({ class: 'cm-sub-content' }).range(open + 1, close))
-        }
-      }
-      for (const pos of tildePositions) {
-        decorations.push(Decoration.replace({ widget: new EmptyInlineWidget(pos, pos + 1) }).range(pos, pos + 1))
-      }
-      // ^sup^ : single caret delimiters; skip footnote [^...] syntax
-      const caretPositions: number[] = []
-      for (let i = 0; i < text.length; i++) {
-        if (text[i] !== '^') continue
-        // Footnote refs are [^label]; the ^ immediately after '[' must not be treated as sup delimiter
-        if (i > 0 && text[i - 1] === '[') continue
-        caretPositions.push(line.from + i)
-      }
-      for (let i = 0; i + 1 < caretPositions.length; i += 2) {
-        const open = caretPositions[i]
-        const close = caretPositions[i + 1]
-        if (close > open + 1) {
-          decorations.push(Decoration.mark({ class: 'cm-sup-content' }).range(open + 1, close))
-        }
-      }
-      for (const pos of caretPositions) {
-        decorations.push(Decoration.replace({ widget: new EmptyInlineWidget(pos, pos + 1) }).range(pos, pos + 1))
-      }
-    }
-
     // Definition list (E18/F2): lines starting with `: ` / `:` on inactive
     // lines are definition-list definitions (markdown-it-deflist: `Term\n: def`).
     // Style the line so it is visibly indented/muted when the caret is elsewhere.
@@ -786,23 +887,6 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
       decorations.push(Decoration.line({ class: 'cm-deflist' }).range(line.from))
     }
 
-    // `==text==` highlight (E20): `==` delimiters pair up left to right
-    // (matching markdown-it-mark); each delimiter is hidden, the enclosed text
-    // gets the highlight class.
-    const eqRe = /==/g
-    const eqPositions: number[] = []
-    let eqMatch: RegExpExecArray | null
-    while ((eqMatch = eqRe.exec(text)) !== null) eqPositions.push(line.from + eqMatch.index)
-    for (let i = 0; i + 1 < eqPositions.length; i += 2) {
-      const open = eqPositions[i]
-      const close = eqPositions[i + 1]
-      if (close > open + 2) {
-        decorations.push(Decoration.mark({ class: 'cm-highlight-content' }).range(open + 2, close))
-      }
-    }
-    for (const pos of eqPositions) {
-      decorations.push(Decoration.replace({ widget: new EmptyInlineWidget(pos, pos + 2) }).range(pos, pos + 2))
-    }
   }
 
   return Decoration.set(decorations.sort((a, b) => a.from - b.from), true)
