@@ -86,7 +86,10 @@ describe('SHORTCUTS table', () => {
       emoji: ['Mod-Alt-e'],
       'heading-id': ['Mod-Shift-2'],
       'def-list': ['Mod-Alt-d'],
-      sub: ['Mod-Alt-s'],
+      // B17 -> E19/E20: Ctrl+Alt+S collided with Windows Snipping Tool, then
+      // Mod-Alt-Shift-s (Ctrl+Alt+Shift+S) proved unresponsive (too many
+      // modifiers). Moved to Mod-Alt-j (Ctrl+Alt+J / Cmd+Alt+J) which is free.
+      sub: ['Mod-Alt-j'],
       sup: ['Mod-Alt-u'],
       highlight: ['Mod-Alt-m'],
     }

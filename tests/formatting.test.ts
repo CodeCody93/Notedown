@@ -332,8 +332,8 @@ describe('toggleCodeBlock', () => {
 
   it('removes the WHOLE fenced block with an empty caret inside (E10)', () => {
     expect(applyTo('```\ncode\n```', 5, undefined, toggleCodeBlockSpec(stateOf('```\ncode\n```', 5)))).toEqual({
-      doc: '',
-      head: 0,
+      doc: 'code',
+      head: 1,
     })
   })
 })
@@ -469,27 +469,21 @@ describe('insertDefList', () => {
 
 describe('sub/sup/highlight', () => {
   it('sub wraps, unwraps and handles empty selection', () => {
-    expect(applyTo('b', 0, 1, toggleSubscriptSpec(stateOf('b', 0, 1)))).toEqual({ doc: '<sub>b</sub>', head: 6 })
+    expect(applyTo('b', 0, 1, toggleSubscriptSpec(stateOf('b', 0, 1)))).toEqual({ doc: '~b~', head: 2 })
     expect(applyTo('<sub>b</sub>', 0, 12, toggleSubscriptSpec(stateOf('<sub>b</sub>', 0, 12)))).toEqual({
       doc: 'b',
       head: 1,
     })
-    expect(applyTo('ab', 1, undefined, toggleSubscriptSpec(stateOf('ab', 1)))).toEqual({
-      doc: 'a<sub></sub>b',
-      head: 6,
-    })
+    expect(applyTo('ab', 1, undefined, toggleSubscriptSpec(stateOf('ab', 1)))).toEqual({ doc: 'a~~b', head: 2 })
   })
 
   it('sup wraps, unwraps and handles empty selection', () => {
-    expect(applyTo('b', 0, 1, toggleSuperscriptSpec(stateOf('b', 0, 1)))).toEqual({ doc: '<sup>b</sup>', head: 6 })
+    expect(applyTo('b', 0, 1, toggleSuperscriptSpec(stateOf('b', 0, 1)))).toEqual({ doc: '^b^', head: 2 })
     expect(applyTo('<sup>b</sup>', 0, 12, toggleSuperscriptSpec(stateOf('<sup>b</sup>', 0, 12)))).toEqual({
       doc: 'b',
       head: 1,
     })
-    expect(applyTo('ab', 1, undefined, toggleSuperscriptSpec(stateOf('ab', 1)))).toEqual({
-      doc: 'a<sup></sup>b',
-      head: 6,
-    })
+    expect(applyTo('ab', 1, undefined, toggleSuperscriptSpec(stateOf('ab', 1)))).toEqual({ doc: 'a^^b', head: 2 })
   })
 
   it('highlight wraps, unwraps and handles empty selection', () => {

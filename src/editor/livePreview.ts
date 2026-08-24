@@ -70,6 +70,37 @@ import {
   shouldShowSource,
   checkUpdateAction,
 } from 'codemirror-live-markdown'
+import hljs from 'highlight.js/lib/core'
+import markdownLang from 'highlight.js/lib/languages/markdown'
+import javascriptLang from 'highlight.js/lib/languages/javascript'
+import typescriptLang from 'highlight.js/lib/languages/typescript'
+import pythonLang from 'highlight.js/lib/languages/python'
+import bashLang from 'highlight.js/lib/languages/bash'
+import jsonLang from 'highlight.js/lib/languages/json'
+import yamlLang from 'highlight.js/lib/languages/yaml'
+import htmlLang from 'highlight.js/lib/languages/xml'
+import cssLang from 'highlight.js/lib/languages/css'
+import rustLang from 'highlight.js/lib/languages/rust'
+import sqlLang from 'highlight.js/lib/languages/sql'
+import plaintextLang from 'highlight.js/lib/languages/plaintext'
+
+let hljsRegistered = false
+function ensureHljs(): void {
+  if (hljsRegistered) return
+  hljsRegistered = true
+  hljs.registerLanguage('markdown', markdownLang)
+  hljs.registerLanguage('javascript', javascriptLang)
+  hljs.registerLanguage('typescript', typescriptLang)
+  hljs.registerLanguage('python', pythonLang)
+  hljs.registerLanguage('bash', bashLang)
+  hljs.registerLanguage('json', jsonLang)
+  hljs.registerLanguage('yaml', yamlLang)
+  hljs.registerLanguage('xml', htmlLang)
+  hljs.registerLanguage('css', cssLang)
+  hljs.registerLanguage('rust', rustLang)
+  hljs.registerLanguage('sql', sqlLang)
+  hljs.registerLanguage('plaintext', plaintextLang)
+}
 
 export const REVEAL_SCOPE: 'line' | 'block' = 'line'
 
@@ -345,6 +376,72 @@ class HorizontalRuleWidget extends WidgetType {
   }
 }
 
+/**
+ * Rendered fenced/indented code block for fully-inactive fences (H).
+ * When no line of the fence contains the caret, the whole `FencedCode` /
+ * `CodeBlock` node is replaced by a highlighted div (`MarkdownCodeWidget`).
+ * Rendering parses the fence info string for a language hint and runs
+ * highlight.js when the language is known, mirroring `src/app/export.ts`.
+ * With the caret inside, the raw source stays visible for editing.
+ */
+class MarkdownCodeWidget extends WidgetType {
+  constructor(
+    readonly from: number,
+    readonly to: number,
+    readonly text: string,
+  ) {
+    super()
+  }
+
+  eq(o: MarkdownCodeWidget): boolean {
+    return o.from === this.from && o.to === this.to && o.text === this.text
+  }
+
+  toDOM(): HTMLElement {
+    ensureHljs()
+    const container = document.createElement('div')
+    container.className = 'cm-code-widget'
+    const lines = this.text.split('\n')
+    let lang = ''
+    let code = this.text
+    if (lines.length > 0) {
+      const first = lines[0]
+      const fenceMatch = /^ {0,3}(?:`{3,}|~{3,})\s*([^\s`~]*)/.exec(first)
+      if (fenceMatch) {
+        lang = (fenceMatch[1] ?? '').trim().toLowerCase()
+        const last = lines[lines.length - 1]
+        const isClosingFence = /^ {0,3}(?:`{3,}|~{3,})\s*$/.test(last)
+        const endIdx = isClosingFence ? lines.length - 1 : lines.length
+        code = lines.slice(1, endIdx).join('\n')
+      }
+    }
+    const pre = document.createElement('pre')
+    pre.className = 'cm-code-widget-pre'
+    const codeEl = document.createElement('code')
+    codeEl.className = 'hljs' + (lang ? ` language-${lang}` : '')
+    let html = ''
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        html = hljs.highlight(code, { language: lang }).value
+      } catch {
+        html = ''
+      }
+    }
+    if (html) {
+      codeEl.innerHTML = html
+    } else {
+      codeEl.textContent = code
+    }
+    pre.appendChild(codeEl)
+    container.appendChild(pre)
+    return container
+  }
+
+  ignoreEvent(): boolean {
+    return false
+  }
+}
+
 function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): DecorationSet {
   const decorations: Range<Decoration>[] = []
   const { state } = view
@@ -366,6 +463,10 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
   const replacedLines = new Set<number>()
   // Lines already carrying the .cm-blockquote line class (dedupe).
   const quoteLines = new Set<number>()
+  // Lines that already received a task checkbox via the tree iteration
+  // (ListMark or Paragraph paths). The line-text sweep must skip these to
+  // avoid duplicate widgets.
+  const taskHandledLines = new Set<number>()
 
   const addLinesTo = (node: { from: number; to: number }, set: Set<number>): void => {
     const start = state.doc.lineAt(node.from).number
@@ -464,17 +565,20 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
             parent = parent.parent
           }
           if (!inListItem) {
-            const taskMatch = /^(\s*)[-*+]\s*\[([ xX]?)\]/.exec(line.text)
+            const taskMatch = /^(\s*)[-*+]\s*\[([ xX]?)\]\s*/.exec(line.text)
             if (taskMatch !== null) {
               const headLen = taskMatch[0].length
+              const bracketText = (/\[[ xX]?\]/.exec(taskMatch[0])?.[0] ?? '[ ]')
               const bracketFrom = line.from + taskMatch[0].indexOf('[')
-              const bracketTo = line.from + headLen
+              const bracketTo = bracketFrom + bracketText.length
+              const to = line.from + headLen
               const checked = /[xX]/.test(taskMatch[2])
               decorations.push(
                 Decoration.replace({
-                  widget: new ListMarkerWidget(checked ? '☑' : '☐', line.from, bracketTo, bracketFrom, bracketTo, view),
-                }).range(line.from, bracketTo),
+                  widget: new ListMarkerWidget(checked ? '☑' : '☐', line.from, to, bracketFrom, bracketTo, view),
+                }).range(line.from, to),
               )
+              taskHandledLines.add(line.number)
             }
           }
         }
@@ -496,19 +600,20 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
           // lezer only parses a Task node for the `- [ ] ` spelling.
           const markText = state.doc.sliceString(node.from, node.to)
           const listLine = state.doc.lineAt(node.from)
-          const taskMatch = /^(\s*)[-*+]\s*\[([ xX]?)\]/.exec(listLine.text.slice(node.from - listLine.from))
+          const taskMatch = /^(\s*)[-*+]\s*\[([ xX]?)\]\s*/.exec(listLine.text.slice(node.from - listLine.from))
           if (taskMatch !== null) {
             const headLen = taskMatch[0].length
             const to = node.from + headLen
-            // The bracket starts at the '[' inside the matched head — `to - 3`
-            // would be wrong for the `-[]` / `-[ ]` spellings (no space).
+            const bracketText = (/\[[ xX]?\]/.exec(taskMatch[0])?.[0] ?? '[ ]')
             const bracketFrom = node.from + taskMatch[0].indexOf('[')
+            const bracketTo = bracketFrom + bracketText.length
             const checked = /[xX]/.test(taskMatch[2])
             decorations.push(
               Decoration.replace({
-                widget: new ListMarkerWidget(checked ? '☑' : '☐', node.from, to, bracketFrom, to, view),
+                widget: new ListMarkerWidget(checked ? '☑' : '☐', node.from, to, bracketFrom, bracketTo, view),
               }).range(node.from, to),
             )
+            taskHandledLines.add(listLine.number)
           } else if (/^\d+/.test(markText)) {
             // Ordered item: keep the number + period (e.g. '1.').
             const digits = /^\d+/.exec(markText)![0]
@@ -561,6 +666,30 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
     const text = line.text
     if (text.length === 0) continue
 
+    // Task list fallback (B5/E8): all four spellings `-[]`, `- []`, `-[ ]`,
+    // `- [ ]` must show ☐/☑ when the caret is elsewhere. The tree paths
+    // (ListMark / Paragraph) miss cases where lezer coalesces multiple task
+    // lines into a single Paragraph node or treats `-[]` as non-list text.
+    // Sweep inactive lines directly so every line renders independently.
+    if (!taskHandledLines.has(lineNum)) {
+      const taskMatch = /^(\s*)[-*+]\s*\[([ xX]?)\]\s*/.exec(text)
+      if (taskMatch !== null) {
+        const headLen = taskMatch[0].length
+        const bracketText = (/\[[ xX]?\]/.exec(taskMatch[0])?.[0] ?? '[ ]')
+        const bracketFrom = line.from + taskMatch[0].indexOf('[')
+        const bracketTo = bracketFrom + bracketText.length
+        const to = line.from + headLen
+        const checked = /[xX]/.test(taskMatch[2])
+        decorations.push(
+          Decoration.replace({
+            widget: new ListMarkerWidget(checked ? '☑' : '☐', line.from, to, bracketFrom, bracketTo, view),
+          }).range(line.from, to),
+        )
+        taskHandledLines.add(lineNum)
+        // Don't `continue`; the tail of the line may still contain sub/sup/highlight etc.
+      }
+    }
+
     // `-# note` subtext (Other Noted Issues #5): hide the `-# ` prefix, style
     // the rest of the line as muted italic.
     const subtextMatch = /^\s*-#[ \t]/.exec(text)
@@ -604,6 +733,59 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
       }
     }
 
+    // `~sub~` / `^sup^` (B17): single `~` and `^` delimiters pair up on
+    // inactive lines (markdown-it-sub / sup use ~ and ^); lone delimiters are
+    // hidden too. `~~` is strikethrough, not subscript — isolated tildes only.
+    // Backward compat: `<sub>/<sup>` tags above still work.
+    {
+      // ~subscript~ : collect isolated single-tilde positions (skip ~~)
+      const tildePositions: number[] = []
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] !== '~') continue
+        const prevIsTilde = i > 0 && text[i - 1] === '~'
+        const nextIsTilde = i + 1 < text.length && text[i + 1] === '~'
+        if (prevIsTilde || nextIsTilde) continue
+        tildePositions.push(line.from + i)
+      }
+      for (let i = 0; i + 1 < tildePositions.length; i += 2) {
+        const open = tildePositions[i]
+        const close = tildePositions[i + 1]
+        if (close > open + 1) {
+          decorations.push(Decoration.mark({ class: 'cm-sub-content' }).range(open + 1, close))
+        }
+      }
+      for (const pos of tildePositions) {
+        decorations.push(Decoration.replace({ widget: new EmptyInlineWidget(pos, pos + 1) }).range(pos, pos + 1))
+      }
+      // ^sup^ : single caret delimiters; skip footnote [^...] syntax
+      const caretPositions: number[] = []
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] !== '^') continue
+        // Footnote refs are [^label]; the ^ immediately after '[' must not be treated as sup delimiter
+        if (i > 0 && text[i - 1] === '[') continue
+        caretPositions.push(line.from + i)
+      }
+      for (let i = 0; i + 1 < caretPositions.length; i += 2) {
+        const open = caretPositions[i]
+        const close = caretPositions[i + 1]
+        if (close > open + 1) {
+          decorations.push(Decoration.mark({ class: 'cm-sup-content' }).range(open + 1, close))
+        }
+      }
+      for (const pos of caretPositions) {
+        decorations.push(Decoration.replace({ widget: new EmptyInlineWidget(pos, pos + 1) }).range(pos, pos + 1))
+      }
+    }
+
+    // Definition list (E18/F2): lines starting with `: ` / `:` on inactive
+    // lines are definition-list definitions (markdown-it-deflist: `Term\n: def`).
+    // Style the line so it is visibly indented/muted when the caret is elsewhere.
+    // The export already renders <dl>/<dt>/<dd> via markdown-it-deflist and
+    // MARKDOWN_BODY_CSS; this live-preview decoration mirrors it.
+    if (/^\s*:/.test(text)) {
+      decorations.push(Decoration.line({ class: 'cm-deflist' }).range(line.from))
+    }
+
     // `==text==` highlight (E20): `==` delimiters pair up left to right
     // (matching markdown-it-mark); each delimiter is hidden, the enclosed text
     // gets the highlight class.
@@ -637,7 +819,33 @@ const livePreviewPlugin = ViewPlugin.fromClass(
     }
 
     update(update: ViewUpdate): void {
-      if (checkUpdateAction(update) === 'rebuild') {
+      const action = checkUpdateAction(update)
+      const reconfigured = update.transactions.some((tr) => tr.reconfigured)
+      const facetChanged =
+        update.startState.facet(collapseOnSelectionFacet) !== update.state.facet(collapseOnSelectionFacet)
+      // B6: Lezer parses incrementally with a time budget (viewport-limited).
+      // After a Source↔Live toggle via StateEffect.reconfigure the tree may be
+      // truncated (~first 42 lines) until the parser finishes in the background.
+      // That completion arrives with no docChange/viewportChange/selectionSet,
+      // so checkUpdateAction returns 'none' and decorations would stay truncated.
+      // Detect tree growth and geometry/viewport changes explicitly.
+      const treeGrew = syntaxTree(update.state).length !== syntaxTree(update.startState).length
+      const geometryChanged = (update as unknown as { geometryChanged: boolean }).geometryChanged === true
+      // B17: ensure sub/sup for ~^ on inactive lines renders immediately when caret leaves the line.
+      // checkUpdateAction covers selectionSet, but add explicit selection/doc change guards so a
+      // caret move to the adjacent line (which may not change tree length or viewport) always rebuilds.
+      const selectionChanged = update.selectionSet || update.transactions.some((tr) => tr.selection)
+      const docChanged = update.docChanged
+      const needsRebuild =
+        action === 'rebuild' ||
+        reconfigured ||
+        facetChanged ||
+        treeGrew ||
+        geometryChanged ||
+        update.viewportChanged ||
+        selectionChanged ||
+        docChanged
+      if (needsRebuild) {
         this.decorations = buildDecorations(update.view, this.opts)
       }
     }
@@ -668,6 +876,32 @@ function buildBlockDecorations(state: EditorState): DecorationSet {
 
   syntaxTree(state).iterate({
     enter: (node) => {
+      if (node.name === 'FencedCode') {
+        const startLine = state.doc.lineAt(node.from).number
+        const endLine = state.doc.lineAt(node.to).number
+        let hasActiveLine = isDrag
+        for (let l = startLine; l <= endLine && !hasActiveLine; l++) hasActiveLine = activeLines.has(l)
+        if (!hasActiveLine) {
+          const text = state.doc.sliceString(node.from, node.to)
+          decorations.push(
+            Decoration.replace({ widget: new MarkdownCodeWidget(node.from, node.to, text), block: true }).range(node.from, node.to),
+          )
+        }
+        return false
+      }
+      if (node.name === 'CodeBlock') {
+        const startLine = state.doc.lineAt(node.from).number
+        const endLine = state.doc.lineAt(node.to).number
+        let hasActiveLine = isDrag
+        for (let l = startLine; l <= endLine && !hasActiveLine; l++) hasActiveLine = activeLines.has(l)
+        if (!hasActiveLine) {
+          const text = state.doc.sliceString(node.from, node.to)
+          decorations.push(
+            Decoration.replace({ widget: new MarkdownCodeWidget(node.from, node.to, text), block: true }).range(node.from, node.to),
+          )
+        }
+        return false
+      }
       if (node.name === 'Table') {
         // Replace only when EVERY line of the table lacks the caret; with the
         // caret inside, the raw source stays (the cell marks keep their usual
@@ -715,6 +949,10 @@ const blockRenderField = StateField.define<DecorationSet>({
     if (wasDragging && !isDragging) return buildBlockDecorations(tr.state)
     if (isDragging) return deco
     if (tr.selection) return buildBlockDecorations(tr.state)
+    // B6: incremental Lezer parse after a reconfigure (mode toggle) may finish
+    // without a doc change, leaving tables/HRs truncated. Rebuild when the
+    // tree grew in the background.
+    if (syntaxTree(tr.state).length !== syntaxTree(tr.startState).length) return buildBlockDecorations(tr.state)
     return deco
   },
   provide: (f) => EditorView.decorations.from(f),

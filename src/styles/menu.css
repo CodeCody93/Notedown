@@ -287,3 +287,72 @@
 .emoji-cell:hover {
   background: var(--surface-2);
 }
+
+/* ---------------------------------------------------------------------------
+   Search panel overrides (B19). The base .cm-search styles live in editor.css;
+   these overrides ensure the panel is a small floating card on desktop (top-
+   right, above the editor content) and full-width atop the editor on mobile,
+   with theme-matching tokens and sufficient z-index to stay above content.
+   --------------------------------------------------------------------------- */
+.cm-editor .cm-panel.cm-search {
+  position: absolute !important;
+  top: 8px !important;
+  right: 8px !important;
+  left: auto !important;
+  bottom: auto !important;
+  z-index: 150 !important;
+  max-width: min(420px, calc(100% - 16px));
+  width: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--menu-radius);
+  box-shadow: var(--shadow);
+  padding: 8px 10px;
+  color: var(--text);
+  transform: none !important;
+}
+
+/* Inputs and buttons inside the search panel inherit theme tokens; the base
+   editor.css already sets these but we lift specificity to win when this file
+   is the source of truth for the floating placement. */
+.cm-editor .cm-panel.cm-search input,
+.cm-editor .cm-panel.cm-search .cm-textfield {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+  min-width: 0;
+}
+
+.cm-editor .cm-panel.cm-search button {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font: inherit;
+}
+
+.cm-editor .cm-panel.cm-search button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+@media (max-width: 600px) {
+  .cm-editor .cm-panel.cm-search {
+    left: 8px !important;
+    right: 8px !important;
+    max-width: none !important;
+    width: auto !important;
+  }
+  .cm-editor .cm-panel.cm-search input,
+  .cm-editor .cm-panel.cm-search .cm-textfield {
+    flex: 1 1 100px;
+  }
+}

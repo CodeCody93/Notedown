@@ -101,11 +101,28 @@ function treeUnwrap(state: EditorState, open: string, close: string, nodeNames: 
   const from = range.from
   const to = range.to
   const tree = syntaxTree(state)
-  let node: SyntaxNode | null = tree.resolveInner(from, 1)
-  while (node !== null) {
-    if (nodeNames.includes(node.name) && node.from <= from && to <= node.to) break
-    node = node.parent
+  let found: SyntaxNode | null = null
+  let bestSize = Infinity
+  for (const pos of [from, to] as const) {
+    for (const bias of [1, -1] as const) {
+      let node: SyntaxNode | null = tree.resolveInner(pos, bias)
+      while (node !== null) {
+        if (nodeNames.includes(node.name) && node.from <= from && to <= node.to) {
+          const text = state.doc.sliceString(node.from, node.to)
+          if (text.startsWith(open) && text.endsWith(close)) {
+            const size = node.to - node.from
+            if (size < bestSize) {
+              bestSize = size
+              found = node
+            }
+            break
+          }
+        }
+        node = node.parent
+      }
+    }
   }
+  const node = found
   if (node === null) return null
   const text = state.doc.sliceString(node.from, node.to)
   if (!text.startsWith(open) || !text.endsWith(close)) return null
@@ -127,11 +144,16 @@ function treeUnwrap(state: EditorState, open: string, close: string, nodeNames: 
  */
 function insideMarkedNode(state: EditorState, nodeName: string, mark: string): boolean {
   const head = state.selection.main.head
-  let node: SyntaxNode | null = syntaxTree(state).resolveInner(head, 1)
-  while (node !== null && node.name !== nodeName) node = node.parent
-  if (node === null) return false
-  const text = state.doc.sliceString(node.from, node.to)
-  return text.startsWith(mark) && text.endsWith(mark)
+  const tree = syntaxTree(state)
+  for (const bias of [1, -1] as const) {
+    let node: SyntaxNode | null = tree.resolveInner(head, bias)
+    while (node !== null && node.name !== nodeName) node = node.parent
+    if (node !== null) {
+      const text = state.doc.sliceString(node.from, node.to)
+      if (text.startsWith(mark) && text.endsWith(mark) && node.from <= head && head <= node.to) return true
+    }
+  }
+  return false
 }
 
 /**
@@ -147,17 +169,65 @@ function textRegionUnwrap(state: EditorState, open: string, close: string): Tran
   const text = line.text
   const relFrom = range.from - line.from
   const relTo = range.to - line.from
-  const openIdx = text.lastIndexOf(open, relFrom)
-  if (openIdx < 0) return null
-  const closeIdx = text.indexOf(close, relTo)
-  if (closeIdx < 0) return null
+  let openIdx = -1
+  let closeIdx = -1
+  if (open === close) {
+    // Same delimiters: pair consecutive occurrences. For "~" isolate single tildes (skip ~~)
+    const positions: number[] = []
+    if (open === '~') {
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] !== '~') continue
+        const prevIsTilde = i > 0 && text[i - 1] === '~'
+        const nextIsTilde = i + 1 < text.length && text[i + 1] === '~'
+        if (prevIsTilde || nextIsTilde) continue
+        positions.push(i)
+      }
+    } else {
+      let idx = text.indexOf(open, 0)
+      while (idx !== -1) {
+        positions.push(idx)
+        idx = text.indexOf(open, idx + open.length)
+      }
+    }
+    for (let i = 0; i + 1 < positions.length; i += 2) {
+      const o = positions[i]
+      const c = positions[i + 1]
+      if (relFrom >= o && relTo <= c + close.length && relFrom < c + close.length && relTo >= o) {
+        if (openIdx === -1 || c - o < closeIdx - openIdx) {
+          openIdx = o
+          closeIdx = c
+        }
+      }
+    }
+    if (openIdx === -1) {
+      let candOpen = -1
+      let candClose = -1
+      if (open === '~') {
+        for (let i = relFrom; i >= 0; i--) if (text[i] === '~' && !(i > 0 && text[i - 1] === '~') && !(i + 1 < text.length && text[i + 1] === '~')) { candOpen = i; break }
+        if (candOpen >= 0) for (let i = candOpen + 1; i < text.length; i++) if (text[i] === '~' && !(i > 0 && text[i - 1] === '~') && !(i + 1 < text.length && text[i + 1] === '~')) { candClose = i; break }
+      } else {
+        candOpen = text.lastIndexOf(open, relFrom)
+        if (candOpen >= 0) candClose = text.indexOf(close, candOpen + open.length)
+      }
+      if (candOpen >= 0 && candClose >= 0 && relFrom >= candOpen && relTo <= candClose + close.length) {
+        openIdx = candOpen
+        closeIdx = candClose
+      }
+    }
+    if (openIdx < 0 || closeIdx < 0) return null
+  } else {
+    const o = text.lastIndexOf(open, relFrom)
+    if (o < 0) return null
+    const c = text.indexOf(close, Math.max(o + open.length, relTo))
+    const c2 = c === -1 ? text.indexOf(close, o + open.length) : c
+    if (c2 < 0) return null
+    openIdx = o
+    closeIdx = c2
+  }
   const innerStart = line.from + openIdx + open.length
   const innerEnd = line.from + closeIdx
   if (innerEnd <= innerStart) return null
-  // The selection must sit inside the open..close+close.length span.
   if (relFrom < openIdx || relTo > closeIdx + close.length) return null
-  // Map the original selection through the two removals (positions inside a
-  // removed tag collapse to the tag's start).
   const anchor = range.from >= innerStart ? range.from - open.length : line.from + openIdx
   const head =
     range.to < innerStart
@@ -171,6 +241,27 @@ function textRegionUnwrap(state: EditorState, open: string, close: string): Tran
       { from: innerEnd, to: innerEnd + close.length, insert: '' },
     ],
     selection: { anchor, head },
+  }
+}
+
+/**
+ * Empty-caret unwrap for `open|close` with zero interior (e.g. `**|**` → `|`,
+ * `*|*` → `|`, `__|__` → `|`, `~~|~~` → `|`, `~|~` → `|`, `^|^` → `|`,
+ * `==|==` → `|`). The syntax tree produces no node for empty interiors, so
+ * `treeUnwrap`/`textRegionUnwrap` cannot handle this case. Checks that the
+ * characters immediately before and after the caret equal `open` and `close`.
+ */
+function unwrapEmptyDelimiters(state: EditorState, open: string, close: string): TransactionSpec | null {
+  const range = state.selection.main
+  if (!range.empty) return null
+  const pos = range.head
+  if (pos < open.length || pos + close.length > state.doc.length) return null
+  const before = state.doc.sliceString(pos - open.length, pos)
+  const after = state.doc.sliceString(pos, pos + close.length)
+  if (before !== open || after !== close) return null
+  return {
+    changes: { from: pos - open.length, to: pos + close.length, insert: '' },
+    selection: { anchor: pos - open.length },
   }
 }
 
@@ -216,35 +307,49 @@ function wrapUnwrap(state: EditorState, open: string, close: string, nodeNames?:
  * `__`-marked StrongEmphasis belongs to underline — left untouched (E3/E4 split). */
 export function toggleBoldSpec(state: EditorState): TransactionSpec {
   if (insideMarkedNode(state, 'StrongEmphasis', '__')) return noChangeSpec(state)
+  const empty = unwrapEmptyDelimiters(state, '**', '**')
+  if (empty !== null) return empty
   return wrapUnwrap(state, '**', '**', ['StrongEmphasis'])
 }
 
 /** Toggle italic `*x*`. Empty selection inserts `**` with the caret between. */
 export function toggleItalicSpec(state: EditorState): TransactionSpec {
+  const empty = unwrapEmptyDelimiters(state, '*', '*')
+  if (empty !== null) return empty
   return wrapUnwrap(state, '*', '*', ['Emphasis'])
 }
 
 /** Toggle underline `__x__`. Empty selection inserts `____`, caret between the pairs. */
 export function toggleUnderlineSpec(state: EditorState): TransactionSpec {
-  // `**`-marked StrongEmphasis belongs to bold — left untouched (E3/E4 split).
   if (insideMarkedNode(state, 'StrongEmphasis', '**')) return noChangeSpec(state)
-  // Tree path: unwrap a `__`-marked StrongEmphasis containing the selection (E1).
+  const empty = unwrapEmptyDelimiters(state, '__', '__')
+  if (empty !== null) return empty
   const range = state.selection.main
-  let node: SyntaxNode | null = syntaxTree(state).resolveInner(range.from, 1)
-  while (node !== null && node.name !== 'StrongEmphasis') node = node.parent
-  if (node !== null && node.from <= range.from && range.to <= node.to) {
-    const text = state.doc.sliceString(node.from, node.to)
-    if (text.startsWith('__') && text.endsWith('__')) {
-      const contentEnd = node.from + text.length - 4
-      const caret = Math.max(node.from, Math.min(range.from - 2, contentEnd))
-      const head = Math.max(node.from, Math.min(range.to - 2, contentEnd))
+  {
+    let best: SyntaxNode | null = null
+    for (const pos of [range.from, range.to] as const) {
+      for (const bias of [1, -1] as const) {
+        let n: SyntaxNode | null = syntaxTree(state).resolveInner(pos, bias)
+        while (n !== null && n.name !== 'StrongEmphasis') n = n.parent
+        if (n !== null && n.from <= range.from && range.to <= n.to) {
+          const text = state.doc.sliceString(n.from, n.to)
+          if (text.startsWith('__') && text.endsWith('__')) {
+            if (best === null || n.to - n.from < best.to - best.from) best = n
+          }
+        }
+      }
+    }
+    if (best !== null) {
+      const text = state.doc.sliceString(best.from, best.to)
+      const contentEnd = best.from + text.length - 4
+      const caret = Math.max(best.from, Math.min(range.from - 2, contentEnd))
+      const head = Math.max(best.from, Math.min(range.to - 2, contentEnd))
       return {
-        changes: { from: node.from, to: node.to, insert: text.slice(2, text.length - 2) },
+        changes: { from: best.from, to: best.to, insert: text.slice(2, text.length - 2) },
         selection: { anchor: caret, head },
       }
     }
   }
-  // Text fallback: `__…__` runs that lezer does not parse as StrongEmphasis.
   const t = textRegionUnwrap(state, '__', '__')
   if (t !== null) return t
   return wrapUnwrap(state, '__', '__')
@@ -252,25 +357,37 @@ export function toggleUnderlineSpec(state: EditorState): TransactionSpec {
 
 /** Toggle strikethrough `~~x~~`. Empty selection inserts `~~~~`, caret between the pairs. */
 export function toggleStrikethroughSpec(state: EditorState): TransactionSpec {
+  const empty = unwrapEmptyDelimiters(state, '~~', '~~')
+  if (empty !== null) return empty
   return wrapUnwrap(state, '~~', '~~', ['Strikethrough'])
 }
 
-/** Toggle subscript `<sub>x</sub>`. Caret inside an existing pair unwraps it (E18). */
+/** Toggle subscript `~x~` (exports as `<sub>`). Also unwraps legacy `<sub>x</sub>` (B17). Caret inside unwraps (E18). */
 export function toggleSubscriptSpec(state: EditorState): TransactionSpec {
-  const t = textRegionUnwrap(state, '<sub>', '</sub>')
+  const empty = unwrapEmptyDelimiters(state, '~', '~')
+  if (empty !== null) return empty
+  let t = textRegionUnwrap(state, '~', '~')
   if (t !== null) return t
-  return wrapUnwrap(state, '<sub>', '</sub>')
+  t = textRegionUnwrap(state, '<sub>', '</sub>')
+  if (t !== null) return t
+  return wrapUnwrap(state, '~', '~')
 }
 
-/** Toggle superscript `<sup>x</sup>`. Caret inside an existing pair unwraps it (E19). */
+/** Toggle superscript `^x^` (exports as `<sup>`). Also unwraps legacy `<sup>x</sup>` (B17). Caret inside unwraps (E19). */
 export function toggleSuperscriptSpec(state: EditorState): TransactionSpec {
-  const t = textRegionUnwrap(state, '<sup>', '</sup>')
+  const empty = unwrapEmptyDelimiters(state, '^', '^')
+  if (empty !== null) return empty
+  let t = textRegionUnwrap(state, '^', '^')
   if (t !== null) return t
-  return wrapUnwrap(state, '<sup>', '</sup>')
+  t = textRegionUnwrap(state, '<sup>', '</sup>')
+  if (t !== null) return t
+  return wrapUnwrap(state, '^', '^')
 }
 
 /** Toggle highlight `==x==`. Empty selection inserts `====`, caret between the pairs. */
 export function toggleHighlightSpec(state: EditorState): TransactionSpec {
+  const empty = unwrapEmptyDelimiters(state, '==', '==')
+  if (empty !== null) return empty
   const t = textRegionUnwrap(state, '==', '==')
   if (t !== null) return t
   return wrapUnwrap(state, '==', '==')
@@ -339,12 +456,23 @@ interface ListMarker {
 
 /** Detect a list marker at the start of a line (after leading whitespace).
  * Task markers accept all four user-results #4 spellings: `-[]`, `- []`, `-[ ]`,
- * `- [ ]`. The unordered pattern also consumes a task checkbox so toggling
- * unordered OFF removes the whole `- [ ]` marker instead of leaving `[ ]` (E7). */
+ * `- [ ]` (and checked variants). The pattern captures the exact marker
+ * including the trailing space so continuation preserves the same form
+ * (e.g. "- [] item" → "- [] "). The unordered pattern also consumes a
+ * task checkbox so toggling unordered OFF removes the whole `- [ ]` marker
+ * instead of leaving `[ ]` (E7). */
 function listMarker(text: string, kind: ListKind): ListMarker | null {
   let m: RegExpExecArray | null
   if (kind === 'task') {
-    m = /^(\s*)([-*+]\s*\[[ xX]?\]\s+)/.exec(text)
+    // Task: dash/star/plus, optional spaces, '[', optional space/x, ']', trailing spaces.
+    // This matches all four forms: "-[] ", "- [] ", "-[ ] ", "- [ ] " (and "*"/"+" variants).
+    m = /^(\s*)([-*+]\s*\[[ xX]?\]\s*)/.exec(text)
+    if (!m) return null
+    // Guard: must contain brackets; \s* alone would otherwise allow "- " to pass if regex changed.
+    if (!m[2].includes('[') || !m[2].includes(']')) return null
+    // Ensure at least the bracket pair is present; "- []" (dash space [] space) must be recognised.
+    // The regex already requires "\[", but keep explicit check for safety.
+    return { indent: m[1], marker: m[2] }
   } else if (kind === 'ordered') {
     m = /^(\s*)(\d+\.\s+)/.exec(text)
   } else {
@@ -386,6 +514,11 @@ export function toggleListSpec(state: EditorState, kind: ListKind): TransactionS
       else markerText = '- '
       changes.push({ from: line.from + indent.length, to: line.from + indent.length, insert: markerText })
     }
+  }
+  if (range.empty && changes.length === 1 && !hasAll) {
+    const cs = state.changes(changes)
+    const anchor = cs.mapPos(range.from, 1)
+    return { changes: cs, selection: { anchor } }
   }
   return finalizeChanges(state, changes, range.from, range.to)
 }
@@ -431,8 +564,22 @@ export function toggleBlockquoteSpec(state: EditorState): TransactionSpec {
  */
 function codeNodeUnwrap(state: EditorState): TransactionSpec | null {
   const range = state.selection.main
-  let node: SyntaxNode | null = syntaxTree(state).resolveInner(range.from, 1)
-  while (node !== null && node.name !== 'InlineCode') node = node.parent
+  let best: SyntaxNode | null = null
+  let bestSize = Infinity
+  for (const pos of [range.from, range.to] as const) {
+    for (const bias of [1, -1] as const) {
+      let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, bias)
+      while (node !== null && node.name !== 'InlineCode') node = node.parent
+      if (node !== null && node.from <= range.from && range.to <= node.to) {
+        const sz = node.to - node.from
+        if (sz < bestSize) {
+          bestSize = sz
+          best = node
+        }
+      }
+    }
+  }
+  const node = best
   if (node === null) return null
   if (!(node.from <= range.from && range.to <= node.to)) return null
   const text = state.doc.sliceString(node.from, node.to)
@@ -497,12 +644,30 @@ export function toggleCodeBlockSpec(state: EditorState): TransactionSpec {
   const from = range.from
   const to = range.to
   if (range.empty) {
-    let node: SyntaxNode | null = syntaxTree(state).resolveInner(range.head, -1)
-    while (node !== null && node.name !== 'FencedCode') node = node.parent
+    let best: SyntaxNode | null = null
+    for (const bias of [-1, 1] as const) {
+      let n: SyntaxNode | null = syntaxTree(state).resolveInner(range.head, bias)
+      while (n !== null && n.name !== 'FencedCode') n = n.parent
+      if (n !== null && n.from < range.head && range.head <= n.to) {
+        if (best === null || n.to - n.from < best.to - best.from) best = n
+      }
+    }
+    const node = best
     if (node !== null && node.from < range.head && range.head <= node.to) {
+      const full = state.doc.sliceString(node.from, node.to)
+      const firstNL = full.indexOf('\n')
+      let inner = ''
+      if (firstNL !== -1) {
+        const lines = full.split('\n')
+        if (lines.length >= 2) inner = lines.slice(1, -1).join('\n')
+      }
+      const contentEnd = node.from + inner.length
+      const openingLen = firstNL === -1 ? full.length : firstNL + 1
+      const rel = range.head - node.from - openingLen
+      const anchor = Math.max(node.from, Math.min(node.from + Math.max(0, rel), contentEnd))
       return {
-        changes: { from: node.from, to: node.to, insert: '' },
-        selection: { anchor: node.from },
+        changes: { from: node.from, to: node.to, insert: inner },
+        selection: { anchor },
       }
     }
     const pos = range.head
@@ -536,8 +701,22 @@ export function toggleCodeBlockSpec(state: EditorState): TransactionSpec {
  */
 function linkImageToggleOff(state: EditorState, image: boolean): TransactionSpec | null {
   const range = state.selection.main
-  let node: SyntaxNode | null = syntaxTree(state).resolveInner(range.from, 1)
-  while (node !== null && node.name !== (image ? 'Image' : 'Link')) node = node.parent
+  let best: SyntaxNode | null = null
+  let bestSize = Infinity
+  for (const pos of [range.from, range.to] as const) {
+    for (const bias of [1, -1] as const) {
+      let n: SyntaxNode | null = syntaxTree(state).resolveInner(pos, bias)
+      while (n !== null && n.name !== (image ? 'Image' : 'Link')) n = n.parent
+      if (n !== null && n.from <= range.from && range.to <= n.to) {
+        const sz = n.to - n.from
+        if (sz < bestSize) {
+          bestSize = sz
+          best = n
+        }
+      }
+    }
+  }
+  const node = best
   if (node === null) return null
   if (!(node.from <= range.from && range.to <= node.to)) return null
   let url: SyntaxNode | null = null
@@ -712,6 +891,13 @@ export function insertHeadingIdSpec(state: EditorState): TransactionSpec {
   const range = state.selection.main
   const line = state.doc.lineAt(range.head)
   if (headingLevel(line.text) === 0) return noChangeSpec(state)
+  if (/\s*\{#custom-id\}$/.test(line.text)) {
+    const stripped = line.text.replace(/\s*\{#custom-id\}$/, '')
+    return {
+      changes: { from: line.from, to: line.to, insert: stripped },
+      selection: { anchor: line.from + stripped.length },
+    }
+  }
   const stripped = line.text.replace(/\s*\{#[^}]*\}$/, '')
   const next = stripped + ' {#custom-id}'
   return {
@@ -749,8 +935,13 @@ interface ListItemInfo {
 }
 
 function listItemInfo(text: string): ListItemInfo | null {
-  let m = /^(\s*)([-*+]\s*\[[ xX]?\]\s+)/.exec(text)
-  if (m) return { indent: m[1], marker: m[2], kind: 'task' }
+  // Task must be checked first so "- [] item" is not mis-classified as unordered "- ".
+  // Regex matches all four spellings: "-[] ", "- [] ", "-[ ] ", "- [ ] " (also "*" and "+").
+  // \s* after the closing bracket captures the trailing space(s) so marker length
+  // includes them and content slicing is correct. The includes('[') && includes(']')
+  // guard ensures "- " alone is not treated as task.
+  let m = /^(\s*)([-*+]\s*\[[ xX]?\]\s*)/.exec(text)
+  if (m && m[2].includes('[') && m[2].includes(']')) return { indent: m[1], marker: m[2], kind: 'task' }
   m = /^(\s*)(\d+\.\s+)/.exec(text)
   if (m) return { indent: m[1], marker: m[2], kind: 'ordered', number: parseInt(m[2], 10) }
   m = /^(\s*)([-*+]\s+)/.exec(text)
@@ -770,15 +961,37 @@ export function continueListSpec(state: EditorState): TransactionSpec | null {
   const range = state.selection.main
   const line = state.doc.lineAt(range.head)
   const info = listItemInfo(line.text)
-  if (!info) return null
-  const content = line.text.slice(info.indent.length + info.marker.length)
-  if (content.trim() === '') {
-    return { changes: { from: line.from, to: line.to, insert: '' }, selection: { anchor: line.from } }
+  if (info) {
+    // Marker length includes the trailing space(s) after "]" / "." / "-".
+    // Content is everything after indent+marker; trim check handles empty item
+    // (second Enter exits list) for all four task spellings.
+    const content = line.text.slice(info.indent.length + info.marker.length)
+    if (content.trim() === '') {
+      return { changes: { from: line.from, to: line.to, insert: '' }, selection: { anchor: line.from } }
+    }
+    let nextMarker = info.marker
+    if (info.kind === 'ordered' && info.number !== undefined) nextMarker = `${info.number + 1}. `
+    // Task: preserve the exact original form ("-[] ", "- [] ", "-[ ] ", "- [ ] ").
+    // info.marker already includes the trailing space(s); if the original line
+    // somehow had no trailing space (e.g. "- []" at EOL without content, though
+    // continuation only runs when content is non-empty so this is rare), ensure
+    // the inserted marker ends with a space so it remains a valid task marker.
+    if (info.kind === 'task' && !/\s$/.test(nextMarker)) nextMarker += ' '
+    const insert = '\n' + info.indent + nextMarker
+    return { changes: { from: line.to, to: line.to, insert }, selection: { anchor: line.to + insert.length } }
   }
-  let nextMarker = info.marker
-  if (info.kind === 'ordered' && info.number !== undefined) nextMarker = `${info.number + 1}. `
-  const insert = '\n' + info.indent + nextMarker
-  return { changes: { from: line.to, to: line.to, insert }, selection: { anchor: line.to + insert.length } }
+  const defMatch = /^(\s*)(:\s*)/.exec(line.text)
+  if (defMatch) {
+    const indent = defMatch[1]
+    const marker = defMatch[2]
+    const content = line.text.slice(indent.length + marker.length)
+    if (content.trim() === '') {
+      return { changes: { from: line.from, to: line.to, insert: '' }, selection: { anchor: line.from } }
+    }
+    const insert = '\n' + indent + ': '
+    return { changes: { from: line.to, to: line.to, insert }, selection: { anchor: line.to + insert.length } }
+  }
+  return null
 }
 
 /**

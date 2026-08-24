@@ -1,8 +1,8 @@
 ---
 description: Primary/default agent. Owns a request end-to-end — clarifies first, splits work into disjoint packets, spawns coder subagents in parallel, and runs tests itself after they report back.
 mode: primary
-model: opencode/deepseek-v4-flash-free
-variant: max
+model: opencode/muse-spark-1.2-contributor-free
+variant: xhigh
 permission: allow
 ---
 

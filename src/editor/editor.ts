@@ -13,7 +13,7 @@ import { EditorState, Prec, StateEffect, Transaction, type Extension, type Trans
 import { EditorView, keymap, placeholder, type Command, type KeyBinding, ViewUpdate } from '@codemirror/view'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from '@codemirror/commands'
-import { search, searchKeymap } from '@codemirror/search'
+import { openSearchPanel, search, searchKeymap } from '@codemirror/search'
 import { livePreviewExtensions, wireMouseSelection } from './livePreview'
 import { editorThemeExtension } from './cmTheme'
 
@@ -114,6 +114,22 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
   // `includeHistory=false` drops the undo-history field (used by resetHistory to
   // wipe the stacks: the field is a module-level singleton, so reconfiguring with
   // it present would carry the old history over).
+  function openReplacePanel(view: EditorView): boolean {
+    openSearchPanel(view)
+    // The panel DOM is created on the next update; defer focusing the
+    // replace field so it actually exists.
+    setTimeout(() => {
+      const panel = view.dom.querySelector('.cm-search') as HTMLElement | null
+      if (panel === null) return
+      const replaceInput = panel.querySelector('input[name="replace"]') as HTMLInputElement | null
+      if (replaceInput !== null) {
+        replaceInput.focus()
+        replaceInput.select()
+      }
+    }, 0)
+    return true
+  }
+
   function buildExtensions(mode: 'live' | 'source', wrap: boolean, includeHistory = true): Extension[] {
     const extensions: Extension[] = [
       // GFM base (markdownLanguage): the default `markdown()` uses the CommonMark
@@ -121,10 +137,28 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
       markdown({ base: markdownLanguage }),
       ...livePreviewExtensions({ collapse: mode === 'live', imageResolver: opts?.imageResolver }),
       editorThemeExtension(),
-      // Find/replace (user-results Other #8): Mod-f opens the search panel,
-      // Mod-h opens replace. No app shortcut uses Mod-h alone (header-cycle is
-      // Mod-Alt-h, hr is Mod-Shift-h). The .cm-search styles come from editor.css.
-      search(),
+      // Find/replace (user-results Other #8 / B19): Mod-f opens the search
+      // panel, Mod-h opens replace. No app shortcut uses Mod-h alone
+      // (header-cycle is Mod-Alt-h, hr is Mod-Shift-h). `top: true` puts the
+      // panel in .cm-panels-top so the floating-card CSS (editor.css)
+      // positions it at the top instead of the default bottom bar — the built-
+      // in option is cleaner than a CSS-only override against a bottom
+      // container (absolute inside .cm-panels-bottom is relative to the bottom
+      // sticky box, so top:8 was still visually at the bottom).
+      search({ top: true }),
+      // Custom search keymap at highest precedence so it beats the formatting
+      // hotkey layer (footnote is Mod-Shift-f). Mod-f opens find, Mod-h and
+      // Mod-Shift-f open replace (replace field focused). Without this,
+      // footnote would swallow Mod-Shift-f and Mod-h would do nothing
+      // (searchKeymap only binds Mod-f). Prec.highest guarantees this wins
+      // even though formattingHotkeyMap is at Prec.high via extraKeymaps.
+      Prec.highest(
+        keymap.of([
+          { key: 'Mod-f', run: openSearchPanel, preventDefault: true },
+          { key: 'Mod-h', run: openReplacePanel, preventDefault: true },
+          { key: 'Mod-Shift-f', run: openReplacePanel, preventDefault: true },
+        ]),
+      ),
       keymap.of([
         // App-level bindings run BEFORE the base keymaps (first match wins):
         // - Mod-/ is handled at the window level (mode toggle); swallow it here so
@@ -146,12 +180,14 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
     // start a fresh (empty) undo/redo stack — see resetHistory.
     if (includeHistory) extensions.push(history())
     // Extra keymap groups (formatting hotkeys + list-Enter continuation) are
-    // each wrapped individually with keymap.of and raised to HIGH precedence
-    // (`Prec.high`), so they are checked BEFORE the base keymap above — the
-    // app's formatting chords (Mod-u underline, Mod-Shift-k code block, ...)
-    // must beat the base keymaps' defaults (undoSelection, deleteLine, ...).
+    // each wrapped individually with keymap.of and raised to HIGHEST precedence
+    // (`Prec.highest`), so they are checked BEFORE both the base keymap above
+    // AND lang-markdown's built-in `insertNewlineContinueMarkup` handler (which
+    // is at `Prec.high`). Without this, the lang-markdown handler intercepts
+    // Enter for task-list variants like "- []" and replaces the marker with a
+    // plain unordered "- " instead of preserving the exact task form.
     if (opts?.extraKeymaps !== undefined && opts.extraKeymaps.length > 0) {
-      extensions.push(...opts.extraKeymaps.map((bindings) => Prec.high(keymap.of(bindings))))
+      extensions.push(...opts.extraKeymaps.map((bindings) => Prec.highest(keymap.of(bindings))))
     }
     // Paste-image interception: when an image is pasted and the host provided an
     // onPasteImage callback, hand the event off and block the default text paste.
@@ -254,6 +290,18 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
       if (nextMode === mode) return
       mode = nextMode
       view.dispatch({ effects: StateEffect.reconfigure.of(buildExtensions(mode, wrap)) })
+      // B6: Lezer's incremental parse is viewport/budget-limited — immediately
+      // after reconfigure the syntaxTree may only cover the visible page
+      // (~42 lines). Schedule empty transactions after the parser has had time
+      // to finish so livePreview plugins can rebuild with the complete tree.
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => {
+          if (mode === nextMode) view.dispatch({})
+        })
+      }
+      setTimeout(() => {
+        if (mode === nextMode) view.dispatch({})
+      }, 60)
     },
     setWrapping(nextWrap: boolean): void {
       if (nextWrap === wrap) return

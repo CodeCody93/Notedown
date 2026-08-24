@@ -1,9 +1,9 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { isTauri } from '@tauri-apps/api/core'
 import type { KeyBinding } from '@codemirror/view'
 import type { EditorController } from '../editor/editor'
 import { getFileIO } from '../platform'
 import type { FileIO, OpenResult } from '../platform/types'
-import { runtime } from '../platform/detect'
 import {
   SESSION_KEY,
   clearDraft,
@@ -14,7 +14,7 @@ import {
   shouldRecover,
   writeSession,
 } from './draft'
-import { renderStandaloneHtml } from './export'
+import { renderStandaloneHtml, renderStandaloneHtmlWithImages } from './export'
 import { addRecent, parseRecents, removeRecent } from './recent'
 import { applyTheme, loadSettings, resolveTheme } from './settings'
 import type { Settings } from './settings'
@@ -50,6 +50,11 @@ const imageCache = new Map<string, string>()
 // transition (e.g. undo back to the saved content) and drop the autosaved
 // draft. Init false is fine: the subscribe fires only after initApp.
 let lastDirty = false
+
+function basename(path: string): string {
+  const base = path.split(/[\\/]/).pop() ?? path
+  return base || path
+}
 
 function byId(id: string): HTMLElement {
   const node = document.getElementById(id)
@@ -157,12 +162,13 @@ async function saveAsDoc(): Promise<void> {
   const doc = appState.get().doc
   const saved = await io.saveFile(doc.path, doc.content, doc.name, { alwaysPick: true })
   if (saved === null) return
-  appState.set({ doc: { ...doc, path: saved, dirty: false, savedContent: doc.content } })
-  const recents = addRecent(appState.get().recents, { path: saved, name: doc.name })
+  const newName = basename(saved)
+  appState.set({ doc: { ...doc, path: saved, name: newName, dirty: false, savedContent: doc.content } })
+  const recents = addRecent(appState.get().recents, { path: saved, name: newName })
   appState.set({ recents })
   await io.writeRecents(JSON.stringify(recents))
   if (doc.path !== null) await clearDraft(io, doc.path)
-  await writeSession(io, { path: saved, name: doc.name, ts: Date.now(), cursor: currentCursor() })
+  await writeSession(io, { path: saved, name: newName, ts: Date.now(), cursor: currentCursor() })
 }
 
 async function openRecent(path: string): Promise<void> {
@@ -200,12 +206,25 @@ async function clearRecents(): Promise<void> {
 }
 
 // Export the current doc as a standalone, styled HTML file (PLAN §14 / §19).
+// K3 — local raster images next to the doc (e.g. `pic.png`) are inlined as
+// `data:` URLs via `exposeImage` so the exported HTML is self-contained and
+// works offline; `pic.svg` is intentionally NOT embedded (rejected by
+// expose_image as scriptable, CSP would block a relative svg anyway).
 async function exportHtml(): Promise<void> {
   const doc = appState.get().doc
-  const html = renderStandaloneHtml(doc.content, {
+  const opts = {
     title: doc.name,
     theme: resolveTheme(appState.get().settings.theme),
-  })
+  } as const
+  let html: string
+  try {
+    html = await renderStandaloneHtmlWithImages(doc.content, opts, doc.path, (abs) => io.exposeImage(abs))
+  } catch {
+    // Inline path failed for an unexpected reason (e.g. exposeImage transport
+    // error) — fall back to the plain render so export still succeeds; svg
+    // and per-image failures are already handled inside inlineMarkdownImages.
+    html = renderStandaloneHtml(doc.content, opts)
+  }
   const htmlName = doc.name.replace(/\.[^./\\]+$/, '') + '.html'
   try {
     const saved = await io.saveFile(null, html, htmlName, { html: true })
@@ -549,26 +568,49 @@ function wireHotkeys(): void {
 }
 
 function wireCloseGuard(): void {
-  if (runtime === 'tauri') {
-    // Tauri v2 semantics (verified against tauri 2.11.5): once a JS
-    // close-requested listener exists, the Rust side ALWAYS calls
-    // api.prevent_close() before emitting the event — so the window never
-    // closes by itself; the handler must destroy() it explicitly. destroy()
-    // bypasses close-requested, so there is no re-entrancy. This fixes the
-    // X-button / Alt+F4 deadlock (user-results Other #3).
-    getCurrentWindow().onCloseRequested(async (event) => {
-      const doc = appState.get().doc
-      if (!doc.dirty) {
-        await getCurrentWindow().destroy()
-        return
-      }
-      const ok = await io.confirm(`Discard unsaved changes to ${doc.name}?`)
-      if (ok) {
-        await getCurrentWindow().destroy()
-      } else {
+  // Use isTauri() at call-time — the cached `runtime` const in detect.ts may be
+  // stale ("browser") if evaluated before Tauri internals were injected, which
+  // caused this guard to never register (C8) and window-title updates to be
+  // skipped (A3). Call-time check is safe because wireCloseGuard runs from
+  // initApp() after Tauri is ready.
+  if (isTauri()) {
+    // Tauri v2: onCloseRequested receives a CloseRequestedEvent with
+    // preventDefault() to veto the close. The event's async nature means
+    // we must call preventDefault() synchronously before awaiting the
+    // confirm dialog, then explicitly destroy() if the user confirms.
+    // destroy() bypasses close-requested so there is no re-entrancy.
+    // For a clean doc we still preventDefault then destroy so the window
+    // actually closes even when the Rust side has auto-prevented.
+    //
+    // C8 NOTE: root cause was likely twofold: (1) `runtime` const cached at
+    // module load before Tauri ready → `runtime === 'tauri'` was false so this
+    // handler never registered; fixed by switching to isTauri() at call-time.
+    // (2) missing window capabilities (setTitle/close/destroy/onCloseRequested)
+    // in desktop.json caused invoke rejections that were swallowed. Capability
+    // fix in desktop.json should allow this to work. However full close-guard
+    // behavior (X/Alt+F4, preventDefault+async confirm+destroy vs close,
+    // re-entrancy, race with Rust auto-prevent) is subtle and needs manual QA
+    // on Windows/macOS. If QA still fails (e.g. destroy silently blocked or
+    // event never fires), defer to a Tauri window-lifecycle specialist — do not
+    // claim C8 fully fixed without QA. See A3/C8 investigation notes.
+    getCurrentWindow()
+      .onCloseRequested(async (event) => {
         event.preventDefault()
-      }
-    })
+        const doc = appState.get().doc
+        if (!doc.dirty) {
+          await getCurrentWindow()
+            .destroy()
+            .catch((err) => console.warn('[close-guard] destroy failed — check desktop.json window permissions', err))
+          return
+        }
+        const ok = await io.confirm(`Discard unsaved changes to ${doc.name}?`)
+        if (ok) {
+          await getCurrentWindow()
+            .destroy()
+            .catch((err) => console.warn('[close-guard] destroy failed — check desktop.json window permissions', err))
+        }
+      })
+      .catch((err) => console.warn('[close-guard] onCloseRequested registration failed — check desktop.json window permissions', err))
   }
   // Browser dev mode: beforeunload keeps the tab from closing silently.
   window.addEventListener('beforeunload', (e) => {

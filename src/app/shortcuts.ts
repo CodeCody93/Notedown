@@ -61,7 +61,12 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'emoji', keys: ['Mod-Alt-e'], label: 'Emoji picker' },
   { id: 'heading-id', keys: ['Mod-Shift-2'], label: 'Heading ID' },
   { id: 'def-list', keys: ['Mod-Alt-d'], label: 'Definition list' },
-  { id: 'sub', keys: ['Mod-Alt-s'], label: 'Subscript' },
+  // B17 -> E19/E20: Mod-Alt-s collided with Windows Snipping Tool, then
+  // Mod-Alt-Shift-s (Ctrl+Alt+Shift+S) proved unresponsive (too many
+  // modifiers/OS interception). Changed to Mod-Alt-j (Ctrl+Alt+J /
+  // Cmd+Alt+J) which is free (see existing Mod-Alt-{t,h,o,i,d,u,m,e,l}).
+  // LabelFor() keeps menu hints in sync.
+  { id: 'sub', keys: ['Mod-Alt-j'], label: 'Subscript' },
   { id: 'sup', keys: ['Mod-Alt-u'], label: 'Superscript' },
   { id: 'highlight', keys: ['Mod-Alt-m'], label: 'Highlight' },
   { id: 'toggle-mode', keys: ['Mod-/'], label: 'Toggle live/source' },

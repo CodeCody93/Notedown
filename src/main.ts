@@ -2,7 +2,7 @@ import { getEditor, initApp } from './app/app'
 import { appState } from './app/state'
 import type { AppState } from './app/state'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { runtime } from './platform/detect'
+import { isTauri } from '@tauri-apps/api/core'
 
 function countWords(content: string): number {
   const trimmed = content.trim()
@@ -26,10 +26,16 @@ function renderStatusBar(state: AppState): void {
 
 function renderTitle(state: AppState): void {
   document.title = `${state.doc.dirty ? '• ' : ''}${state.doc.name} — MarkItDown`
-  // A3: the Tauri window title must follow the doc name too (browser mode keeps
-  // document.title above; getCurrentWindow would throw outside Tauri).
-  if (runtime === 'tauri') {
-    void getCurrentWindow().setTitle(document.title).catch(() => {})
+  // A3: the OS/Tauri window title must follow document.title (dirty prefix +
+  // name). Browser mode keeps document.title only; Tauri mode also calls
+  // setTitle. Use isTauri() at call-time (never the cached runtime const) so
+  // the check is correct even if Tauri internals were not ready at module load.
+  // Capability desktop.json must allow core:window:allow-set-title or this
+  // invoke is rejected (previously swallowed silently).
+  if (isTauri()) {
+    void getCurrentWindow()
+      .setTitle(document.title)
+      .catch((err) => console.warn('[title] setTitle failed — check capabilities/desktop.json window permissions', err))
   }
 }
 

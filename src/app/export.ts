@@ -40,6 +40,7 @@ import sqlLang from 'highlight.js/lib/languages/sql'
 import plaintextLang from 'highlight.js/lib/languages/plaintext'
 import DOMPurify from 'dompurify'
 import { HLJS_CSS_DARK, HLJS_CSS_LIGHT } from '../styles/hljs-themes'
+import { resolveAgainstDocDir } from './text'
 
 // Re-exported for the preview pane (a separate module): the preview injects the
 // same stylesheets into its own <style> element so preview and export match.
@@ -116,15 +117,15 @@ md.renderer.rules.strong_close = (tokens, idx) =>
   tokens[idx].markup === '__' ? '</u>' : '</strong>'
 
 /**
- * User-results Other #4 — accept `-[]` / `-[ ]` / `-[x]` task markers (no
- * space after the dash). CommonMark only recognises `- ` as a list marker and
- * markdown-it-task-lists only matches `[ ] `/`[x] `/`[X] ` inline content, so
- * the shorthand forms parse as plain paragraphs. Normalise them to the
- * standard `- [ ] ` spelling in the source BEFORE block parsing. Fenced code
- * blocks and indented code lines are left untouched so their content stays
- * literal.
+ * User-results Other #4 — accept `-[]` / `- []` / `-[ ]` / `- [ ]`
+ * (and `*`/`+` variants, with or without space after the bullet). CommonMark
+ * only recognises `- ` as a list marker and markdown-it-task-lists only
+ * matches `[ ] `/`[x] `/`[X] ` inline content, so the shorthand forms parse
+ * as plain paragraphs. Normalise them to the standard `- [ ] ` spelling in
+ * the source BEFORE block parsing. Fenced code blocks and indented code
+ * lines are left untouched so their content stays literal.
  */
-const TASK_MARKER_RE = /^(\s*)-\[([ xX]?)\](?=\s|$)/
+const TASK_MARKER_RE = /^(\s*)([-*+])\s*\[([ xX]?)\](?=\s|$)/
 
 function normalizeTaskListMarkers(src: string): string {
   const lines = src.split('\n')
@@ -154,7 +155,7 @@ function normalizeTaskListMarkers(src: string): string {
     }
     if (inFence) continue
     if (/^ {4,}/.test(line)) continue // indented code block
-    lines[i] = line.replace(TASK_MARKER_RE, (_, indent, label) => `${indent}- [${label || ' '}]`)
+    lines[i] = line.replace(TASK_MARKER_RE, (_, indent, bullet, label) => `${indent}${bullet} [${label || ' '}]`)
   }
   return lines.join('\n')
 }
@@ -316,6 +317,9 @@ export const MARKDOWN_BODY_CSS: string = `
 
 .md-body img {
   max-width: 100%;
+  width: 100%;
+  height: auto;
+  display: block;
 }
 
 .md-body hr {
@@ -471,6 +475,112 @@ export function escapeHtml(s: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
+}
+
+/**
+ * K3 — inline local raster images as data URLs for export.
+ *
+ * Scans markdown for `![alt](src)` tokens, resolves each relative src against
+ * `docPath` via `resolveAgainstDocDir`, and calls `expose(absPath)` to get a
+ * `data:` URL (Tauri's `expose_image` — rejects svg/unsupported, which we
+ * intentionally skip so `pic.svg` stays not-embedded and `pic.png` becomes
+ * `data:image/png;base64,...`). Returns the markdown with inlined data URLs
+ * (or the original markdown when docPath is null, nothing is relative, or
+ * expose fails). Duplicate srcs are de-duplicated before calling expose.
+ *
+ * Remote/absolute/data/blob/asset/rooted srcs and `.svg` are skipped by
+ * design — they either must not be embedded or the CSP would block them
+ * anyway, so the exported HTML keeps the raw src (rendered as empty/alt).
+ */
+export async function inlineMarkdownImages(
+  markdown: string,
+  docPath: string | null,
+  expose: (absPath: string) => Promise<string>,
+): Promise<string> {
+  if (docPath === null) return markdown
+  // Find all markdown image tokens: ![alt](inside)
+  const re = /!\[([^\]]*)\]\(([^)]+)\)/g
+  const matches = [...markdown.matchAll(re)]
+  if (matches.length === 0) return markdown
+
+  // De-duplicate by raw src string (the first token inside parens, sans title).
+  // Map raw src -> dataUrl (only when expose succeeds and not svg/remote).
+  const cache = new Map<string, string>()
+
+  // Helper: extract the bare src from the inside of `![alt](INSIDE)` — handles
+  // `<src>`, title after src, and surrounding whitespace.
+  function extractSrc(inside: string): { src: string; titlePart: string } {
+    const trimmed = inside.trim()
+    if (trimmed.startsWith('<')) {
+      const end = trimmed.indexOf('>')
+      if (end !== -1) {
+        const src = trimmed.slice(1, end).trim()
+        const titlePart = trimmed.slice(end + 1).trim()
+        return { src, titlePart }
+      }
+    }
+    // First whitespace-separated token is the src; remainder is optional title.
+    const ws = trimmed.search(/\s/)
+    if (ws === -1) return { src: trimmed, titlePart: '' }
+    return { src: trimmed.slice(0, ws).trim(), titlePart: trimmed.slice(ws).trim() }
+  }
+
+  for (const m of matches) {
+    const inside = m[2]
+    const { src } = extractSrc(inside)
+    if (src.length === 0) continue
+    if (/^(https?:|data:|blob:|asset:|\/|#)/i.test(src)) continue
+    const lower = src.toLowerCase().split('?')[0].split('#')[0]
+    if (lower.endsWith('.svg')) continue
+    if (cache.has(src)) continue
+    // Cache misses are resolved now; failed exposes are not cached (leave raw).
+    try {
+      const abs = resolveAgainstDocDir(docPath, src)
+      const dataUrl = await expose(abs)
+      cache.set(src, dataUrl)
+    } catch {
+      // svg rejection, unsupported type, missing file — leave raw src
+    }
+  }
+
+  if (cache.size === 0) return markdown
+
+  // Rebuild markdown, replacing each token's src with the data URL when cached.
+  let out = ''
+  let last = 0
+  for (const m of matches) {
+    const start = m.index ?? 0
+    const full = m[0]
+    const alt = m[1]
+    const inside = m[2]
+    const { src, titlePart } = extractSrc(inside)
+    const dataUrl = cache.get(src)
+    out += markdown.slice(last, start)
+    if (dataUrl !== undefined) {
+      out += `![${alt}](${dataUrl}${titlePart !== '' ? ` ${titlePart}` : ''})`
+    } else {
+      out += full
+    }
+    last = start + full.length
+  }
+  out += markdown.slice(last)
+  return out
+}
+
+/**
+ * K3 — async export path that inlines local raster images before rendering.
+ * Keeps `renderStandaloneHtml` synchronous for tests/preview; the export
+ * command (app.ts) awaits this so `pic.png` next to the doc becomes
+ * `data:image/png;base64,...` while `pic.svg` stays not-embedded.
+ */
+export async function renderStandaloneHtmlWithImages(
+  markdown: string,
+  opts: StandaloneHtmlOptions,
+  docPath: string | null,
+  expose: (absPath: string) => Promise<string>,
+): Promise<string> {
+  const inlined = await inlineMarkdownImages(markdown, docPath, expose)
+  return renderStandaloneHtml(inlined, opts)
 }
 
 /**

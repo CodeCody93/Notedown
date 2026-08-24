@@ -11,6 +11,7 @@
 // input flows into it, so there is no injection surface.
 
 import type { KeyBinding } from '@codemirror/view'
+import { searchPanelOpen } from '@codemirror/search'
 import { FORMATTING_COMMANDS } from './formatting'
 import { SHORTCUTS, getPlatform, labelFor } from './shortcuts'
 
@@ -63,8 +64,8 @@ const ICON = {
   saveAs: `<rect x="4.5" y="5" width="8" height="8" rx="1" /><path d="M6.5 5v2.5h4V5" /><path d="M8 1.5v3.5M6.2 3.2L8 5l1.8-1.8" />`,
   export: `<path d="M4.5 1.5h4.5l3 3v9a1 1 0 0 1-1 1h-6.5a1 1 0 0 1-1-1V2.5a1 1 0 0 1 1-1z" /><path d="M8.5 7.5v4M6.8 9.8l1.7 1.7 1.7-1.7" />`,
   settings: `<path d="M2.5 4.5h6M2.5 8h3.5M2.5 11.5h7" /><circle cx="11.5" cy="4.5" r="1.7" fill="currentColor" stroke="none" /><circle cx="9" cy="8" r="1.7" fill="currentColor" stroke="none" /><circle cx="12.5" cy="11.5" r="1.7" fill="currentColor" stroke="none" />`,
-  undo: `<polyline points="2.5 4.5 2.5 8 6 8" /><path d="M2.5 8a6 6 0 1 0 6-6" />`,
-  redo: `<polyline points="13.5 4.5 13.5 8 10 8" /><path d="M13.5 8a6 6 0 1 1-6-6" />`,
+  undo: `<path d="M4 7H11a3.5 3.5 0 0 1 0 7H9" /><polyline points="6.5 4.5 4 7 6.5 9.5" />`,
+  redo: `<path d="M12 7H5a3.5 3.5 0 0 0 0 7h2" /><polyline points="9.5 4.5 12 7 9.5 9.5" />`,
   copy: `<rect x="5.5" y="5.5" width="8" height="8" rx="1" /><path d="M10.5 5.5V4a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5" />`,
   cut: `<circle cx="4" cy="4" r="2.2" /><circle cx="4" cy="12" r="2.2" /><path d="M13.5 3L5.5 10.8M9.5 9.8l4 3.7M5.5 5.2L8 7.7" />`,
   paste: `<rect x="6.75" y="1.5" width="2.5" height="2" rx="0.75" /><path d="M10.75 3.5h1A1.5 1.5 0 0 1 13.25 5v8.5a1.5 1.5 0 0 1-1.5 1.5h-8a1.5 1.5 0 0 1-1.5-1.5V5a1.5 1.5 0 0 1 1.5-1.5h1" />`,
@@ -620,9 +621,75 @@ export function openEmojiPicker(anchor: HTMLElement, onPick: (emoji: string) => 
   root.append(input, grid)
   renderGrid('')
 
-  const anchorRect = anchor.getBoundingClientRect()
-  root.style.left = `${Math.max(8, Math.round(anchorRect.left))}px`
-  root.style.top = `${Math.max(8, Math.round(anchorRect.bottom) + 6)}px`
+  // When opened via hotkey the anchor is the full editor (view.dom, .cm-editor)
+  // whose rect is the whole editor pane (left 0, bottom at pane bottom) — that
+  // would place the picker at the left edge below the editor and out of view.
+  // Detect the editor root and re-anchor to the caret (or centered top) instead.
+  let anchorRect = anchor.getBoundingClientRect()
+  const isEditorAnchor =
+    anchor.classList.contains('cm-editor') ||
+    anchor.classList.contains('cm-content') ||
+    anchor.querySelector('.cm-content') !== null
+  if (isEditorAnchor) {
+    const cursorEl = anchor.querySelector('.cm-cursor') as HTMLElement | null
+    if (cursorEl !== null) {
+      const r = cursorEl.getBoundingClientRect()
+      // Place below the caret; if caret coords are empty (detached), fall back.
+      if (r.width !== 0 || r.height !== 0) {
+        anchorRect = r as DOMRect
+      }
+    }
+    if (cursorEl === null || (anchorRect.width === 0 && anchorRect.height === 0)) {
+      // Fallback: center-top of the editor, just below the toolbar area.
+      const pickerHalf = 122 // 244px / 2
+      const centerX = anchor.getBoundingClientRect().left + anchor.getBoundingClientRect().width / 2
+      const left = Math.max(8, Math.min(centerX - pickerHalf, window.innerWidth - 244 - 8))
+      const top = Math.max(8, Math.round(anchor.getBoundingClientRect().top + 48))
+      root.style.left = `${Math.round(left)}px`
+      root.style.top = `${top}px`
+      document.body.appendChild(root)
+      const onDocMousedown = (ev: MouseEvent): void => {
+        const t = ev.target
+        if (t instanceof Node && root.contains(t)) return
+        closeEmojiPicker()
+      }
+      const onDocKey = (ev: KeyboardEvent): void => {
+        if (ev.key === 'Escape') closeEmojiPicker()
+      }
+      document.addEventListener('mousedown', onDocMousedown)
+      document.addEventListener('keydown', onDocKey)
+      setTimeout(() => input.focus(), 0)
+      emojiPicker = {
+        root,
+        cleanup: () => {
+          document.removeEventListener('mousedown', onDocMousedown)
+          document.removeEventListener('keydown', onDocKey)
+          root.remove()
+        },
+      }
+      return
+    }
+  }
+  // Clamp to viewport so the picker never overflows horizontally and stays
+  // visible when the anchor is near the right edge (toolbar Extra button) or
+  // when the caret is near the viewport edge.
+  const pickerWidth = 244
+  let left = Math.round(anchorRect.left)
+  let top = Math.round(anchorRect.bottom + 6)
+  // If anchor is the caret (isEditorAnchor true above), anchorRect is the
+  // caret rect — keep the picker below it; for toolbar buttons, anchorRect
+  // is the button rect (bottom is below the button). Both work with the same
+  // formula.
+  left = Math.max(8, Math.min(left, window.innerWidth - pickerWidth - 8))
+  // If the picker would overflow the bottom edge, flip it above the anchor.
+  const pickerHeight = 260 // approx (search + grid)
+  if (top + pickerHeight > window.innerHeight - 8) {
+    const flipped = Math.round(anchorRect.top - pickerHeight - 6)
+    if (flipped >= 8) top = flipped
+  }
+  top = Math.max(8, top)
+  root.style.left = `${left}px`
+  root.style.top = `${top}px`
 
   document.body.appendChild(root)
 
@@ -670,6 +737,12 @@ export function formattingHotkeyMap(): KeyBinding[] {
     return {
       key: chord,
       run: (view) => {
+        // Footnote (Mod-Shift-f) conflicts with the search-replace hotkey.
+        // The editor installs a Prec.highest search keymap for Mod-Shift-f /
+        // Mod-h that should win, but as a safety net also make the formatting
+        // footnote handler yield when the search panel is already open — let
+        // the search panel keep focus instead of inserting a footnote.
+        if (s.id === 'footnote' && searchPanelOpen(view.state)) return false
         view.dispatch(FORMATTING_COMMANDS[s.id](view.state))
         return true
       },

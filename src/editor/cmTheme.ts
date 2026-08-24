@@ -1,5 +1,64 @@
 import type { Extension } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
+import { HLJS_CSS_DARK, HLJS_CSS_LIGHT } from '../styles/hljs-themes'
+
+let hljsStylesInjected = false
+function ensureHljsStyles(): void {
+  if (hljsStylesInjected) return
+  if (typeof document === 'undefined') return
+  hljsStylesInjected = true
+  const style = document.createElement('style')
+  style.id = 'cm-hljs-theme'
+  style.textContent = `
+  .cm-code-widget { display: block; margin: 4px 0; }
+  .cm-code-widget pre { background: var(--code-bg); padding: 0.8em 1em; border-radius: 6px; overflow-x: auto; margin: 0; }
+  .cm-code-widget code.hljs { background: transparent !important; padding: 0; display: block; overflow-x: auto; }
+  .cm-code-widget .hljs { background: transparent !important; }
+  ${HLJS_CSS_LIGHT}
+  @media (prefers-color-scheme: dark) {
+    ${HLJS_CSS_DARK}
+  }
+  /* Explicit [data-theme="dark"] support so editor follows app setting even when OS is light */
+  [data-theme="dark"] .cm-code-widget .hljs,
+  [data-theme="dark"] .hljs { color: #c9d1d9; }
+  [data-theme="dark"] .cm-code-widget .hljs-doctag,
+  [data-theme="dark"] .cm-code-widget .hljs-keyword,
+  [data-theme="dark"] .cm-code-widget .hljs-meta .hljs-keyword,
+  [data-theme="dark"] .cm-code-widget .hljs-template-tag,
+  [data-theme="dark"] .cm-code-widget .hljs-template-variable,
+  [data-theme="dark"] .cm-code-widget .hljs-type,
+  [data-theme="dark"] .cm-code-widget .hljs-variable.language_ { color: #ff7b72; }
+  [data-theme="dark"] .cm-code-widget .hljs-title,
+  [data-theme="dark"] .cm-code-widget .hljs-title.class_,
+  [data-theme="dark"] .cm-code-widget .hljs-title.class_.inherited__,
+  [data-theme="dark"] .cm-code-widget .hljs-title.function_ { color: #d2a8ff; }
+  [data-theme="dark"] .cm-code-widget .hljs-attr,
+  [data-theme="dark"] .cm-code-widget .hljs-attribute,
+  [data-theme="dark"] .cm-code-widget .hljs-literal,
+  [data-theme="dark"] .cm-code-widget .hljs-meta,
+  [data-theme="dark"] .cm-code-widget .hljs-number,
+  [data-theme="dark"] .cm-code-widget .hljs-operator,
+  [data-theme="dark"] .cm-code-widget .hljs-variable,
+  [data-theme="dark"] .cm-code-widget .hljs-selector-attr,
+  [data-theme="dark"] .cm-code-widget .hljs-selector-class,
+  [data-theme="dark"] .cm-code-widget .hljs-selector-id { color: #79c0ff; }
+  [data-theme="dark"] .cm-code-widget .hljs-regexp,
+  [data-theme="dark"] .cm-code-widget .hljs-string,
+  [data-theme="dark"] .cm-code-widget .hljs-meta .hljs-string { color: #a5d6ff; }
+  [data-theme="dark"] .cm-code-widget .hljs-built_in,
+  [data-theme="dark"] .cm-code-widget .hljs-symbol { color: #ffa657; }
+  [data-theme="dark"] .cm-code-widget .hljs-comment,
+  [data-theme="dark"] .cm-code-widget .hljs-code,
+  [data-theme="dark"] .cm-code-widget .hljs-formula { color: #8b949e; }
+  [data-theme="dark"] .cm-code-widget .hljs-name,
+  [data-theme="dark"] .cm-code-widget .hljs-quote,
+  [data-theme="dark"] .cm-code-widget .hljs-selector-tag,
+  [data-theme="dark"] .cm-code-widget .hljs-selector-pseudo { color: #7ee787; }
+  [data-theme="dark"] .cm-code-widget .hljs-section { color: #1f6feb; }
+  [data-theme="dark"] .cm-code-widget .hljs-bullet { color: #f2cc60; }
+`
+  document.head.appendChild(style)
+}
 
 /**
  * CM6 theme mapping our design tokens (theme.css) onto `.cm-*` classes.
@@ -19,6 +78,7 @@ import { EditorView } from '@codemirror/view'
  * rebuild on a `[data-theme]` switch (the vars resolve from theme.css).
  */
 export function editorThemeExtension(): Extension {
+  ensureHljsStyles()
   return EditorView.theme({
     // ---- Editor chrome -------------------------------------------------
     // Our `--bg` shows through from `.editor-pane`.
@@ -135,16 +195,21 @@ export function editorThemeExtension(): Extension {
       userSelect: 'none',
     },
     '.cm-image-widget': {
-      display: 'inline-block',
+      display: 'block',
+      width: '100%',
       maxWidth: '100%',
-      verticalAlign: 'middle',
+      height: 'auto',
       margin: '2px 0',
     },
     '.cm-image-widget-img': {
+      width: '100%',
+      height: 'auto',
       maxWidth: '100%',
-      maxHeight: '160px',
+      maxHeight: 'none',
       display: 'block',
       borderRadius: '4px',
+      objectFit: 'contain',
+      aspectRatio: 'auto',
     },
     '.cm-image-loading': {
       opacity: '0.5',
@@ -152,6 +217,25 @@ export function editorThemeExtension(): Extension {
     '.cm-image-unresolved': {
       color: 'var(--muted)',
       fontStyle: 'italic',
+    },
+
+    // ---- Code block widget (H) -------------------------------------------
+    '.cm-code-widget': {
+      display: 'block',
+      margin: '4px 0',
+    },
+    '.cm-code-widget pre': {
+      backgroundColor: 'var(--code-bg)',
+      padding: '0.8em 1em',
+      borderRadius: '6px',
+      overflowX: 'auto',
+      margin: '0',
+    },
+    '.cm-code-widget code.hljs': {
+      backgroundColor: 'transparent',
+      padding: '0',
+      display: 'block',
+      overflowX: 'auto',
     },
   })
 }
