@@ -717,8 +717,7 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
         parent.name === 'StrongEmphasis' &&
         node.from === parent.from &&
         parent.to - parent.from > 4 &&
-        state.doc.sliceString(parent.from, parent.from + 2) === '__' &&
-        !(isTouched && !isDrag)
+        state.doc.sliceString(parent.from, parent.from + 2) === '__'
       ) {
         decorations.push(Decoration.mark({ class: 'cm-underline' }).range(parent.from + 2, parent.to - 2))
       }
