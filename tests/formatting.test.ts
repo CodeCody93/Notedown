@@ -176,7 +176,7 @@ describe('strikethrough', () => {
 
 describe('setHeading', () => {
   it('paragraph → H2', () => {
-    expect(applyTo('x', 0, undefined, setHeadingSpec(stateOf('x', 0), 2))).toEqual({ doc: '## x', head: 0 })
+    expect(applyTo('x', 0, undefined, setHeadingSpec(stateOf('x', 0), 2))).toEqual({ doc: '## x', head: 3 })
   })
 
   it('H3 → paragraph (level 0)', () => {
@@ -197,7 +197,7 @@ describe('setHeading', () => {
 
 describe('cycleHeading', () => {
   it('paragraph → H1', () => {
-    expect(applyTo('x', 0, undefined, cycleHeadingSpec(stateOf('x', 0)))).toEqual({ doc: '# x', head: 0 })
+    expect(applyTo('x', 0, undefined, cycleHeadingSpec(stateOf('x', 0)))).toEqual({ doc: '# x', head: 2 })
   })
 
   it('H6 → paragraph', () => {

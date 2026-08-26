@@ -409,7 +409,7 @@ function transformHeading(text: string, level: 0 | 1 | 2 | 3 | 4 | 5 | 6): strin
   }
   content = content.trim()
   if (level === 0) return indent + content
-  return indent + '#'.repeat(level) + (content ? ' ' + content : '')
+  return indent + '#'.repeat(level) + ' ' + content
 }
 
 /**
@@ -424,6 +424,17 @@ export function setHeadingSpec(state: EditorState, level: 0 | 1 | 2 | 3 | 4 | 5 
   for (const line of lines) {
     const next = transformHeading(line.text, level)
     if (next !== line.text) changes.push({ from: line.from, to: line.to, insert: next })
+  }
+  if (changes.length === 0) return noChangeSpec(state)
+  const changeSet = state.changes(changes)
+  if (range.from === range.to) {
+    const caretLine = state.doc.lineAt(range.from)
+    const next = transformHeading(caretLine.text, level)
+    const indentLen = /^\s*/.exec(next)![0].length
+    const markerMatch = /^(#{1,6})\s?/.exec(next.slice(indentLen))
+    const prefixLen = indentLen + (markerMatch ? markerMatch[0].length : 0)
+    const anchor = caretLine.from + prefixLen
+    return { changes: changeSet, selection: { anchor, head: anchor } }
   }
   return finalizeChanges(state, changes, range.from, range.to)
 }
