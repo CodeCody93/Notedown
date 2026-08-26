@@ -382,6 +382,10 @@ function closeAllDropdowns(): void {
     d.classList.remove('open')
     d.querySelector<HTMLElement>('.dropdown-trigger')?.setAttribute('aria-expanded', 'false')
   })
+  document.querySelectorAll<HTMLElement>('.submenu-toggle.open').forEach((s) => {
+    s.classList.remove('open')
+    s.setAttribute('aria-expanded', 'false')
+  })
 }
 
 /** Click a `.dropdown-trigger` toggles `.open` on its wrapping `.dropdown`. */
