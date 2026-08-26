@@ -47,24 +47,24 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'header-5', keys: ['Mod-5'], label: 'Heading 5' },
   { id: 'header-6', keys: ['Mod-6'], label: 'Heading 6' },
   { id: 'header-0', keys: ['Mod-0'], label: 'Clear heading' },
-  { id: 'list', keys: ['Mod-Shift-l'], label: 'List' },
+  { id: 'list', keys: ['Mod-Alt-l'], label: 'List' },
   { id: 'list-ordered', keys: ['Mod-Alt-o'], label: 'Ordered list' },
   { id: 'blockquote', keys: ['Mod-Shift-b'], label: 'Blockquote' },
   { id: 'inline-code', keys: ['Mod-e'], label: 'Inline code' },
   { id: 'code-block', keys: ['Mod-Shift-k'], label: 'Code block' },
   { id: 'link', keys: ['Mod-k'], label: 'Link' },
   { id: 'image', keys: ['Mod-Alt-i'], label: 'Image' },
-  { id: 'table', keys: ['Mod-Alt-t'], label: 'Table' },
+  { id: 'table', keys: ['Mod-t'], label: 'Table' },
   { id: 'hr', keys: ['Mod-Shift-h'], label: 'Horizontal rule' },
   { id: 'footnote', keys: ['Mod-Shift-f'], label: 'Footnote' },
-  { id: 'task-list', keys: ['Mod-Alt-l'], label: 'Task list' },
+  { id: 'task-list', keys: ['Mod-Alt-t'], label: 'Task list' },
   { id: 'emoji', keys: ['Mod-Alt-e'], label: 'Emoji picker' },
   { id: 'heading-id', keys: ['Mod-Shift-2'], label: 'Heading ID' },
   { id: 'def-list', keys: ['Mod-Alt-d'], label: 'Definition list' },
   // B17 -> E19/E20: Mod-Alt-s collided with Windows Snipping Tool, then
   // Mod-Alt-Shift-s (Ctrl+Alt+Shift+S) proved unresponsive (too many
   // modifiers/OS interception). Changed to Mod-Alt-j (Ctrl+Alt+J /
-  // Cmd+Alt+J) which is free (see existing Mod-Alt-{t,h,o,i,d,u,m,e,l}).
+   // Cmd+Alt+J) which is free (see existing Mod-Alt-{t,h,o,i,d,u,m,e,l}).
   // LabelFor() keeps menu hints in sync.
   { id: 'sub', keys: ['Mod-Alt-j'], label: 'Subscript' },
   { id: 'sup', keys: ['Mod-Alt-u'], label: 'Superscript' },

@@ -79,8 +79,8 @@ describe('SHORTCUTS table', () => {
     expect(byId.get('image')?.keys).toEqual(['Mod-Alt-i'])
     const chords: Record<string, string[]> = {
       'list-ordered': ['Mod-Alt-o'],
-      'task-list': ['Mod-Alt-l'],
-      table: ['Mod-Alt-t'],
+      'task-list': ['Mod-Alt-t'],
+      table: ['Mod-t'],
       hr: ['Mod-Shift-h'],
       footnote: ['Mod-Shift-f'],
       emoji: ['Mod-Alt-e'],
