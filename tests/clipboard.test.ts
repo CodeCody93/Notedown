@@ -93,4 +93,36 @@ describe('pasteText', () => {
     // and routed to the execCommand fallback), so this must never reject.
     await expect(pasteText(makeController())).resolves.toBeUndefined()
   })
+
+  it('wraps a pasted URL as a markdown link', async () => {
+    const controller = makeController()
+    const readText = vi.fn(async () => 'https://www.example.com')
+    Object.defineProperty(navigator, 'clipboard', { value: { readText }, configurable: true })
+    await pasteText(controller)
+    expect(controller.replaceSelection).toHaveBeenCalledWith('[https://www.example.com](https://www.example.com)')
+  })
+
+  it('trims whitespace before URL detection', async () => {
+    const controller = makeController()
+    const readText = vi.fn(async () => '  https://example.com/path  ')
+    Object.defineProperty(navigator, 'clipboard', { value: { readText }, configurable: true })
+    await pasteText(controller)
+    expect(controller.replaceSelection).toHaveBeenCalledWith('[https://example.com/path](https://example.com/path)')
+  })
+
+  it('does not wrap non-URL text', async () => {
+    const controller = makeController()
+    const readText = vi.fn(async () => 'hello world')
+    Object.defineProperty(navigator, 'clipboard', { value: { readText }, configurable: true })
+    await pasteText(controller)
+    expect(controller.replaceSelection).toHaveBeenCalledWith('hello world')
+  })
+
+  it('does not wrap ftp:// URLs', async () => {
+    const controller = makeController()
+    const readText = vi.fn(async () => 'ftp://files.example.com')
+    Object.defineProperty(navigator, 'clipboard', { value: { readText }, configurable: true })
+    await pasteText(controller)
+    expect(controller.replaceSelection).toHaveBeenCalledWith('ftp://files.example.com')
+  })
 })

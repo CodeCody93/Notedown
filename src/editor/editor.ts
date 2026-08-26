@@ -14,6 +14,7 @@ import { EditorView, keymap, placeholder, type Command, type KeyBinding, ViewUpd
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from '@codemirror/commands'
 import { openSearchPanel, search, searchKeymap } from '@codemirror/search'
+import { syntaxTree } from '@codemirror/language'
 import { livePreviewExtensions, wireMouseSelection } from './livePreview'
 import { editorThemeExtension } from './cmTheme'
 
@@ -36,7 +37,12 @@ export interface EditorCreateOptions {
   extraKeymaps?: KeyBinding[][]
   /** Fires when the user pastes something whose clipboard contains an image file; return nothing. Used by paste-image (M3). */
   onPasteImage?: (event: ClipboardEvent) => void
+  /** Fires when a rendered link is clicked in live-preview mode. Used to open the URL externally. */
+  onLinkClick?: (url: string) => void
 }
+
+/** Matches a pasted URL (http/https). */
+const URL_RE = /^https?:\/\/\S+$/
 
 /** True when the paste event's clipboard holds at least one image file. */
 function hasImage(e: ClipboardEvent): boolean {
@@ -135,7 +141,7 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
       // GFM base (markdownLanguage): the default `markdown()` uses the CommonMark
       // parser, which lacks strikethrough (`~~x~~` rendered as plain text).
       markdown({ base: markdownLanguage }),
-      ...livePreviewExtensions({ collapse: mode === 'live', imageResolver: opts?.imageResolver }),
+      ...livePreviewExtensions({ collapse: mode === 'live', imageResolver: opts?.imageResolver, onLinkClick: opts?.onLinkClick }),
       editorThemeExtension(),
       // Find/replace (user-results Other #8 / B19): Mod-f opens the search
       // panel, Mod-h opens replace. No app shortcut uses Mod-h alone
@@ -189,22 +195,46 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
     if (opts?.extraKeymaps !== undefined && opts.extraKeymaps.length > 0) {
       extensions.push(...opts.extraKeymaps.map((bindings) => Prec.highest(keymap.of(bindings))))
     }
-    // Paste-image interception: when an image is pasted and the host provided an
-    // onPasteImage callback, hand the event off and block the default text paste.
-    // Lives in buildExtensions so reconfigures (setMode/setWrapping) keep it.
-    if (opts?.onPasteImage) {
-      extensions.push(
-        EditorView.domEventHandlers({
-          paste: (event: ClipboardEvent) => {
-            if (hasImage(event)) {
-              opts.onPasteImage?.(event)
+    // Paste interception: detect images and URLs on paste. When an image is
+    // pasted and the host provided an onPasteImage callback, hand the event off
+    // and block the default text paste. When a URL is pasted, auto-wrap it as a
+    // markdown link `[url](url)`. Lives in buildExtensions so reconfigures
+    // (setMode/setWrapping) keep it.
+    extensions.push(
+      EditorView.domEventHandlers({
+        paste: (event: ClipboardEvent) => {
+          if (hasImage(event)) {
+            opts?.onPasteImage?.(event)
+            return true
+          }
+          const text = event.clipboardData?.getData('text/plain') ?? ''
+          if (URL_RE.test(text.trim())) {
+            const pos = view.state.selection.main.head
+            const tree = syntaxTree(view.state)
+            let inLinkUrl = false
+            tree.iterate({
+              enter: (node) => {
+                if (node.name === 'Url' && pos >= node.from && pos <= node.to) {
+                  const parent = node.node.parent
+                  if (parent !== null && parent.name === 'Link') {
+                    inLinkUrl = true
+                    return false
+                  }
+                }
+              },
+            })
+            if (!inLinkUrl) {
+              event.preventDefault()
+              const url = text.trim()
+              const insert = `[${url}](${url})`
+              view.dispatch(view.state.replaceSelection(insert))
               return true
             }
-            return false
-          },
-        }),
-      )
-    }
+          }
+          return false
+        },
+      }),
+    )
     if (wrap) extensions.push(EditorView.lineWrapping)
     return extensions
   }

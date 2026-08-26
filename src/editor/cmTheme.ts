@@ -218,6 +218,14 @@ export function editorThemeExtension(): Extension {
       color: 'var(--muted)',
       fontStyle: 'italic',
     },
+    '.cm-link-widget': {
+      color: 'var(--accent)',
+      textDecoration: 'underline',
+      cursor: 'pointer',
+    },
+    '.cm-link-widget:hover': {
+      textDecoration: 'underline',
+    },
 
     // ---- Code block widget (H) -------------------------------------------
     '.cm-code-widget': {

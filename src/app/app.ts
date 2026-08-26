@@ -692,6 +692,7 @@ export async function initApp(): Promise<void> {
       const doc = appState.get().doc
       if (ed !== null) void pasteImage(ed, io, { name: doc.name, path: doc.path }, event)
     },
+    onLinkClick: (url) => io.openExternal(url),
     // Live-preview images: resolve a relative markdown src against the doc's
     // directory into a URL the webview can render (data: URL via exposeImage),
     // or null when unresolvable (unsaved doc, absolute/http/data/blob/asset

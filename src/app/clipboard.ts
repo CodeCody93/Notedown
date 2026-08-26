@@ -20,6 +20,9 @@ import type { Command } from '@codemirror/view'
 import type { EditorController } from '../editor/editor'
 import type { FileIO } from '../platform/types'
 
+/** Matches a pasted URL (http/https). */
+const URL_RE = /^https?:\/\/\S+$/
+
 /** '![alt](filename)' markdown reference. alt defaults to the filename stem. */
 export function buildImageRef(filename: string, alt?: string): string {
   const label = alt ?? filename.replace(/\.[^./\\]+$/, '')
@@ -102,6 +105,11 @@ export async function pasteText(controller: EditorController): Promise<void> {
     const text = await navigator.clipboard?.readText?.()
     if (text === undefined || text === '') {
       legacyPaste()
+      return
+    }
+    const trimmed = text.trim()
+    if (URL_RE.test(trimmed)) {
+      controller.replaceSelection(`[${trimmed}](${trimmed})`)
       return
     }
     controller.replaceSelection(text)

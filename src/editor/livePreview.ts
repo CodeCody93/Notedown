@@ -109,6 +109,8 @@ export interface LivePreviewOptions {
   collapse?: boolean
   /** Resolve a markdown image src (relative path) to a webview-renderable URL, or null when unresolvable (browser dev mode, unsaved doc, http/data/absolute/rooted paths). Consumed by the image widget in collapsed mode. */
   imageResolver?: (src: string) => Promise<string | null>
+  /** Fires when a rendered link is clicked in live-preview mode. Used to open the URL externally. */
+  onLinkClick?: (url: string) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +135,7 @@ function isInsideSkippedParent(parent: SyntaxNode | null): boolean {
 /** Options handed to the plugin instance (via `ViewPlugin.of(...)`). */
 interface LivePreviewPluginOptions {
   imageResolver?: (src: string) => Promise<string | null>
+  onLinkClick?: (url: string) => void
 }
 
 /**
@@ -262,6 +265,57 @@ class MarkdownImageWidget extends WidgetType {
         }
       })
     return span
+  }
+}
+
+/**
+ * Rendered link for inactive lines. Replaces `[text](url)` with a clickable
+ * `<a>` element showing only the link text. Clicking opens the URL via the
+ * host-provided `onLinkClick` callback (or `window.open` as fallback). The raw
+ * markdown re-appears when the caret enters the line.
+ */
+class MarkdownLinkWidget extends WidgetType {
+  constructor(
+    readonly from: number,
+    readonly to: number,
+    readonly text: string,
+    readonly onLinkClick?: (url: string) => void,
+  ) {
+    super()
+  }
+
+  eq(o: MarkdownLinkWidget): boolean {
+    return o.from === this.from && o.to === this.to && o.text === this.text
+  }
+
+  toDOM(): HTMLElement {
+    const m = /^\[([^\]]*)\]\(([^)]*)\)/.exec(this.text)
+    const label = m ? m[1] : this.text
+    const url = m ? m[2].trim() : ''
+    const a = document.createElement('a')
+    a.className = 'cm-link-widget'
+    a.textContent = label
+    if (url !== '') {
+      a.href = url
+      a.addEventListener('mousedown', (e: MouseEvent) => {
+        e.preventDefault()
+        e.stopPropagation()
+      })
+      a.addEventListener('click', (e: MouseEvent) => {
+        e.preventDefault()
+        e.stopPropagation()
+        if (this.onLinkClick !== undefined) {
+          this.onLinkClick(url)
+        } else {
+          window.open(url, '_blank')
+        }
+      })
+    }
+    return a
+  }
+
+  ignoreEvent(): boolean {
+    return false
   }
 }
 
@@ -492,6 +546,23 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
             }).range(node.from, node.to),
           )
           addLinesTo(node, replacedLines)
+        }
+        return
+      }
+
+      // Links: on inactive lines replace the whole `[text](url)` construct
+      // with a clickable widget showing only the link text; while editing the
+      // line the raw markdown stays visible. Mirrors the Image handler above.
+      if (node.name === 'Link') {
+        const lineNum = state.doc.lineAt(node.from).number
+        const isActiveLine = activeLines.has(lineNum)
+        if (!isActiveLine || isDrag) {
+          const text = state.doc.sliceString(node.from, node.to)
+          decorations.push(
+            Decoration.replace({
+              widget: new MarkdownLinkWidget(node.from, node.to, text, opts.onLinkClick),
+            }).range(node.from, node.to),
+          )
         }
         return
       }
@@ -1060,7 +1131,7 @@ export function livePreviewExtensions(opts?: LivePreviewOptions): Extension[] {
   const collapse = opts?.collapse ?? true
   const extensions: Extension[] = [collapseOnSelectionFacet.of(collapse), mouseSelectingField]
   if (collapse) {
-    extensions.push(livePreviewPlugin.of({ imageResolver: opts?.imageResolver }), blockRenderField)
+    extensions.push(livePreviewPlugin.of({ imageResolver: opts?.imageResolver, onLinkClick: opts?.onLinkClick }), blockRenderField)
   }
   extensions.push(markdownStylePlugin, editorTheme)
   return extensions
