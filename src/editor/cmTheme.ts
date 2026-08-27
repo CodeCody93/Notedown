@@ -78,7 +78,7 @@ function ensureHljsStyles(): void {
   [data-theme="dark"] .cm-code-widget .hljs-selector-pseudo { color: #7ee787; }
   [data-theme="dark"] .cm-code-widget .hljs-section { color: #1f6feb; }
   [data-theme="dark"] .cm-code-widget .hljs-bullet { color: #f2cc60; }
-  [data-theme="dark"] .cm-code-copy { background: #2d2d31; color: #9a9a9a; }
+  [data-theme="dark"] .cm-code-copy { background: #2d2d31; color: #b0b0b0; }
   [data-theme="dark"] .cm-code-copy:hover { background: #3c3c3c; color: #e8e8e8; }
 `
   document.head.appendChild(style)
@@ -167,35 +167,35 @@ export function editorThemeExtension(): Extension {
       fontSize: '2em',
       fontWeight: '700',
       lineHeight: '1.3',
-      color: 'var(--text)',
+      color: 'var(--text) !important',
     },
     '.cm-header-2': {
       fontSize: '1.5em',
       fontWeight: '600',
       lineHeight: '1.4',
-      color: 'var(--text)',
+      color: 'var(--text) !important',
     },
     '.cm-header-3': {
       fontSize: '1.25em',
       fontWeight: '600',
       lineHeight: '1.5',
-      color: 'var(--text)',
+      color: 'var(--text) !important',
     },
     '.cm-header-4, .cm-header-5, .cm-header-6': {
       fontWeight: '600',
-      color: 'var(--muted)',
+      color: 'var(--muted) !important',
     },
     '.cm-strong': {
       fontWeight: '700',
-      color: 'var(--text)',
+      color: 'var(--text) !important',
     },
     '.cm-emphasis': {
       fontStyle: 'italic',
-      color: 'var(--text)',
+      color: 'var(--text) !important',
     },
     '.cm-strikethrough': {
       textDecoration: 'line-through',
-      color: 'var(--muted)',
+      color: 'var(--muted) !important',
     },
     '.cm-code': {
       backgroundColor: 'var(--code-bg)',

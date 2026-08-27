@@ -561,6 +561,11 @@ export function toggleBlockquoteSpec(state: EditorState): TransactionSpec {
       changes.push({ from: line.from + indent.length, to: line.from + indent.length, insert: '> ' })
     }
   }
+  if (range.empty && changes.length === 1 && !allQuoted) {
+    const cs = state.changes(changes)
+    const anchor = cs.mapPos(range.from, 1)
+    return { changes: cs, selection: { anchor } }
+  }
   return finalizeChanges(state, changes, range.from, range.to)
 }
 
@@ -945,6 +950,12 @@ interface ListItemInfo {
   number?: number
 }
 
+function blockquoteInfo(text: string): { indent: string; marker: string } | null {
+  const m = /^(\s*)(> ?)/.exec(text)
+  if (!m) return null
+  return { indent: m[1], marker: m[2] }
+}
+
 function listItemInfo(text: string): ListItemInfo | null {
   // Task must be checked first so "- [] item" is not mis-classified as unordered "- ".
   // Regex matches all four spellings: "-[] ", "- [] ", "-[ ] ", "- [ ] " (also "*" and "+").
@@ -1000,6 +1011,19 @@ export function continueListSpec(state: EditorState): TransactionSpec | null {
       return { changes: { from: line.from, to: line.to, insert: '' }, selection: { anchor: line.from } }
     }
     const insert = '\n' + indent + ': '
+    return { changes: { from: line.to, to: line.to, insert }, selection: { anchor: line.to + insert.length } }
+  }
+  const bq = blockquoteInfo(line.text)
+  if (bq) {
+    const content = line.text.slice(bq.indent.length + bq.marker.length)
+    if (content.trim() === '') {
+      return { changes: { from: line.from, to: line.to, insert: '' }, selection: { anchor: line.from } }
+    }
+    const insert = '\n' + bq.indent + '> '
+    return { changes: { from: line.to, to: line.to, insert }, selection: { anchor: line.to + insert.length } }
+  }
+  if (line.text.trim() === '') {
+    const insert = '\n'
     return { changes: { from: line.to, to: line.to, insert }, selection: { anchor: line.to + insert.length } }
   }
   return null

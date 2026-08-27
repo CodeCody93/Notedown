@@ -494,7 +494,7 @@ const THEME_TOKENS: Record<'dark' | 'light', string> = {
   --surface: #252526;
   --surface-2: #2d2d31;
   --text: #e8e8e8;
-  --muted: #9a9a9a;
+  --muted: #b0b0b0;
   --accent: #4f8cff;
   --border: #3c3c3c;
   --code-bg: #2a2a2d;
