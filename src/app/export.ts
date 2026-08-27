@@ -105,6 +105,28 @@ md.use(sup)
 md.use(emoji)
 
 /**
+ * Add a "Copy code" button to fenced code blocks. The button sits at the
+ * top-right corner and copies the raw code text to the clipboard on click.
+ * The HTML structure mirrors the live-preview widget (cm-code-widget) so
+ * both paths look and behave identically.
+ */
+const defaultFenceRenderer = md.renderer.rules.fence!.bind(md.renderer.rules)
+md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  const token = tokens[idx]
+  const rawCode = token.content
+  const defaultHtml = defaultFenceRenderer(tokens, idx, options, env, self)
+  const escapedCode = escapeHtml(rawCode)
+  return [
+    `<div class="md-code-block">`,
+    `<button class="md-code-copy" title="Copy code" data-code="${escapedCode}">`,
+    `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z"/></svg>`,
+    `</button>`,
+    defaultHtml,
+    `</div>`,
+  ].join('\n')
+}
+
+/**
  * E3 — the editor's underline command writes `__text__`, and `__` is also a
  * CommonMark strong marker, so markdown-it parses it as `<strong>`. Only the
  * `**` form may stay strong: re-route tokens whose markup is `__` to `<u>`.
@@ -297,6 +319,40 @@ export const MARKDOWN_BODY_CSS: string = `
 .md-body pre code[class*="language-"] {
   display: block;
   overflow-x: auto;
+}
+
+/* Code block copy button — mirrors the editor live-preview widget. */
+.md-code-block {
+  position: relative;
+}
+.md-code-block .md-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: var(--surface-2, #ececea);
+  color: var(--muted, #6b7280);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+  z-index: 1;
+}
+.md-code-block:hover .md-code-copy {
+  opacity: 1;
+}
+.md-code-block .md-code-copy:hover {
+  background: var(--border, #e3e3df);
+  color: var(--text, #1f2328);
+}
+.md-code-block .md-code-copy:active {
+  transform: scale(0.95);
 }
 
 .md-body table {
@@ -615,13 +671,17 @@ export function renderStandaloneHtml(markdown: string, opts: StandaloneHtmlOptio
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     `<title>${escapeHtml(opts.title)}</title>`,
-    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:">`,
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:">`,
     `<style>${themeCss}${MARKDOWN_BODY_CSS}${hljsCss}` +
       'body { margin: 0; background: var(--bg); color: var(--text); }\n' +
       'main.md-body { padding: 32px 40px; max-width: 860px; margin: 0 auto; }\n' +
       '</style>',
     '</head>',
-    `<body><main class="md-body">${body}</main></body>`,
+    `<body><main class="md-body">${body}</main>`,
+    `<script>`,
+    `(function(){document.addEventListener('click',function(e){var btn=e.target.closest('.md-code-copy');if(!btn)return;e.stopPropagation();var code=btn.getAttribute('data-code');if(code!==null){var el=document.createElement('textarea');el.value=code;el.style.cssText='position:fixed;left:-9999px';document.body.appendChild(el);el.select();document.execCommand('copy');document.body.removeChild(el)}var svg=btn.innerHTML;btn.innerHTML='<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>';setTimeout(function(){btn.innerHTML=svg},2000)})})();`,
+    `</script>`,
+    `</body>`,
     '</html>',
   ].join('\n')
 }

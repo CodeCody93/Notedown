@@ -10,10 +10,32 @@ function ensureHljsStyles(): void {
   const style = document.createElement('style')
   style.id = 'cm-hljs-theme'
   style.textContent = `
-  .cm-code-widget { display: block; margin: 4px 0; }
+  .cm-code-widget { display: block; margin: 4px 0; position: relative; }
   .cm-code-widget pre { background: var(--code-bg); padding: 0.8em 1em; border-radius: 6px; overflow-x: auto; margin: 0; }
   .cm-code-widget code.hljs { background: transparent !important; padding: 0; display: block; overflow-x: auto; }
   .cm-code-widget .hljs { background: transparent !important; }
+  .cm-code-copy {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: var(--surface-2, #ececea);
+    color: var(--muted, #6b7280);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+    z-index: 1;
+  }
+  .cm-code-widget:hover .cm-code-copy { opacity: 1; }
+  .cm-code-copy:hover { background: var(--border, #e3e3df); color: var(--text, #1f2328); }
+  .cm-code-copy:active { transform: scale(0.95); }
   ${HLJS_CSS_LIGHT}
   @media (prefers-color-scheme: dark) {
     ${HLJS_CSS_DARK}
@@ -56,6 +78,8 @@ function ensureHljsStyles(): void {
   [data-theme="dark"] .cm-code-widget .hljs-selector-pseudo { color: #7ee787; }
   [data-theme="dark"] .cm-code-widget .hljs-section { color: #1f6feb; }
   [data-theme="dark"] .cm-code-widget .hljs-bullet { color: #f2cc60; }
+  [data-theme="dark"] .cm-code-copy { background: #2d2d31; color: #9a9a9a; }
+  [data-theme="dark"] .cm-code-copy:hover { background: #3c3c3c; color: #e8e8e8; }
 `
   document.head.appendChild(style)
 }
@@ -231,6 +255,7 @@ export function editorThemeExtension(): Extension {
     '.cm-code-widget': {
       display: 'block',
       margin: '4px 0',
+      position: 'relative',
     },
     '.cm-code-widget pre': {
       backgroundColor: 'var(--code-bg)',
@@ -244,6 +269,35 @@ export function editorThemeExtension(): Extension {
       padding: '0',
       display: 'block',
       overflowX: 'auto',
+    },
+    '.cm-code-copy': {
+      position: 'absolute',
+      top: '6px',
+      right: '6px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      width: '28px',
+      height: '28px',
+      padding: '0',
+      border: 'none',
+      borderRadius: '4px',
+      background: 'var(--surface-2)',
+      color: 'var(--muted)',
+      cursor: 'pointer',
+      opacity: '0',
+      transition: 'opacity 0.15s ease, background 0.15s ease, color 0.15s ease',
+      zIndex: '1',
+    },
+    '.cm-code-widget:hover .cm-code-copy': {
+      opacity: '1',
+    },
+    '.cm-code-copy:hover': {
+      background: 'var(--border)',
+      color: 'var(--text)',
+    },
+    '.cm-code-copy:active': {
+      transform: 'scale(0.95)',
     },
   })
 }

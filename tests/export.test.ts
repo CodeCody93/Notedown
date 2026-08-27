@@ -163,10 +163,11 @@ describe('renderStandaloneHtml', () => {
     expect(doc).toContain('<!doctype html>')
     expect(doc).toContain('<html lang="en">')
     expect(doc).toContain("default-src 'none'")
+    expect(doc).toContain("script-src 'unsafe-inline'")
     expect(doc).toContain('<title>My Doc</title>')
     expect(doc).toContain('<h1>Hi</h1>')
     expect(doc).toContain('main.md-body')
-    expect(doc).not.toContain('<script')
+    expect(doc).toContain('.md-code-copy')
   })
 
   it('escapes the title', () => {
