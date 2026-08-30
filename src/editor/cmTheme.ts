@@ -250,6 +250,19 @@ export function editorThemeExtension(): Extension {
     '.cm-link-widget:hover': {
       textDecoration: 'underline',
     },
+    '.cm-footnote-ref': {
+      fontSize: '0.75em',
+      verticalAlign: 'super',
+      lineHeight: '0',
+    },
+    '.cm-footnote-ref a': {
+      color: 'var(--accent)',
+      textDecoration: 'none',
+      cursor: 'pointer',
+    },
+    '.cm-footnote-ref a:hover': {
+      textDecoration: 'underline',
+    },
 
     // ---- Code block widget (H) -------------------------------------------
     '.cm-code-widget': {

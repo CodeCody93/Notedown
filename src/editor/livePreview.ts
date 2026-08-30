@@ -320,6 +320,49 @@ class MarkdownLinkWidget extends WidgetType {
 }
 
 /**
+ * Rendered footnote reference for inactive lines. Replaces `[^N]` with a
+ * clickable superscript link. Clicking scrolls to the corresponding footnote
+ * definition (`[^N]: …`) in the document. The raw markdown re-appears when
+ * the caret enters the line.
+ */
+class FootnoteRefWidget extends WidgetType {
+  constructor(
+    readonly num: number,
+    readonly defFrom: number,
+    readonly view: EditorView,
+  ) {
+    super()
+  }
+
+  eq(o: FootnoteRefWidget): boolean {
+    return o.num === this.num && o.defFrom === this.defFrom
+  }
+
+  toDOM(): HTMLElement {
+    const sup = document.createElement('sup')
+    sup.className = 'cm-footnote-ref'
+    const a = document.createElement('a')
+    a.href = '#fn' + this.num
+    a.textContent = String(this.num)
+    a.addEventListener('mousedown', (e: MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+    })
+    a.addEventListener('click', (e: MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      this.view.dispatch({ effects: EditorView.scrollIntoView(this.defFrom, { y: 'start' }) })
+    })
+    sup.appendChild(a)
+    return sup
+  }
+
+  ignoreEvent(): boolean {
+    return false
+  }
+}
+
+/**
  * Rendered GFM table for fully-inactive tables (E13). Replaces the whole
  * `Table` node with a simple div grid (`.cm-table-widget` / `.cm-table-row` /
  * `.cm-table-cell` / `.cm-table-head`) styled via editor.css. Clicking the
@@ -925,6 +968,18 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
   // `-# subtext` and definition lists are plain text to lezer, so they are
   // handled by scanning inactive lines directly. Active lines (being edited)
   // and lines inside code blocks / table / hr / image widgets are skipped.
+
+  // Footnote definitions: build a map of `[^N]` → definition position so
+  // footnote references can scroll to them on click.
+  const footnoteDefs = new Map<number, number>()
+  for (let ln = 1; ln <= state.doc.lines; ln++) {
+    const defLine = state.doc.line(ln)
+    const defMatch = /^\[\^(\d+)\]:\s/.exec(defLine.text)
+    if (defMatch !== null) {
+      footnoteDefs.set(parseInt(defMatch[1], 10), defLine.from)
+    }
+  }
+
   for (let lineNum = 1; lineNum <= state.doc.lines; lineNum++) {
     if (activeLines.has(lineNum) || skipLines.has(lineNum) || replacedLines.has(lineNum)) continue
     const line = state.doc.line(lineNum)
@@ -974,6 +1029,26 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
     // MARKDOWN_BODY_CSS; this live-preview decoration mirrors it.
     if (/^\s*:/.test(text)) {
       decorations.push(Decoration.line({ class: 'cm-deflist' }).range(line.from))
+    }
+
+    // Footnote references: replace `[^N]` with a clickable superscript link
+    // that scrolls to the corresponding `[^N]: …` definition.
+    {
+      const re = /\[\^(\d+)\]/g
+      let m: RegExpExecArray | null
+      while ((m = re.exec(text)) !== null) {
+        const num = parseInt(m[1], 10)
+        const defFrom = footnoteDefs.get(num)
+        if (defFrom !== undefined) {
+          const from = line.from + m.index
+          const to = from + m[0].length
+          decorations.push(
+            Decoration.replace({
+              widget: new FootnoteRefWidget(num, defFrom, view),
+            }).range(from, to),
+          )
+        }
+      }
     }
 
   }
