@@ -1022,6 +1022,19 @@ export function continueListSpec(state: EditorState): TransactionSpec | null {
     const insert = '\n' + bq.indent + '> '
     return { changes: { from: line.to, to: line.to, insert }, selection: { anchor: line.to + insert.length } }
   }
+  // If the line has no blockquote marker but is still inside a blockquote
+  // node in the syntax tree (CommonMark lazy continuation), insert a plain
+  // newline. This prevents lang-markdown's insertNewlineContinueMarkup from
+  // re-adding "> " after the user explicitly exited the blockquote.
+  if (line.text.trim() !== '') {
+    const node = syntaxTree(state).resolveInner(range.head, -1)
+    for (let n: SyntaxNode | null = node; n; n = n.parent) {
+      if (n.name === 'Blockquote') {
+        const insert = '\n'
+        return { changes: { from: line.to, to: line.to, insert }, selection: { anchor: line.to + insert.length } }
+      }
+    }
+  }
   if (line.text.trim() === '') {
     const insert = '\n'
     return { changes: { from: line.to, to: line.to, insert }, selection: { anchor: line.to + insert.length } }
