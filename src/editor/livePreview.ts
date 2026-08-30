@@ -365,9 +365,8 @@ class FootnoteRefWidget extends WidgetType {
 /**
  * Rendered GFM table for fully-inactive tables (E13). Replaces the whole
  * `Table` node with a simple div grid (`.cm-table-widget` / `.cm-table-row` /
- * `.cm-table-cell` / `.cm-table-head`) styled via editor.css. Clicking the
- * rendered table moves the caret into it (ignoreEvent → false), which reveals
- * the raw source for editing.
+ * `.cm-table-cell` / `.cm-table-head`) styled via editor.css. Clicking a cell
+ * places the caret at that cell's source position for precise editing.
  */
 class MarkdownTableWidget extends WidgetType {
   constructor(
@@ -400,12 +399,64 @@ class MarkdownTableWidget extends WidgetType {
       for (const cell of row) rowEl.appendChild(tableCell(cell))
       container.appendChild(rowEl)
     }
+
+    // Place caret at the clicked cell's source position on mousedown.
+    container.addEventListener('mousedown', (e: MouseEvent) => {
+      if (e.button !== 0) return
+      const target = e.target as HTMLElement
+      const cell = target.closest('.cm-table-cell') as HTMLElement | null
+      if (!cell) return
+      const row = cell.closest('.cm-table-row') as HTMLElement | null
+      if (!row) return
+
+      const rows = Array.from(container.querySelectorAll('.cm-table-row'))
+      const rowIndex = rows.indexOf(row)
+      const cells = Array.from(row.querySelectorAll('.cm-table-cell'))
+      const colIndex = cells.indexOf(cell)
+      if (rowIndex < 0 || colIndex < 0) return
+
+      const pos = this.cellSourcePos(rowIndex, colIndex)
+      if (pos < 0) return
+
+      const view = EditorView.findFromDOM(container)
+      if (!view) return
+      e.preventDefault()
+      e.stopPropagation()
+      view.focus()
+      view.dispatch({ selection: { anchor: pos } })
+    })
+
     return container
   }
 
-  ignoreEvent(): boolean {
-    // Let clicks pass through so the caret lands inside the table and the
-    // raw source re-appears (edit mode), like the package's own TableWidget.
+  /** Compute the document offset of the content start for the given cell. */
+  private cellSourcePos(rowIndex: number, colIndex: number): number {
+    const lines = this.text.split('\n')
+    // DOM row 0 → source line 0 (header); DOM row N≥1 → source line N+1 (skip separator)
+    const srcLine = rowIndex === 0 ? 0 : rowIndex + 1
+    if (srcLine >= lines.length) return -1
+    const line = lines[srcLine]
+    let pipes = 0
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] !== '|') continue
+      pipes++
+      if (pipes === colIndex + 1) {
+        let j = i + 1
+        while (j < line.length && line[j] === ' ') j++
+        let lineStart = 0
+        for (let k = 0; k < srcLine; k++) lineStart += lines[k].length + 1
+        return this.from + lineStart + j
+      }
+    }
+    return -1
+  }
+
+  ignoreEvent(event: Event): boolean {
+    // Only block CM6 handling for mousedown on cells — we handle those ourselves.
+    if (event.type === 'mousedown') {
+      const target = (event as MouseEvent).target as HTMLElement
+      if (target.closest('.cm-table-cell')) return true
+    }
     return false
   }
 }
