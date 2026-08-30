@@ -267,7 +267,7 @@ export function editorThemeExtension(): Extension {
     // ---- Code block widget (H) -------------------------------------------
     '.cm-code-widget': {
       display: 'block',
-      margin: '4px 0',
+      padding: '4px 0',
       position: 'relative',
     },
     '.cm-code-widget pre': {

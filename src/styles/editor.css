@@ -78,13 +78,14 @@
   color: var(--muted, #6b7280);
 }
 
-/* Rendered GFM table (E13) — simple div grid. */
+/* Rendered GFM table (E13) — simple div grid.
+   Use padding instead of margin — see .cm-hr-widget comment. */
 .cm-editor .cm-table-widget {
   display: block;
   border: 1px solid var(--border, #e3e3df);
   border-radius: 6px;
   overflow-x: auto;
-  margin: 4px 0;
+  padding: 4px 0;
   color: var(--text, #1f2328);
 }
 .cm-editor .cm-table-row {
@@ -108,11 +109,14 @@
   background: var(--surface, #f8f8f6);
 }
 
-/* Horizontal rule (E14). */
+/* Horizontal rule (E14).
+   Use padding instead of margin — CodeMirror 6 measures widget height via
+   getBoundingClientRect(), which excludes margin. Margin creates a gap between
+   CM6's height map and the actual DOM layout, causing click/caret offset. */
 .cm-editor .cm-hr-widget {
   height: 0;
   border-top: 2px solid var(--muted, #6b7280);
-  margin: 10px 0;
+  padding: 10px 0;
 }
 
 /* Subscript / superscript content (E18/E19); the literal tags themselves are
