@@ -70,6 +70,7 @@ import {
   shouldShowSource,
   checkUpdateAction,
 } from 'codemirror-live-markdown'
+import { renderInlineMarkdown } from '../app/export'
 import hljs from 'highlight.js/lib/core'
 import markdownLang from 'highlight.js/lib/languages/markdown'
 import javascriptLang from 'highlight.js/lib/languages/javascript'
@@ -363,6 +364,130 @@ class FootnoteRefWidget extends WidgetType {
 }
 
 /**
+ * Rendered spoiler for inactive lines. Replaces `||text||` with a censored
+ * grey box that reveals the content on click. The raw markdown re-appears
+ * when the caret enters the line.
+ */
+class SpoilerWidget extends WidgetType {
+  constructor(
+    readonly from: number,
+    readonly to: number,
+    readonly text: string,
+  ) {
+    super()
+  }
+
+  eq(o: SpoilerWidget): boolean {
+    return o.from === this.from && o.to === this.to && o.text === this.text
+  }
+
+  toDOM(): HTMLElement {
+    const span = document.createElement('span')
+    span.className = 'cm-spoiler'
+    span.setAttribute('data-revealed', 'false')
+    span.textContent = this.text
+    span.addEventListener('click', (e: MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const revealed = span.getAttribute('data-revealed') === 'true'
+      span.setAttribute('data-revealed', revealed ? 'false' : 'true')
+    })
+    return span
+  }
+
+  ignoreEvent(): boolean {
+    return false
+  }
+}
+
+/**
+ * Rendered dropdown for fully-inactive `>>>` blocks. Replaces the entire
+ * range (both `>>>` markers + inner content) with a collapsible details-like
+ * widget. Clicking the header toggles the content visibility. The inner
+ * markdown is rendered via renderInlineMarkdown for a WYSIWYG appearance.
+ * The raw markdown re-appears when the caret enters any line of the block.
+ * Optional name: `>>> My Title` sets the header label to "My Title".
+ */
+class DropdownWidget extends WidgetType {
+  constructor(
+    readonly from: number,
+    readonly to: number,
+    readonly innerText: string,
+    readonly name: string = '',
+  ) {
+    super()
+  }
+
+  eq(o: DropdownWidget): boolean {
+    return o.from === this.from && o.to === this.to && o.innerText === this.innerText && o.name === this.name
+  }
+
+  toDOM(): HTMLElement {
+    const container = document.createElement('div')
+    container.className = 'cm-dropdown'
+
+    const header = document.createElement('div')
+    header.className = 'cm-dropdown-header'
+
+    const chevron = document.createElement('span')
+    chevron.className = 'cm-dropdown-chevron'
+    chevron.textContent = '\u25B6'
+
+    const label = document.createElement('span')
+    label.className = 'cm-dropdown-label'
+    label.textContent = this.name || 'Dropdown'
+
+    header.appendChild(chevron)
+    header.appendChild(label)
+
+    const content = document.createElement('div')
+    content.className = 'cm-dropdown-content'
+    content.style.display = 'none'
+    if (this.innerText.trim().length > 0) {
+      content.innerHTML = renderInlineMarkdown(this.innerText)
+    }
+
+    container.appendChild(header)
+    container.appendChild(content)
+
+    let open = false
+    header.addEventListener('click', (e: MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      open = !open
+      content.style.display = open ? 'block' : 'none'
+      chevron.style.transform = open ? 'rotate(90deg)' : ''
+    })
+
+    // Clicking inside the expanded content enters edit mode by placing the
+    // caret at the start of the widget's source range, which removes the
+    // widget and shows the raw markdown.
+    content.addEventListener('mousedown', (e: MouseEvent) => {
+      if (e.button !== 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      const view = EditorView.findFromDOM(container)
+      if (view) {
+        view.focus()
+        view.dispatch({ selection: { anchor: this.from } })
+      }
+    })
+
+    return container
+  }
+
+  /**
+   * Block CM6 from handling events on this widget. We manage header clicks
+   * (toggle open/close) and content clicks (place caret → enter edit mode)
+   * manually. Without this, CM6's mousedown handler places the caret before
+   * our click handler can stop propagation, preventing toggle.
+   */
+  ignoreEvent(): boolean {
+    return true
+  }
+}
+
+/**
  * Rendered GFM table for fully-inactive tables (E13). Replaces the whole
  * `Table` node with a simple div grid (`.cm-table-widget` / `.cm-table-row` /
  * `.cm-table-cell` / `.cm-table-head`) styled via editor.css. Clicking a cell
@@ -630,6 +755,9 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
   const replacedLines = new Set<number>()
   // Lines already carrying the .cm-blockquote line class (dedupe).
   const quoteLines = new Set<number>()
+  // Lines that are `>>>` dropdown markers — these must NOT get blockquote
+  // styling even though the Lezer tree parses `>` as a QuoteMark.
+  const dropdownMarkerLines = new Set<number>()
   // Lines that already received a task checkbox via the tree iteration
   // (ListMark or Paragraph paths). The line-text sweep must skip these to
   // avoid duplicate widgets.
@@ -639,6 +767,45 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
     const start = state.doc.lineAt(node.from).number
     const end = state.doc.lineAt(node.to).number
     for (let l = start; l <= end; l++) set.add(l)
+  }
+
+  // Pre-scan for `>>>` dropdown marker pairs so we can suppress blockquote
+  // styling on those lines during the tree walk. Lines inside code fences are
+  // skipped.
+  {
+    const fenceRe = /^\s*>>>\s*(.*)$/
+    const codeFenceRe = /^ {0,3}(`{3,}|~{3,})/
+    let inCodeFence = false
+    let codeFenceChar = ''
+    let codeFenceLen = 0
+    let pendingFrom = -1
+    for (let ln = 1; ln <= state.doc.lines; ln++) {
+      const lnText = state.doc.line(ln).text
+      const cf = codeFenceRe.exec(lnText)
+      if (cf) {
+        const marker = cf[1]
+        if (inCodeFence) {
+          if (marker[0] === codeFenceChar && marker.length >= codeFenceLen && /^ {0,3}[`~]+[ \t]*$/.test(lnText)) {
+            inCodeFence = false
+          }
+        } else {
+          inCodeFence = true
+          codeFenceChar = marker[0]
+          codeFenceLen = marker.length
+        }
+        continue
+      }
+      if (inCodeFence) continue
+      if (fenceRe.test(lnText)) {
+        if (pendingFrom < 0) {
+          pendingFrom = ln
+        } else {
+          dropdownMarkerLines.add(pendingFrom)
+          dropdownMarkerLines.add(ln)
+          pendingFrom = -1
+        }
+      }
+    }
   }
 
   syntaxTree(state).iterate({
@@ -724,9 +891,11 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
       // Blockquotes (E8): style inactive quote lines so the quote reads
       // visually once the caret leaves (the `>` mark itself is hidden by the
       // generic block-mark decoration below). One line class per line.
+      // Skip `>>>` dropdown markers — they must show as plain text, not
+      // blockquotes, when the caret is inside the dropdown.
       if (node.name === 'QuoteMark') {
         const line = state.doc.lineAt(node.from)
-        if (!(activeLines.has(line.number) && !isDrag) && !quoteLines.has(line.number)) {
+        if (!dropdownMarkerLines.has(line.number) && !(activeLines.has(line.number) && !isDrag) && !quoteLines.has(line.number)) {
           quoteLines.add(line.number)
           decorations.push(Decoration.line({ class: 'cm-blockquote' }).range(line.from))
         }
@@ -805,6 +974,11 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
           } else {
             decorations.push(Decoration.replace({ widget: new ListMarkerWidget('•', node.from, node.to) }).range(node.from, node.to))
           }
+          return
+        }
+        // Skip `>>>` dropdown markers — they must show as plain ">>>" text,
+        // not have their `>` characters hidden.
+        if (node.name === 'QuoteMark' && dropdownMarkerLines.has(lineNum)) {
           return
         }
         const cls = isActiveLine && !isDrag ? 'cm-formatting-block cm-formatting-block-visible' : 'cm-formatting-block'
@@ -1102,6 +1276,51 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
       }
     }
 
+    // Spoiler — `||text||` on inactive lines: show a censored grey box
+    // (SpoilerWidget) that reveals on click. Paired `||` delimiters are
+    // hidden via EmptyInlineWidget; when the caret is inside the region,
+    // the raw source re-appears.
+    {
+      const pipeRe = /\|\|/g
+      const pipePositions: number[] = []
+      let pm: RegExpExecArray | null
+      while ((pm = pipeRe.exec(text)) !== null) {
+        // Skip if inside a backtick code span
+        const before = text.slice(0, pm.index)
+        const backtickCount = (before.match(/`/g) ?? []).length
+        if (backtickCount % 2 === 1) continue
+        pipePositions.push(line.from + pm.index)
+      }
+      for (let i = 0; i + 1 < pipePositions.length; i += 2) {
+        const open = pipePositions[i]
+        const close = pipePositions[i + 1]
+        const innerFrom = open + 2
+        const innerTo = close
+        if (innerTo <= innerFrom) continue
+        const caretInside =
+          !isDrag &&
+          activeLines.has(lineNum) &&
+          state.selection.ranges.some((r) => r.head >= open && r.head <= close + 2)
+        if (caretInside) {
+          // Reveal the raw || delimiters faded when caret is inside
+          decorations.push(
+            Decoration.mark({ class: 'cm-formatting-inline cm-formatting-inline-visible' }).range(open, open + 2),
+          )
+          decorations.push(
+            Decoration.mark({ class: 'cm-formatting-inline cm-formatting-inline-visible' }).range(close, close + 2),
+          )
+        } else {
+          // Censored spoiler widget
+          const innerText = state.doc.sliceString(innerFrom, innerTo)
+          decorations.push(
+            Decoration.replace({
+              widget: new SpoilerWidget(open, close + 2, innerText),
+            }).range(open, close + 2),
+          )
+        }
+      }
+    }
+
   }
 
   return Decoration.set(decorations.sort((a, b) => a.from - b.from), true)
@@ -1228,6 +1447,76 @@ function buildBlockDecorations(state: EditorState): DecorationSet {
       }
     },
   })
+
+  // ---- >>> dropdown blocks (line-by-line scan, not in Lezer tree) -----------
+  // `>>>` is not recognized by the markdown parser, so we scan for paired
+  // `>>>` lines directly. Lines inside code fences are skipped.
+  const fenceRe = /^\s*>>>\s*(.*)$/
+  const codeFenceRe = /^ {0,3}(`{3,}|~{3,})/
+  let inCodeFence = false
+  let codeFenceChar = ''
+  let codeFenceLen = 0
+  let pendingFenceFrom = -1
+  let pendingFenceName = ''
+  // Track lines already consumed by dropdown replacements
+  const dropdownLines = new Set<number>()
+
+  for (let lineNum = 1; lineNum <= state.doc.lines; lineNum++) {
+    const line = state.doc.line(lineNum)
+    const text = line.text
+
+    // Track code fences
+    const codeFence = codeFenceRe.exec(text)
+    if (codeFence) {
+      const marker = codeFence[1]
+      if (inCodeFence) {
+        if (
+          marker[0] === codeFenceChar &&
+          marker.length >= codeFenceLen &&
+          /^ {0,3}[`~]+[ \t]*$/.test(text)
+        ) {
+          inCodeFence = false
+        }
+      } else {
+        inCodeFence = true
+        codeFenceChar = marker[0]
+        codeFenceLen = marker.length
+      }
+      continue
+    }
+    if (inCodeFence) continue
+
+    const m = fenceRe.exec(text)
+    if (m) {
+      if (pendingFenceFrom < 0) {
+        pendingFenceFrom = line.from
+        pendingFenceName = (m[1] ?? '').trim()
+      } else {
+        // Closing >>> — check if ANY line in the range has the caret
+        const closeTo = line.to
+        const startLineNum = state.doc.lineAt(pendingFenceFrom).number
+        const endLineNum = lineNum
+        let hasActiveLine = isDrag
+        for (let l = startLineNum; l <= endLineNum && !hasActiveLine; l++) {
+          hasActiveLine = activeLines.has(l)
+        }
+        if (!hasActiveLine) {
+          const innerFrom = state.doc.lineAt(pendingFenceFrom).to + 1
+          const innerTo = line.from
+          const innerText = innerTo > innerFrom ? state.doc.sliceString(innerFrom, innerTo) : ''
+          decorations.push(
+            Decoration.replace({
+              widget: new DropdownWidget(pendingFenceFrom, closeTo, innerText, pendingFenceName),
+              block: true,
+            }).range(pendingFenceFrom, closeTo),
+          )
+          for (let l = startLineNum; l <= endLineNum; l++) dropdownLines.add(l)
+        }
+        pendingFenceFrom = -1
+        pendingFenceName = ''
+      }
+    }
+  }
 
   return Decoration.set(decorations.sort((a, b) => a.from - b.from), true)
 }

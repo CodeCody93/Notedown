@@ -176,6 +176,57 @@
   margin-left: 0.2em;
 }
 
+/* Spoiler — ||text|| — censored grey box in live-preview mode. */
+.cm-editor .cm-spoiler {
+  background: var(--muted, #6b7280);
+  color: transparent;
+  border-radius: 3px;
+  padding: 0 0.25em;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.cm-editor .cm-spoiler[data-revealed="true"] {
+  background: transparent;
+  color: inherit;
+}
+
+/* Dropdown — >>> block — collapsible widget in live-preview mode. */
+.cm-editor .cm-dropdown {
+  margin: 2px 0;
+  border: 1px solid var(--border, #e3e3df);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.cm-editor .cm-dropdown-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--muted, #6b7280);
+  background: var(--surface, #f8f8f6);
+  user-select: none;
+}
+.cm-editor .cm-dropdown-header:hover {
+  color: var(--text, #1f2328);
+}
+.cm-editor .cm-dropdown-chevron {
+  font-size: 0.7em;
+  transition: transform 0.2s ease;
+  display: inline-block;
+}
+.cm-editor .cm-dropdown-content {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border, #e3e3df);
+}
+.cm-editor .cm-dropdown-content > :first-child {
+  margin-top: 0;
+}
+.cm-editor .cm-dropdown-content > :last-child {
+  margin-bottom: 0;
+}
+
 /* ---------------------------------------------------------------------------
    CodeMirror search panel (@codemirror/search, wired via search({top:true})).
    Floating card at top-right (desktop) / full-width top (mobile). 1 line for

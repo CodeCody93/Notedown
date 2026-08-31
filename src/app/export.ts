@@ -104,6 +104,115 @@ md.use(sub)
 md.use(sup)
 md.use(emoji)
 
+// ---------------------------------------------------------------------------
+// Spoiler inline plugin — `||text||` → <span class="md-spoiler">
+// ---------------------------------------------------------------------------
+
+md.inline.ruler.after('emphasis', 'spoiler', (state, silent) => {
+  const start = state.pos
+  const max = state.posMax
+  // Must start with || and have at least one char before closing ||
+  if (start + 2 >= max) return false
+  if (state.src.charCodeAt(start) !== 0x7c /* | */ || state.src.charCodeAt(start + 1) !== 0x7c) return false
+
+  // Scan for closing || (not at the same position)
+  let pos = start + 2
+  while (pos < max) {
+    if (state.src.charCodeAt(pos) === 0x7c && pos + 1 < max && state.src.charCodeAt(pos + 1) === 0x7c) {
+      // Found closing || — content is between start+2 and pos
+      if (pos === start + 2) {
+        // Empty content — not a valid spoiler
+        pos += 2
+        break
+      }
+      if (!silent) {
+        const token_o = state.push('spoiler_open', 'span', 0)
+        token_o.markup = '||'
+        state.pos = start + 2
+        state.md.inline.tokenize(state)
+        state.pos = pos
+        const token_c = state.push('spoiler_close', 'span', -1)
+        token_c.markup = '||'
+      }
+      state.pos = pos + 2
+      return true
+    }
+    pos++
+  }
+  return false
+})
+
+md.renderer.rules.spoiler_open = () =>
+  '<span class="md-spoiler" data-revealed="false">'
+md.renderer.rules.spoiler_close = () => '</span>'
+
+// ---------------------------------------------------------------------------
+// Dropdown core rule — preprocesses `>>>` fences before block parsing.
+// Opening/closing `>>>` lines become <details>/<summary> tags so the inner
+// markdown content is parsed normally by markdown-it.
+// Optional name: `>>> My Title` sets the summary text to "My Title".
+// ---------------------------------------------------------------------------
+
+md.core.ruler.before('block', 'md-dropdown', (state) => {
+  const lines = state.src.split('\n')
+  const fenceRe = /^\s*>>>\s*(.*)$/
+  let inFence = false
+  let fenceStartLine = -1
+  let fenceName = ''
+  // Track lines inside fenced code blocks to skip them
+  let inCodeFence = false
+  let codeFenceChar = ''
+  let codeFenceLen = 0
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const codeFence = /^ {0,3}(`{3,}|~{3,})/.exec(line)
+    if (codeFence) {
+      const marker = codeFence[1]
+      if (inCodeFence) {
+        if (
+          marker[0] === codeFenceChar &&
+          marker.length >= codeFenceLen &&
+          /^ {0,3}[`~]+[ \t]*$/.test(line)
+        ) {
+          inCodeFence = false
+        }
+      } else {
+        inCodeFence = true
+        codeFenceChar = marker[0]
+        codeFenceLen = marker.length
+      }
+      continue
+    }
+    if (inCodeFence) continue
+
+    const m = fenceRe.exec(line)
+    if (m) {
+      if (!inFence) {
+        inFence = true
+        fenceStartLine = i
+        fenceName = (m[1] ?? '').trim()
+      } else {
+        // Closing fence — replace both lines with HTML tags
+        const summaryContent = fenceName !== '' ? escapeHtml(fenceName) : ''
+        lines[fenceStartLine] = `<details class="md-dropdown" open><summary class="md-dropdown-summary">${summaryContent}</summary>`
+        lines[i] = '</details>'
+        inFence = false
+      }
+    }
+  }
+  // Unclosed >>> left as-is (treated as plain text)
+  state.src = lines.join('\n')
+})
+
+/**
+ * Render a markdown string through the same md instance.
+ * Used by livePreview.ts to render dropdown inner content.
+ */
+export function renderInlineMarkdown(text: string): string {
+  return DOMPurify.sanitize(md.render(text))
+}
+
 /**
  * Add a "Copy code" button to fenced code blocks. The button sits at the
  * top-right corner and copies the raw code text to the clipboard on click.
@@ -457,6 +566,55 @@ export const MARKDOWN_BODY_CSS: string = `
 .md-body .footnotes-sep {
   display: none;
 }
+
+/* Spoiler — ||text|| — censored grey box, click to reveal. */
+.md-body .md-spoiler {
+  background: var(--muted, #6b7280);
+  color: transparent;
+  border-radius: 3px;
+  padding: 0 0.25em;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.md-body .md-spoiler[data-revealed="true"] {
+  background: transparent;
+  color: inherit;
+}
+
+/* Dropdown — ^^^ block — collapsible details/summary. */
+.md-body .md-dropdown {
+  margin: 0.8em 0;
+  border: 1px solid var(--border, #e3e3df);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.md-body .md-dropdown-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  color: var(--muted, #6b7280);
+  background: var(--surface, #f8f8f6);
+  user-select: none;
+  list-style: none;
+}
+.md-body .md-dropdown-summary::-webkit-details-marker {
+  display: none;
+}
+.md-body .md-dropdown-summary::before {
+  content: '\\25B6';
+  display: inline-block;
+  font-size: 0.7em;
+  transition: transform 0.2s ease;
+}
+.md-body .md-dropdown[open] > .md-dropdown-summary::before {
+  transform: rotate(90deg);
+}
+.md-body .md-dropdown > :not(.md-dropdown-summary) {
+  padding: 8px 12px;
+}
 `
 
 /**
@@ -679,7 +837,7 @@ export function renderStandaloneHtml(markdown: string, opts: StandaloneHtmlOptio
     '</head>',
     `<body><main class="md-body">${body}</main>`,
     `<script>`,
-    `(function(){document.addEventListener('click',function(e){var btn=e.target.closest('.md-code-copy');if(!btn)return;e.stopPropagation();var code=btn.getAttribute('data-code');if(code!==null){var el=document.createElement('textarea');el.value=code;el.style.cssText='position:fixed;left:-9999px';document.body.appendChild(el);el.select();document.execCommand('copy');document.body.removeChild(el)}var svg=btn.innerHTML;btn.innerHTML='<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>';setTimeout(function(){btn.innerHTML=svg},2000)})})();`,
+    `(function(){document.addEventListener('click',function(e){var s=e.target.closest('.md-spoiler');if(s){s.setAttribute('data-revealed',s.getAttribute('data-revealed')==='true'?'false':'true');return}var btn=e.target.closest('.md-code-copy');if(!btn)return;e.stopPropagation();var code=btn.getAttribute('data-code');if(code!==null){var el=document.createElement('textarea');el.value=code;el.style.cssText='position:fixed;left:-9999px';document.body.appendChild(el);el.select();document.execCommand('copy');document.body.removeChild(el)}var svg=btn.innerHTML;btn.innerHTML='<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>';setTimeout(function(){btn.innerHTML=svg},2000)})})();`,
     `</script>`,
     `</body>`,
     '</html>',
