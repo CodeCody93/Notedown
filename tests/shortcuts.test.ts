@@ -52,6 +52,8 @@ const ALL_IDS = [
   'sub',
   'sup',
   'highlight',
+  'spoiler',
+  'dropdown',
   'toggle-mode',
 ]
 

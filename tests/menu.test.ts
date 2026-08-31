@@ -198,6 +198,8 @@ describe('formattingHotkeyMap', () => {
       'sub',
       'sup',
       'highlight',
+      'spoiler',
+      'dropdown',
     ]
     expect(expected.length).toBeGreaterThan(0)
     expect(formattingHotkeyIds()).toEqual(expected)

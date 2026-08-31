@@ -14,6 +14,7 @@ import {
   continueListSpec,
   cycleHeadingSpec,
   insertDefListSpec,
+  insertDropdownSpec,
   insertFootnoteSpec,
   insertHeadingIdSpec,
   insertHrSpec,
@@ -30,6 +31,7 @@ import {
   toggleInlineCodeSpec,
   toggleItalicSpec,
   toggleListSpec,
+  toggleSpoilerSpec,
   toggleStrikethroughSpec,
   toggleSubscriptSpec,
   toggleSuperscriptSpec,
@@ -582,6 +584,33 @@ describe('markdownListKeymap', () => {
   })
 })
 
+describe('spoiler', () => {
+  it('wraps a selection', () => {
+    expect(applyTo('secret', 0, 6, toggleSpoilerSpec(stateOf('secret', 0, 6)))).toEqual({ doc: '||secret||', head: 8 })
+  })
+
+  it('unwraps when already wrapped', () => {
+    expect(applyTo('||secret||', 0, 10, toggleSpoilerSpec(stateOf('||secret||', 0, 10)))).toEqual({ doc: 'secret', head: 6 })
+  })
+
+  it('empty selection inserts |||| with the caret between the pairs', () => {
+    expect(applyTo('text', 2, undefined, toggleSpoilerSpec(stateOf('text', 2)))).toEqual({ doc: 'te||||xt', head: 4 })
+  })
+})
+
+describe('dropdown', () => {
+  it('inserts a dropdown block template', () => {
+    const result = applyTo('content', 0, undefined, insertDropdownSpec(stateOf('content', 0)))
+    expect(result.doc).toBe('>>> Title\n\n>>>content')
+    expect(result.head).toBe(9)
+  })
+
+  it('inserts with selected title', () => {
+    const result = applyTo('content', 0, undefined, insertDropdownSpec(stateOf('content', 0)))
+    expect(result.doc).toContain('>>> Title')
+  })
+})
+
 describe('FORMATTING_COMMANDS', () => {
   it('exposes every locked action id', () => {
     const expected = [
@@ -615,6 +644,8 @@ describe('FORMATTING_COMMANDS', () => {
       'sub',
       'sup',
       'highlight',
+      'spoiler',
+      'dropdown',
     ]
     for (const id of expected) {
       expect(typeof FORMATTING_COMMANDS[id]).toBe('function')

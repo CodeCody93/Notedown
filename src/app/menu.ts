@@ -90,6 +90,8 @@ const ICON = {
   sub: `<path d="M3 3.5L6.5 7M6.5 3.5L3 7" /><path d="M9.5 9.5h3.2" /><path d="M11 11.2V13.7" /><path d="M9.5 13.4c.2-.7.7-1 1.3-1 .6 0 1 .3 1 .8 0 .4-.4.7-1 .7-.5 0-.9-.2-1.1-.6" />`,
   sup: `<path d="M3 4L6.5 7.5M6.5 4L3 7.5" /><path d="M9.5 3.5h3.2" /><path d="M11 5.2v2.5" /><path d="M9.5 7.4c.2-.7.7-1 1.3-1 .6 0 1 .3 1 .8 0 .4-.4.7-1 .7-.5 0-.9-.2-1.1-.6" />`,
   highlight: `<path d="M5 12l3.5 3.5L11 13 7.5 9.5 5 12z" /><path d="M9.5 7.5L13 11l-2 2-3.5-3.5 2-2z" /><path d="M12.5 4.5l1-1 1 1-1 1z" />`,
+  spoiler: `<path d="M3 8s2.5-4 5-4 5 4 5 4-2.5 4-5 4-5-4-5-4z" /><circle cx="8" cy="8" r="1.5" />`,
+  dropdown: `<path d="M3 4h10M3 8h10M3 12h10" /><path d="M11 2l2 2-2 2" />`,
 } as const
 
 // ---------------------------------------------------------------------------
@@ -144,6 +146,8 @@ export const EXTRA_MENU: MenuEntry[] = [
   { id: 'sub', label: 'Subscript', hotkey: 'sub', icon: ICON.sub },
   { id: 'sup', label: 'Superscript', hotkey: 'sup', icon: ICON.sup },
   { id: 'highlight', label: 'Highlight', hotkey: 'highlight', icon: ICON.highlight },
+  { id: 'spoiler', label: 'Spoiler', hotkey: 'spoiler', icon: ICON.spoiler },
+  { id: 'dropdown', label: 'Dropdown', hotkey: 'dropdown', icon: ICON.dropdown },
 ]
 
 /** Toolbar groups: history/clipboard, inline, blocks (+ header/list), Extra dropdown. */

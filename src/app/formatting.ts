@@ -393,6 +393,15 @@ export function toggleHighlightSpec(state: EditorState): TransactionSpec {
   return wrapUnwrap(state, '==', '==')
 }
 
+/** Toggle spoiler `||x||`. Empty selection inserts `||||`, caret between the pairs. */
+export function toggleSpoilerSpec(state: EditorState): TransactionSpec {
+  const empty = unwrapEmptyDelimiters(state, '||', '||')
+  if (empty !== null) return empty
+  const t = textRegionUnwrap(state, '||', '||')
+  if (t !== null) return t
+  return wrapUnwrap(state, '||', '||')
+}
+
 // ---------------------------------------------------------------------------
 // Headings
 // ---------------------------------------------------------------------------
@@ -930,6 +939,86 @@ export function insertDefListSpec(state: EditorState): TransactionSpec {
 }
 
 // ---------------------------------------------------------------------------
+// Dropdown
+// ---------------------------------------------------------------------------
+
+/**
+ * Insert a dropdown block `>>> Title\n\n>>>` with the title selected.
+ * If the selection is inside an existing dropdown block (lines starting with `>>>`),
+ * remove the dropdown markers instead.
+ */
+export function insertDropdownSpec(state: EditorState): TransactionSpec {
+  const range = state.selection.main
+  const pos = range.head
+
+  // Check if we're inside an existing dropdown block
+  const line = state.doc.lineAt(pos)
+  const lineText = line.text.trim()
+
+  // Look for opening >>>
+  if (/^>>>/.test(lineText)) {
+    // Find the matching closing >>>
+    let openLine = line.number
+    let closeLine = -1
+    for (let i = line.number + 1; i <= state.doc.lines; i++) {
+      const l = state.doc.line(i)
+      if (/^>>>/.test(l.text.trim())) {
+        closeLine = i
+        break
+      }
+    }
+
+    if (closeLine !== -1) {
+      // Remove the entire dropdown block
+      const openLineObj = state.doc.line(openLine)
+      const closeLineObj = state.doc.line(closeLine)
+      const from = openLineObj.from
+      const to = closeLineObj.to
+      return {
+        changes: { from, to, insert: '' },
+        selection: { anchor: from },
+      }
+    }
+  }
+
+  // Check if we're inside a dropdown block (between >>> markers)
+  let openLineNum = -1
+  for (let i = line.number; i >= 1; i--) {
+    const l = state.doc.line(i)
+    if (/^>>>/.test(l.text.trim())) {
+      openLineNum = i
+      break
+    }
+    if (l.text.trim() !== '' && !/^>/.test(l.text.trim())) {
+      break
+    }
+  }
+
+  if (openLineNum !== -1) {
+    // Find closing >>>
+    for (let i = openLineNum + 1; i <= state.doc.lines; i++) {
+      const l = state.doc.line(i)
+      if (/^>>>/.test(l.text.trim())) {
+        // Remove the entire dropdown block
+        const openLineObj = state.doc.line(openLineNum)
+        const closeLineObj = state.doc.line(i)
+        const from = openLineObj.from
+        const to = closeLineObj.to
+        return {
+          changes: { from, to, insert: '' },
+          selection: { anchor: from },
+        }
+      }
+    }
+  }
+
+  // Insert new dropdown block
+  const insert = '>>> Title\n\n>>>'
+  const caret = pos + '>>> '.length
+  return { changes: { from: pos, to: pos, insert }, selection: { anchor: caret, head: caret + 5 } }
+}
+
+// ---------------------------------------------------------------------------
 // Generic text insert + Enter-in-list continuation
 // ---------------------------------------------------------------------------
 
@@ -1102,4 +1191,6 @@ export const FORMATTING_COMMANDS: Record<string, FormattingCommand> = {
   sub: toggleSubscriptSpec,
   sup: toggleSuperscriptSpec,
   highlight: toggleHighlightSpec,
+  spoiler: toggleSpoilerSpec,
+  dropdown: insertDropdownSpec,
 }

@@ -411,6 +411,8 @@ const FORMATTING_ACTION_IDS = [
   'sub',
   'sup',
   'highlight',
+  'spoiler',
+  'dropdown',
 ]
 
 function runFormatting(id: string): void {
