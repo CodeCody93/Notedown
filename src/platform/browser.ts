@@ -25,7 +25,7 @@ interface WindowWithFSA extends Window {
 
 // --- IndexedDB handle store (FileSystemFileHandle is structured-cloneable) ---
 
-const DB_NAME = 'markitdown.handles'
+const DB_NAME = 'notedown.handles'
 const DB_VERSION = 1
 const HANDLE_STORE = 'handles'
 
@@ -125,9 +125,9 @@ function writeRaw(key: string, value: string): Promise<void> {
   return Promise.resolve()
 }
 
-const SETTINGS_KEY = 'markitdown.settings'
-const RECENTS_KEY = 'markitdown.recents'
-const DRAFT_PREFIX = 'markitdown.draft.'
+const SETTINGS_KEY = 'notedown.settings'
+const RECENTS_KEY = 'notedown.recents'
+const DRAFT_PREFIX = 'notedown.draft.'
 
 export const browserIO: FileIO = {
   async openFile(): Promise<OpenResult | null> {

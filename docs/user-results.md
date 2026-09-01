@@ -1,4 +1,4 @@
-# MarkItDown — User Test Checklist (Round 5)
+# Notedown — User Test Checklist (Round 5)
 
 Focused regression + coverage for the 5th round. **Only items that were fixed in Round 4 (marked with notes in `docs/user-results.md`) and items that were never tested** are listed here. Everything else was already verified in Rounds 2–4 — no need to re-run the full suite.
 
@@ -8,7 +8,7 @@ Focused regression + coverage for the 5th round. **Only items that were fixed in
 |---|---|---|
 | Browser dev mode | `npm run dev` then open URL | **Chromium only** (Chrome/Edge). Dev/test surface, not production. |
 | Tauri desktop (dev) | `npm run tauri dev` | Requires Rust toolchain + VS Build Tools. |
-| Tauri desktop (built) | `npm run tauri build` | Produces `MarkItDown_0.1.0_x64-setup.exe` / `.msi`. |
+| Tauri desktop (built) | `npm run tauri build` | Produces `Notedown_0.1.0_x64-setup.exe` / `.msi`. |
 
 ## Tester info
 

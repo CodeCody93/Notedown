@@ -267,7 +267,7 @@ pub fn confirm_dialog(app: AppHandle, message: String) -> Result<bool, String> {
     let reply = app
         .dialog()
         .message(message)
-        .title("MarkItDown")
+        .title("Notedown")
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::YesNo)
         .blocking_show_with_result();
@@ -281,7 +281,7 @@ pub fn confirm_dialog(app: AppHandle, message: String) -> Result<bool, String> {
 pub fn alert_dialog(app: AppHandle, message: String) -> Result<(), String> {
     app.dialog()
         .message(message)
-        .title("MarkItDown")
+        .title("Notedown")
         .blocking_show();
     Ok(())
 }

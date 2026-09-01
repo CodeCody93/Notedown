@@ -1,5 +1,5 @@
 /**
- * MarkItDown — shared markdown rendering pipeline (PLAN §6B, §14, §16, §17).
+ * Notedown — shared markdown rendering pipeline (PLAN §6B, §14, §16, §17).
  *
  * ONE markdown-it instance with the full cheat-sheet plugin set (§6B table),
  * a lazy-registered highlight.js language set (§17) and DOMPurify

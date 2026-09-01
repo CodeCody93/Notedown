@@ -25,7 +25,7 @@ function renderStatusBar(state: AppState): void {
 }
 
 function renderTitle(state: AppState): void {
-  document.title = `${state.doc.dirty ? '• ' : ''}${state.doc.name} — MarkItDown`
+  document.title = `${state.doc.dirty ? '• ' : ''}${state.doc.name} — Notedown`
   // A3: the OS/Tauri window title must follow document.title (dirty prefix +
   // name). Browser mode keeps document.title only; Tauri mode also calls
   // setTitle. Use isTauri() at call-time (never the cached runtime const) so

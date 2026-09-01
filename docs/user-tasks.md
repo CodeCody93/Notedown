@@ -1,4 +1,4 @@
-# MarkItDown — User Test Checklist (Round 5)
+# Notedown — User Test Checklist (Round 5)
 
 Focused regression + coverage for the 5th round. **Only items that were fixed in Round 4 (marked with notes in `docs/user-results.md`) and items that were never tested** are listed here. Everything else was already verified in Rounds 2–4 — no need to re-run the full suite.
 
@@ -8,7 +8,7 @@ Focused regression + coverage for the 5th round. **Only items that were fixed in
 |---|---|---|
 | Browser dev mode | `npm run dev` then open URL | **Chromium only** (Chrome/Edge). Dev/test surface, not production. |
 | Tauri desktop (dev) | `npm run tauri dev` | Requires Rust toolchain + VS Build Tools. |
-| Tauri desktop (built) | `npm run tauri build` | Produces `MarkItDown_0.1.0_x64-setup.exe` / `.msi`. |
+| Tauri desktop (built) | `npm run tauri build` | Produces `Notedown_0.1.0_x64-setup.exe` / `.msi`. |
 
 ## Tester info
 
@@ -55,7 +55,7 @@ Use `docs/security-test.md` + `docs/highlight-sample.md`.
 
 ## D. File operations (still untested / deferred)
 
-- [ ] **C6 — CRLF + BOM round-trip (use `docs/bom-crlf.md`).** That file contains UTF-8 BOM (`EF BB BF`) + CRLF `hello\r\nworld\r\n` (verify via `Format-Hex`). Open it in MarkItDown, type a new line, Save, reopen in VS Code/Notepad. Expected: content reads correctly, BOM is stripped on open and **not re-added** on save (file still valid UTF-8, now without BOM, `Format-Hex` shows no leading `EF BB BF`), line endings not corrupted (hello/world intact).
+- [ ] **C6 — CRLF + BOM round-trip (use `docs/bom-crlf.md`).** That file contains UTF-8 BOM (`EF BB BF`) + CRLF `hello\r\nworld\r\n` (verify via `Format-Hex`). Open it in Notedown, type a new line, Save, reopen in VS Code/Notepad. Expected: content reads correctly, BOM is stripped on open and **not re-added** on save (file still valid UTF-8, now without BOM, `Format-Hex` shows no leading `EF BB BF`), line endings not corrupted (hello/world intact).
 
 - [ ] **C8 — Close guard actually closes (deferred to specialist).** Dirty doc → click X / `Alt+F4` → confirm “Discard…?” → **Yes** must **exit the process** (window closes, Task Manager/dev terminal shows exit). **No** keeps doc intact. Clean doc → X closes immediately with **no prompt**, process exits. *Note: `desktop.json` now grants `core:window:allow-set-title`/`allow-close`/`allow-destroy`/`allow-on-close-requested` and `detect.ts` uses `isTauri()` at call-time; full lifecycle still requires manual QA on built installer.*
 

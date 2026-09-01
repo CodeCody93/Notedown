@@ -1,6 +1,6 @@
 # Highlight.js language coverage — verification sample
 
-This file exercises every syntax-highlighted language listed in PLAN §17 / `src/app/export.ts` (`hljs` registration). Open it in MarkItDown (Live mode, saved doc) and export to HTML — each fence should be syntax-colored (not plain grey). In exported HTML both light and dark `prefers-color-scheme` styles should appear.
+This file exercises every syntax-highlighted language listed in PLAN §17 / `src/app/export.ts` (`hljs` registration). Open it in Notedown (Live mode, saved doc) and export to HTML — each fence should be syntax-colored (not plain grey). In exported HTML both light and dark `prefers-color-scheme` styles should appear.
 
 ## markdown
 
@@ -59,7 +59,7 @@ done
 
 ```json
 {
-  "name": "MarkItDown",
+  "name": "Notedown",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -72,7 +72,7 @@ done
 ## yaml
 
 ```yaml
-name: MarkItDown
+name: Notedown
 on:
   push:
     branches: [main]
