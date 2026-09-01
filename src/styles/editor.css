@@ -227,6 +227,118 @@
   margin-bottom: 0;
 }
 
+/* Markdown-body styles inside the dropdown so rendered markdown elements
+   (headings, lists, code, tables, etc.) look correct. Scoped under
+   .cm-dropdown-content to avoid leaking into the rest of the editor. */
+.cm-editor .cm-dropdown-content p {
+  margin: 0.4em 0;
+}
+.cm-editor .cm-dropdown-content h1,
+.cm-editor .cm-dropdown-content h2,
+.cm-editor .cm-dropdown-content h3,
+.cm-editor .cm-dropdown-content h4,
+.cm-editor .cm-dropdown-content h5,
+.cm-editor .cm-dropdown-content h6 {
+  margin: 0.6em 0 0.3em;
+  line-height: 1.25;
+  font-weight: 600;
+}
+.cm-editor .cm-dropdown-content h1 { font-size: 1.6em; }
+.cm-editor .cm-dropdown-content h2 { font-size: 1.35em; }
+.cm-editor .cm-dropdown-content h3 { font-size: 1.15em; }
+.cm-editor .cm-dropdown-content h4 { font-size: 1.05em; }
+.cm-editor .cm-dropdown-content h5 { font-size: 1em; }
+.cm-editor .cm-dropdown-content h6 { font-size: 0.9em; color: var(--muted, #6b7280); }
+.cm-editor .cm-dropdown-content ul,
+.cm-editor .cm-dropdown-content ol {
+  margin: 0.4em 0;
+  padding-left: 1.6em;
+}
+.cm-editor .cm-dropdown-content li { margin: 0.15em 0; }
+.cm-editor .cm-dropdown-content blockquote {
+  margin: 0.5em 0;
+  padding: 0.2em 0.8em;
+  border-left: 3px solid var(--accent, #2563eb);
+  background: var(--surface, #f8f8f6);
+  color: var(--muted, #6b7280);
+}
+.cm-editor .cm-dropdown-content code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--code-bg, #f3f3f1);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+}
+.cm-editor .cm-dropdown-content pre {
+  background: var(--code-bg, #f3f3f1);
+  padding: 0.5em 0.8em;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.cm-editor .cm-dropdown-content pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.88em;
+}
+.cm-editor .cm-dropdown-content table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+}
+.cm-editor .cm-dropdown-content th,
+.cm-editor .cm-dropdown-content td {
+  border: 1px solid var(--border, #e3e3df);
+  padding: 0.3em 0.6em;
+}
+.cm-editor .cm-dropdown-content th {
+  background: var(--surface, #f8f8f6);
+  font-weight: 600;
+}
+.cm-editor .cm-dropdown-content img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 4px;
+}
+.cm-editor .cm-dropdown-content hr {
+  border: none;
+  border-top: 1px solid var(--border, #e3e3df);
+  margin: 0.8em 0;
+}
+.cm-editor .cm-dropdown-content a {
+  color: var(--accent, #2563eb);
+  text-decoration: none;
+}
+.cm-editor .cm-dropdown-content a:hover {
+  text-decoration: underline;
+}
+.cm-editor .cm-dropdown-content strong { font-weight: 600; }
+.cm-editor .cm-dropdown-content em { font-style: italic; }
+.cm-editor .cm-dropdown-content del { text-decoration: line-through; }
+.cm-editor .cm-dropdown-content mark {
+  background: rgba(255, 213, 0, 0.35);
+  border-radius: 2px;
+  padding: 0 0.1em;
+}
+.cm-editor .cm-dropdown-content sub,
+.cm-editor .cm-dropdown-content sup {
+  font-size: 0.75em;
+  line-height: 0;
+}
+.cm-editor .cm-dropdown-content dl { margin: 0.5em 0; }
+.cm-editor .cm-dropdown-content dt { font-weight: 600; }
+.cm-editor .cm-dropdown-content dd {
+  margin: 0.1em 0 0.4em 1.6em;
+}
+.cm-editor .cm-dropdown-content .task-list-item {
+  list-style: none;
+}
+.cm-editor .cm-dropdown-content .task-list-item-checkbox {
+  margin-right: 0.4em;
+  vertical-align: middle;
+  accent-color: var(--accent, #2563eb);
+}
+
 /* ---------------------------------------------------------------------------
    CodeMirror search panel (@codemirror/search, wired via search({top:true})).
    Floating card at top-right (desktop) / full-width top (mobile). 1 line for

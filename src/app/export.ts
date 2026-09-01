@@ -214,6 +214,15 @@ export function renderInlineMarkdown(text: string): string {
 }
 
 /**
+ * Render inline-level markdown only (no block-level wrapping like <p>).
+ * Used by livePreview.ts for table cell content where block wrappers
+ * would break the cell layout.
+ */
+export function renderInlineOnlyMarkdown(text: string): string {
+  return DOMPurify.sanitize(md.renderInline(text))
+}
+
+/**
  * Add a "Copy code" button to fenced code blocks. The button sits at the
  * top-right corner and copies the raw code text to the clipboard on click.
  * The HTML structure mirrors the live-preview widget (cm-code-widget) so

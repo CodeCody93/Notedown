@@ -70,7 +70,7 @@ import {
   shouldShowSource,
   checkUpdateAction,
 } from 'codemirror-live-markdown'
-import { renderInlineMarkdown } from '../app/export'
+import { renderInlineMarkdown, renderInlineOnlyMarkdown } from '../app/export'
 import hljs from 'highlight.js/lib/core'
 import markdownLang from 'highlight.js/lib/languages/markdown'
 import javascriptLang from 'highlight.js/lib/languages/javascript'
@@ -589,7 +589,11 @@ class MarkdownTableWidget extends WidgetType {
 function tableCell(text: string): HTMLElement {
   const cell = document.createElement('span')
   cell.className = 'cm-table-cell'
-  cell.textContent = text
+  if (text.trim().length > 0) {
+    cell.innerHTML = renderInlineOnlyMarkdown(text)
+  } else {
+    cell.textContent = text
+  }
   return cell
 }
 
