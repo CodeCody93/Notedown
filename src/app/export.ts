@@ -476,6 +476,8 @@ export const MARKDOWN_BODY_CSS: string = `
 .md-body table {
   border-collapse: collapse;
   margin: 0.8em 0;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .md-body th,
@@ -621,8 +623,19 @@ export const MARKDOWN_BODY_CSS: string = `
 .md-body .md-dropdown[open] > .md-dropdown-summary::before {
   transform: rotate(90deg);
 }
-.md-body .md-dropdown > :not(.md-dropdown-summary) {
+.md-body .md-dropdown > :not(.md-dropdown-summary):not(table) {
   padding: 8px 12px;
+}
+/* A GFM table parsed directly inside the dropdown <details> is a direct
+   child — padding on a border-collapse: collapse table breaks its borders
+   and keeps it shrink-to-content. Exclude it from the generic gutter above
+   and reproduce the 12px side gutter with margins instead, so dropdown
+   tables fill the content width exactly like tables outside dropdowns. */
+.md-body .md-dropdown > table {
+  padding: 0;
+  width: calc(100% - 24px);
+  margin: 8px 12px;
+  box-sizing: border-box;
 }
 `
 

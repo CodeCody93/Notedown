@@ -9,10 +9,10 @@
 
 ## Multi-agent workflow
 
-- **Orchestrator (primary/default agent):** takes the user's request, asks clarifying questions via the `question` tool when needed, then splits it into independent work packets — separated by system (e.g. editor vs platform vs styles) and by implementation vs investigation. Spawn as many coder subagents in parallel as possible. **The orchestrator owns test execution**: after coders report back, it runs the tests itself.
+- **Orchestrator (primary/default agent):** takes the user's request, asks clarifying questions via the `question` tool when needed, then splits it into independent work packets — separated by system (e.g. editor vs platform vs styles) and by implementation vs investigation. Spawn as many coder subagents in parallel as possible. **The orchestrator owns test execution**: after coders report back, it runs the tests itself, then runs `npm run tauri build` (or `npm run verify` for the full chain) as the post-test full-build check, plus cross-packet integration checks.
 - **Packet rule (critical):** packets must never overlap files. Assign disjoint file sets up front.
 - **Coder (subagent):** implements exactly one packet. Write tests only when truly necessary (tests are slow — avoid by default). **Never run tests or builds** — other coder agents work in parallel in the same workspace; a build can interfere.
-- Both agents are fully unrestricted (`permission: allow`, no prompts). Speed is the top priority: `subagent_depth: 1`, model `opencode-go/deepseek-v4-flash` at variant `max`.
+- Both agents are fully unrestricted (`permission: allow`, no prompts). Speed is the top priority: `subagent_depth: 1`, model `opencode/muse-spark-1.3-contributor-free` at variant `xhigh`.
 - Orchestrator should act as the verifier: it owns test runs and cross-packet integration checks (e.g. platform/tauri.ts ↔ src-tauri Rust commands), since no single coder sees the whole picture.
 
 ## Stack & architecture
@@ -37,4 +37,5 @@
 - `npm test` → Vitest unit tests (formatting/recent/draft/settings/shortcuts/markdown-it/editor) — 269 passing.
 - `npm run typecheck` → `tsc --noEmit`; `npm run build` → `tsc && vite build`.
 - `npm run tauri dev` → desktop dev; `npm run tauri build` → platform bundles; `cargo check` (in `src-tauri/`) for the Rust side.
+- `npm run verify` → typecheck + `npm test` + `npm run tauri build` (full pipeline: green tests plus runnable bundle for manual QA).
 - iOS builds require macOS + Xcode + signing — do last, on a Mac; Android builds work on Windows.

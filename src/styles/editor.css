@@ -176,7 +176,8 @@
   margin-left: 0.2em;
 }
 
-/* Spoiler — ||text|| — censored grey box in live-preview mode. */
+/* Spoiler — ||text|| — hidden (censored cover, click to reveal) vs revealed
+   (dashed-underline affordance, click again to edit) in live-preview mode. */
 .cm-editor .cm-spoiler {
   background: var(--muted, #6b7280);
   color: transparent;
@@ -186,9 +187,19 @@
   user-select: none;
   transition: background 0.2s ease, color 0.2s ease;
 }
+.cm-editor .cm-spoiler:hover {
+  filter: brightness(1.1);
+  outline: 1px solid var(--border, #e3e3df);
+}
 .cm-editor .cm-spoiler[data-revealed="true"] {
   background: transparent;
   color: inherit;
+  border-bottom: 1px dashed var(--muted, #6b7280);
+  cursor: pointer;
+  user-select: text;
+}
+.cm-editor .cm-spoiler[data-revealed="true"]:hover {
+  background: var(--surface, #f8f8f6);
 }
 
 /* Dropdown — >>> block — collapsible widget in live-preview mode. */
@@ -282,6 +293,9 @@
   font-size: 0.88em;
 }
 .cm-editor .cm-dropdown-content table {
+  width: 100%;
+  box-sizing: border-box;
+  table-layout: fixed;
   border-collapse: collapse;
   margin: 0.5em 0;
 }

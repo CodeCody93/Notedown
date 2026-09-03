@@ -41,6 +41,17 @@
  *   decoration on inactive lines (E3).
  * - `-# subtext`: inactive lines starting with `-# ` render the remainder as
  *   `.cm-subtext` (Other Noted Issues #5).
+ * - Active-line muted syntax: on caret-inside (raw) lines the task `[ ]`/`[x]`
+ *   brackets, table `|` pipes, deflist `:` colons and paired `>>>` markers
+ *   previously showed in default text color while every other syntax showed
+ *   faded ghost. They now get ghost `*-visible` marks (task/`>>>` via
+ *   `cm-formatting-block-visible`, pipes/deflist via
+ *   `cm-formatting-inline-visible`) so active lines read consistently. Task
+ *   prefix (bullet + bracket) is marked as one range
+ *   (`line.from..line.from + prefix.length`); table pipes cover every `|` on
+ *   active tables; deflist covers the leading `:`; `>>>` covers the marker
+ *   chars when the caret is anywhere inside the pair's range. Marks only,
+ *   never replaces.
  *
  * BLOCK-WIDGET NOTE (why tables/HRs live in a StateField, not the ViewPlugin):
  * CM6 ≥ 6.40 throws `RangeError("Block decorations may not be specified via plugins")`
@@ -364,9 +375,19 @@ class FootnoteRefWidget extends WidgetType {
 }
 
 /**
- * Rendered spoiler for inactive lines. Replaces `||text||` with a censored
- * grey box that reveals the content on click. The raw markdown re-appears
- * when the caret enters the line.
+ * Rendered spoiler — 4-step Typora-style flow:
+ * 1) caret inside `||...||` → raw source visible with muted/faded `||`
+ *    delimiters (decoration builder, not this widget).
+ * 2) caret exits → content hidden behind this censored cover widget.
+ * 3) click cover → one-way reveal (`data-revealed=false` → `true`).
+ * 4) click revealed content → mousedown is let through so CM6 places the
+ *    caret naturally, the widget rebuilds to raw source (back to step 1).
+ *
+ * Mousedown/click split: while hidden, mousedown is swallowed so CM6 does
+ * not move the caret (which would rebuild the widget before click fires and
+ * make the reveal position-dependent); the click then reveals. Once
+ * revealed, both handlers do nothing so CM6 handles the interaction and
+ * enters edit mode. The widget never toggles true→false on click.
  */
 class SpoilerWidget extends WidgetType {
   constructor(
@@ -385,12 +406,20 @@ class SpoilerWidget extends WidgetType {
     const span = document.createElement('span')
     span.className = 'cm-spoiler'
     span.setAttribute('data-revealed', 'false')
+    span.title = 'Click to reveal'
     span.textContent = this.text
+    span.addEventListener('mousedown', (e: MouseEvent) => {
+      if (span.getAttribute('data-revealed') !== 'true') {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    })
     span.addEventListener('click', (e: MouseEvent) => {
+      if (span.getAttribute('data-revealed') === 'true') return
       e.preventDefault()
       e.stopPropagation()
-      const revealed = span.getAttribute('data-revealed') === 'true'
-      span.setAttribute('data-revealed', revealed ? 'false' : 'true')
+      span.setAttribute('data-revealed', 'true')
+      span.title = 'Click to edit'
     })
     return span
   }
@@ -766,6 +795,18 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
   // (ListMark or Paragraph paths). The line-text sweep must skip these to
   // avoid duplicate widgets.
   const taskHandledLines = new Set<number>()
+  // Lines belonging to a Table node that contains the caret (raw mode) — their
+  // `|` pipes get faded ghost marks in the active-line pass below. Populated
+  // during the tree walk.
+  const activeTableLines = new Set<number>()
+  // Paired `>>>` marker line numbers (open/close), code-fence aware — mirrors
+  // dropdownMarkerLines but keeps pair ranges so the active check can test
+  // "caret anywhere inside the pair" (raw mode shows when ANY line is active).
+  const dropdownPairs: { open: number; close: number }[] = []
+  // Dropdown marker lines already given the active faded mark in the tree walk
+  // (dedupe: one mark per line even if Lezer emits several QuoteMarks; also lets
+  // the active-line pass skip lines already handled).
+  const dropdownVisibleLines = new Set<number>()
 
   const addLinesTo = (node: { from: number; to: number }, set: Set<number>): void => {
     const start = state.doc.lineAt(node.from).number
@@ -806,6 +847,7 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
         } else {
           dropdownMarkerLines.add(pendingFrom)
           dropdownMarkerLines.add(ln)
+          dropdownPairs.push({ open: pendingFrom, close: ln })
           pendingFrom = -1
         }
       }
@@ -868,7 +910,11 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
         const endLine = state.doc.lineAt(node.to).number
         let hasActiveLine = isDrag
         for (let l = startLine; l <= endLine && !hasActiveLine; l++) hasActiveLine = activeLines.has(l)
-        return hasActiveLine ? undefined : false
+        if (hasActiveLine) {
+          for (let l = startLine; l <= endLine; l++) activeTableLines.add(l)
+          return undefined
+        }
+        return false
       }
       if (node.name === 'HorizontalRule') {
         addLinesTo(node, skipLines)
@@ -981,8 +1027,38 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
           return
         }
         // Skip `>>>` dropdown markers — they must show as plain ">>>" text,
-        // not have their `>` characters hidden.
+        // not have their `>` characters hidden. Active pairs (caret anywhere
+        // inside the pair's open/close range, i.e. raw mode) get a faded ghost
+        // mark on the leading `>>>` so they match every other revealed syntax.
         if (node.name === 'QuoteMark' && dropdownMarkerLines.has(lineNum)) {
+          if (!dropdownVisibleLines.has(lineNum)) {
+            const pair = dropdownPairs.find((p) => p.open === lineNum || p.close === lineNum)
+            let pairActive = false
+            if (pair !== undefined) {
+              for (let l = pair.open; l <= pair.close; l++) {
+                if (activeLines.has(l)) {
+                  pairActive = true
+                  break
+                }
+              }
+            } else {
+              pairActive = activeLines.has(lineNum)
+            }
+            if (pairActive) {
+              const markerLine = state.doc.line(lineNum)
+              const markerMatch = /^\s*>>>/.exec(markerLine.text)
+              if (markerMatch !== null) {
+                const markerFrom = markerLine.from + markerMatch[0].indexOf('>>>')
+                decorations.push(
+                  Decoration.mark({ class: 'cm-formatting-block cm-formatting-block-visible' }).range(
+                    markerFrom,
+                    markerFrom + 3,
+                  ),
+                )
+                dropdownVisibleLines.add(lineNum)
+              }
+            }
+          }
           return
         }
         const cls = isActiveLine && !isDrag ? 'cm-formatting-block cm-formatting-block-visible' : 'cm-formatting-block'
@@ -1193,6 +1269,110 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
     }
   }
 
+  // ---- Active-line muted syntax (task brackets, table pipes, deflist colons, >>>) --
+  // Active (caret-inside) lines show raw source. Previously the markers below
+  // showed in default text color while every other syntax showed faded ghost
+  // via `*-visible` classes. Add ghost marks here so active lines read
+  // consistently. Marks only (never replaces) so they compose with the
+  // ListMark/QuoteMark marks from the tree walk. Active line → visible, even
+  // during drag (kept simple; `isDrag` is intentionally NOT gated here).
+  // Separate from the inactive sweep below — inactive widget behavior is untouched.
+  for (const lineNum of activeLines) {
+    if (lineNum < 1 || lineNum > state.doc.lines) continue
+    if (replacedLines.has(lineNum)) continue
+    const line = state.doc.line(lineNum)
+    const text = line.text
+    if (text.length === 0) continue
+
+    // Table pipes: active tables (caret inside → raw mode) get every `|`
+    // faded. Table lines live in skipLines by design, so this branch runs
+    // before the skipLines guard below; code fences never contain Tables.
+    if (activeTableLines.has(lineNum)) {
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] === '|') {
+          decorations.push(
+            Decoration.mark({ class: 'cm-formatting-inline cm-formatting-inline-visible' }).range(
+              line.from + i,
+              line.from + i + 1,
+            ),
+          )
+        }
+      }
+      // Table rows never match the task/deflist/dropdown patterns below, but
+      // skip them anyway: they are in skipLines and must stay raw otherwise.
+      continue
+    }
+    if (skipLines.has(lineNum)) continue
+
+    // Task prefix: mark the WHOLE prefix (indent + bullet + gap + bracket +
+    // trailing spaces) as one range, mirroring the inactive ListMarkerWidget
+    // replace range `line.from..line.from + headLen`. Overlapping the tree
+    // walk's ListMark `cm-formatting-block-visible` mark on the bullet is safe
+    // (nested same-class marks render identically), and it covers non-standard
+    // spellings (`-[]`, `- []`, `-[ ]`, `-[x]`, ...) where Lezer emits no
+    // ListMark at all (plain Paragraph), so the bullet would otherwise show in
+    // default text color. Same trigger covers `*`/`+` bullets, indent, `X`.
+    {
+      const taskMatch = /^(\s*)[-*+]\s*\[([ xX]?)\]\s*/.exec(text)
+      if (taskMatch !== null) {
+        decorations.push(
+          Decoration.mark({ class: 'cm-formatting-block cm-formatting-block-visible' }).range(
+            line.from,
+            line.from + taskMatch[0].length,
+          ),
+        )
+      }
+    }
+
+    // Deflist colon: same `/^\s*:/` trigger as the inactive `.cm-deflist` line
+    // class; cover just the leading `:` so it reads faded while editing.
+    if (/^\s*:/.test(text)) {
+      const colonMatch = /^(\s*):/.exec(text)
+      if (colonMatch !== null) {
+        const colonFrom = line.from + colonMatch[1].length
+        decorations.push(
+          Decoration.mark({ class: 'cm-formatting-inline cm-formatting-inline-visible' }).range(
+            colonFrom,
+            colonFrom + 1,
+          ),
+        )
+      }
+    }
+
+    // Dropdown `>>>` fallback: the tree-walk QuoteMark branch already marks
+    // active `>>>` lines (one mark per line via dropdownVisibleLines). Cover
+    // lines where Lezer emitted no QuoteMark so the marker never shows default
+    // color. Only when this marker's pair is active (caret anywhere between
+    // the pair's open/close lines — raw mode shows for the whole pair).
+    if (dropdownMarkerLines.has(lineNum) && !dropdownVisibleLines.has(lineNum)) {
+      const pair = dropdownPairs.find((p) => p.open === lineNum || p.close === lineNum)
+      let pairActive = false
+      if (pair !== undefined) {
+        for (let l = pair.open; l <= pair.close; l++) {
+          if (activeLines.has(l)) {
+            pairActive = true
+            break
+          }
+        }
+      } else {
+        pairActive = true
+      }
+      if (pairActive) {
+        const markerMatch = /^\s*>>>/.exec(text)
+        if (markerMatch !== null) {
+          const markerFrom = line.from + markerMatch[0].indexOf('>>>')
+          decorations.push(
+            Decoration.mark({ class: 'cm-formatting-block cm-formatting-block-visible' }).range(
+              markerFrom,
+              markerFrom + 3,
+            ),
+          )
+          dropdownVisibleLines.add(lineNum)
+        }
+      }
+    }
+  }
+
   // ---- Line-text syntax (no dedicated tree nodes) ---------------------------
   // `-# subtext` and definition lists are plain text to lezer, so they are
   // handled by scanning inactive lines directly. Active lines (being edited)
@@ -1280,51 +1460,55 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
       }
     }
 
-    // Spoiler — `||text||` on inactive lines: show a censored grey box
-    // (SpoilerWidget) that reveals on click. Paired `||` delimiters are
-    // hidden via EmptyInlineWidget; when the caret is inside the region,
-    // the raw source re-appears.
-    {
-      const pipeRe = /\|\|/g
-      const pipePositions: number[] = []
-      let pm: RegExpExecArray | null
-      while ((pm = pipeRe.exec(text)) !== null) {
-        // Skip if inside a backtick code span
-        const before = text.slice(0, pm.index)
-        const backtickCount = (before.match(/`/g) ?? []).length
-        if (backtickCount % 2 === 1) continue
-        pipePositions.push(line.from + pm.index)
-      }
-      for (let i = 0; i + 1 < pipePositions.length; i += 2) {
-        const open = pipePositions[i]
-        const close = pipePositions[i + 1]
-        const innerFrom = open + 2
-        const innerTo = close
-        if (innerTo <= innerFrom) continue
-        const caretInside =
-          !isDrag &&
-          activeLines.has(lineNum) &&
-          state.selection.ranges.some((r) => r.head >= open && r.head <= close + 2)
-        if (caretInside) {
-          // Reveal the raw || delimiters faded when caret is inside
-          decorations.push(
-            Decoration.mark({ class: 'cm-formatting-inline cm-formatting-inline-visible' }).range(open, open + 2),
-          )
-          decorations.push(
-            Decoration.mark({ class: 'cm-formatting-inline cm-formatting-inline-visible' }).range(close, close + 2),
-          )
-        } else {
-          // Censored spoiler widget
-          const innerText = state.doc.sliceString(innerFrom, innerTo)
-          decorations.push(
-            Decoration.replace({
-              widget: new SpoilerWidget(open, close + 2, innerText),
-            }).range(open, close + 2),
-          )
-        }
+  }
+
+  // ---- Spoiler (`||text||`) on ALL lines ----------------------------------
+  // Per-spoiler (not per-line) reveal: the caret position decides per pair, so
+  // a caret elsewhere on the same line still shows the cover while a caret
+  // anywhere inside `||...||` (delimiters inclusive) shows raw source with
+  // faded delimiters. Skips only code/table/HR/image lines — active lines are
+  // intentionally NOT skipped so step 1 (editing) stays reachable.
+  for (let lineNum = 1; lineNum <= state.doc.lines; lineNum++) {
+    if (skipLines.has(lineNum) || replacedLines.has(lineNum)) continue
+    const line = state.doc.line(lineNum)
+    const text = line.text
+    if (text.length === 0) continue
+    const pipeRe = /\|\|/g
+    const pipePositions: number[] = []
+    let pm: RegExpExecArray | null
+    while ((pm = pipeRe.exec(text)) !== null) {
+      // Skip if inside a backtick code span
+      const before = text.slice(0, pm.index)
+      const backtickCount = (before.match(/`/g) ?? []).length
+      if (backtickCount % 2 === 1) continue
+      pipePositions.push(line.from + pm.index)
+    }
+    for (let i = 0; i + 1 < pipePositions.length; i += 2) {
+      const open = pipePositions[i]
+      const close = pipePositions[i + 1]
+      const innerFrom = open + 2
+      const innerTo = close
+      if (innerTo <= innerFrom) continue
+      const caretInside =
+        !isDrag && state.selection.ranges.some((r) => r.head >= open && r.head <= close + 2)
+      if (caretInside || isDrag) {
+        // Reveal the raw || delimiters faded when caret is inside
+        decorations.push(
+          Decoration.mark({ class: 'cm-formatting-inline cm-formatting-inline-visible' }).range(open, open + 2),
+        )
+        decorations.push(
+          Decoration.mark({ class: 'cm-formatting-inline cm-formatting-inline-visible' }).range(close, close + 2),
+        )
+      } else {
+        // Censored spoiler widget
+        const innerText = state.doc.sliceString(innerFrom, innerTo)
+        decorations.push(
+          Decoration.replace({
+            widget: new SpoilerWidget(open, close + 2, innerText),
+          }).range(open, close + 2),
+        )
       }
     }
-
   }
 
   return Decoration.set(decorations.sort((a, b) => a.from - b.from), true)
