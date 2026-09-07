@@ -1,4 +1,4 @@
-import type { FileIO, OpenResult } from './types'
+import type { FileIO, ImportResult, OpenResult } from './types'
 
 // Browser mode is a dev/test surface only — the File System Access API is
 // Chromium-only; production runs inside Tauri (see tauri.ts). File handles are
@@ -94,6 +94,9 @@ const HTML_PICKER_TYPES = [
   },
 ]
 
+/** `accept=` string for the Import <input> (mirrors IMPORT_EXTS in types.ts). */
+export const IMPORT_ACCEPT = '.md,.markdown,.txt,.html,.htm,.pdf,.docx,.rtf'
+
 function fsUnavailable(): Error {
   return new Error(
     'File System Access API unavailable — browser mode requires Chromium; production runs inside Tauri.'
@@ -143,6 +146,32 @@ export const browserIO: FileIO = {
     const path = makeKey()
     await putHandle(path, handle)
     return { content, name: file.name, path }
+  },
+
+  /**
+   * Pick an importable document via a hidden <input type=file> (browser dev
+   * mode has no native dialog). Always yields raw bytes as a Uint8Array —
+   * `convertToMarkdown` decodes text formats itself. Resolves null when the
+   * user cancels (the `cancel` event; supported by the Chromium-only FS surface
+   * this module targets — no focus fallback, which would race the picker).
+   */
+  async importFile(): Promise<ImportResult | null> {
+    const file = await new Promise<File | null>((resolve) => {
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.accept = IMPORT_ACCEPT
+      input.addEventListener('change', () => resolve(input.files?.[0] ?? null))
+      input.addEventListener('cancel', () => resolve(null))
+      input.click()
+    })
+    if (file === null) return null // user cancelled the picker
+    const content = new Uint8Array(await file.arrayBuffer())
+    const dot = file.name.lastIndexOf('.')
+    return {
+      content,
+      name: file.name,
+      ext: dot >= 0 ? file.name.slice(dot).toLowerCase() : '',
+    }
   },
 
   async saveFile(path, content, suggestedName, opts): Promise<string | null> {
@@ -252,7 +281,8 @@ export const browserIO: FileIO = {
     void docPath
     void filename
     void blob
-    console.warn('[paste-image] Browser dev mode cannot write next to a document (no directory handle); use the Tauri runtime.')
+    console.warn('[paste-image] Pasting images is not supported in browser preview mode (there is no document folder to save into). Use the Notedown desktop app for paste-image functionality.')
+    window.alert('Pasting images is not supported in browser preview mode (there is no document folder to save into). Use the Notedown desktop app for paste-image functionality.')
     return null
   },
 

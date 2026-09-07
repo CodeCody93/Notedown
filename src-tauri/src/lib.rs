@@ -8,6 +8,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             io::pick_and_read,
+            io::pick_and_read_bytes,
             io::read_file,
             io::pick_save_path,
             io::write_file,

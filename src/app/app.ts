@@ -14,7 +14,10 @@ import {
   shouldRecover,
   writeSession,
 } from './draft'
-import { renderStandaloneHtml, renderStandaloneHtmlWithImages } from './export'
+import { classifyImageSrc, inlineMarkdownImagesDetailed, renderStandaloneHtml, renderStandaloneHtmlWithImages } from './export'
+import { printStandaloneHtml } from './print'
+import { convertToMarkdown, detectFormat, lossSummaryFor } from './import'
+import { confirmImportLosses, isImportDialogOpen, wireImportDialog } from './importDialog'
 import { addRecent, parseRecents, removeRecent } from './recent'
 import { applyTheme, loadSettings, resolveTheme } from './settings'
 import type { Settings } from './settings'
@@ -24,7 +27,9 @@ import { detectLineEnding, resolveAgainstDocDir, stripBom } from './text'
 import { copySelection, cutSelection, pasteImage, pasteText } from './clipboard'
 import { FORMATTING_COMMANDS, markdownListKeymap } from './formatting'
 import { formattingHotkeyMap, openEmojiPicker, renderMenubar } from './menu'
-import { openSettingsModal, wireSettingsModal } from './settingsUI'
+import { isSettingsOpen, openSettingsModal, wireSettingsModal } from './settingsUI'
+import { isAboutOpen, openAboutModal, wireAboutModal } from './about'
+import { isHelpOpen, openHelpModal, wireHelpModal } from './help'
 import { SHORTCUTS, getPlatform, matches } from './shortcuts'
 
 const AUTOSAVE_DEBOUNCE_MS = 3000
@@ -205,20 +210,57 @@ async function clearRecents(): Promise<void> {
   await io.writeRecents('[]')
 }
 
+/**
+ * Approximate pre-flight gate for the round-6 A4 unsaved-export guard: collect
+ * image src candidates from the three markdown syntaxes. False positives just
+ * warn+abort on an unsaved doc (safe), which is acceptable.
+ */
+function collectUnsavedImageSrcs(markdown: string): string[] {
+  const srcs: string[] = []
+  const inlineRe = /!\[[^\]]*\]\(\s*([^\s"'\)]+)/g
+  let m: RegExpExecArray | null
+  while ((m = inlineRe.exec(markdown)) !== null) {
+    srcs.push(m[1])
+  }
+  const imgRe = /<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi
+  while ((m = imgRe.exec(markdown)) !== null) {
+    srcs.push(m[1] ?? m[2] ?? m[3])
+  }
+  const refDefRe = /^[ ]{0,3}\[[^\]]+\]:\s*(\S+)/gm
+  while ((m = refDefRe.exec(markdown)) !== null) {
+    srcs.push(m[1])
+  }
+  return srcs
+}
+
 // Export the current doc as a standalone, styled HTML file (PLAN §14 / §19).
-// K3 — local raster images next to the doc (e.g. `pic.png`) are inlined as
-// `data:` URLs via `exposeImage` so the exported HTML is self-contained and
-// works offline; `pic.svg` is intentionally NOT embedded (rejected by
-// expose_image as scriptable, CSP would block a relative svg anyway).
+// K3 — local images next to the doc (e.g. `pic.png`, `pic.svg`) are inlined
+// as `data:` URLs via `exposeImage` so the exported HTML is self-contained
+// and works offline; SVGs are DOMPurify-sanitized before embedding (safe:
+// scripts never execute inside `<img>`-loaded SVG).
 async function exportHtml(): Promise<void> {
   const doc = appState.get().doc
+  if (doc.path === null) {
+    const srcs = collectUnsavedImageSrcs(doc.content)
+    if (srcs.some((s) => classifyImageSrc(s).action === 'inline')) {
+      await showAlert(
+        'HTML export does not support images in unsaved documents: local images cannot be resolved without a saved file location, so they will appear broken. Save the document first, then export again to embed them.'
+      )
+      return
+    }
+  }
   const opts = {
     title: doc.name,
     theme: resolveTheme(appState.get().settings.theme),
   } as const
   let html: string
+  let inlined = 0
+  let skipped: { src: string; reason: string }[] = []
   try {
-    html = await renderStandaloneHtmlWithImages(doc.content, opts, doc.path, (abs) => io.exposeImage(abs))
+    const detailed = await inlineMarkdownImagesDetailed(doc.content, doc.path, (abs) => io.exposeImage(abs))
+    html = renderStandaloneHtml(detailed.markdown, opts)
+    inlined = detailed.inlined.length
+    skipped = detailed.skipped
   } catch {
     // Inline path failed for an unexpected reason (e.g. exposeImage transport
     // error) — fall back to the plain render so export still succeeds; svg
@@ -229,9 +271,98 @@ async function exportHtml(): Promise<void> {
   try {
     const saved = await io.saveFile(null, html, htmlName, { html: true })
     if (saved === null) return // user cancelled the save dialog
+    // Only genuinely-at-risk skips are reported: `data:` URLs are already
+    // self-contained and `blob:`/`asset:`/fragments are intentional, so
+    // reporting them as "skipped" would be noise (round-6 A4 follow-up).
+    const reportable = skipped.filter(
+      (s) => s.reason === 'remote' || s.reason === 'absolute' || s.reason === 'expose-failed',
+    )
+    if (reportable.length > 0) {
+      const reasons = reportable
+        .slice(0, 5)
+        .map((s) => `"${s.src}" (${s.reason})`)
+        .join(', ')
+      const more = reportable.length > 5 ? ` and ${reportable.length - 5} more` : ''
+      await showAlert(
+        `Exported with ${inlined} image${inlined === 1 ? '' : 's'} embedded, ${reportable.length} skipped: ${reasons}${more}. Skipped images (remote links, absolute paths, or unreadable files) are left as-is and may appear broken offline.`
+      )
+    }
   } catch (err) {
     await showAlert(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
   }
+}
+
+// Phase 3 — print-to-PDF via the OS print dialog (user chose print-dialog over
+// native Rust PDF / jsPDF). Builds the same images-inlined standalone HTML as
+// exportHtml, then prints it through a hidden same-origin iframe
+// (printStandaloneHtml) — the dialog's "Save as PDF" destination is the PDF.
+async function exportPdf(): Promise<void> {
+  const doc = appState.get().doc
+  const opts = {
+    title: doc.name,
+    theme: resolveTheme(appState.get().settings.theme),
+  } as const
+  let html: string
+  try {
+    html = await renderStandaloneHtmlWithImages(doc.content, opts, doc.path, (abs) => io.exposeImage(abs))
+  } catch {
+    html = renderStandaloneHtml(doc.content, opts)
+  }
+  try {
+    printStandaloneHtml(html)
+  } catch (err) {
+    await showAlert(`Print failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+// Phase 3 — import a foreign file (md/txt/html/pdf/docx/rtf) as markdown.
+// Flow: confirm discard → pick → pre-conversion loss dialog → convert → load
+// as a new dirty (unsaved) doc. Never overwrites the current file path.
+async function importDoc(): Promise<void> {
+  if (!(await confirmDiscard())) return
+  const prevPath = appState.get().doc.path
+  let picked: { content: Uint8Array | string; name: string; ext: string } | null
+  try {
+    picked = await io.importFile()
+  } catch (err) {
+    await showAlert(`Import failed: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
+  if (picked === null) return // user cancelled the picker
+  const format = detectFormat(picked.name)
+  const preLosses = lossSummaryFor(format)
+  if (preLosses.length > 0) {
+    let confirmed: boolean
+    try {
+      confirmed = await confirmImportLosses(picked.name, format, preLosses)
+    } catch (err) {
+      await showAlert(`Import failed: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
+    if (!confirmed) return
+  }
+  let markdown: string
+  let losses: string[]
+  try {
+    const converted = await convertToMarkdown(picked.content, format)
+    markdown = converted.markdown
+    losses = converted.losses
+  } catch (err) {
+    await showAlert(`Import failed: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
+  const extra = losses.filter((l) => !preLosses.includes(l))
+  if (extra.length > 0) {
+    await showAlert(`Imported with additional notes:\n- ${extra.slice(0, 8).join('\n- ')}`)
+  }
+  const base = picked.name.includes('.') ? picked.name.replace(/\.[^./\\]+$/, '') : picked.name
+  const name = `${base || 'imported'}.md`
+  await clearDraft(io, prevPath)
+  appState.set({ doc: docFromContent(markdown, null, name, true) })
+  await writeSession(io, { path: null, name, ts: Date.now(), cursor: currentCursor() })
+  // The caret may have been left anywhere by the picker/dialog — focus the
+  // editor so the imported document is immediately editable.
+  editor?.focus()
 }
 
 export function setContent(content: string): void {
@@ -415,6 +546,22 @@ const FORMATTING_ACTION_IDS = [
   'dropdown',
 ]
 
+/**
+ * Open a modal dialog, restoring the editor caret + focus when it closes
+ * (round-6 D2). The modal's own focus handling only returns focus to the
+ * opener element — without the cursor restore, typing would resume wherever
+ * the caret happened to be left.
+ */
+function openModalWithCaretRestore(open: (opts: { onClose: () => void }) => void): void {
+  const cursor = editor?.getCursor() ?? null
+  open({
+    onClose: () => {
+      if (cursor !== null) editor?.setCursor(cursor.line, cursor.col)
+      editor?.focus()
+    },
+  })
+}
+
 function runFormatting(id: string): void {
   const factory = FORMATTING_COMMANDS[id]
   const ed = getEditor()
@@ -444,7 +591,15 @@ function wireMenu(): void {
     'export-html': () => {
       void exportHtml()
     },
-    settings: () => openSettingsModal(),
+    'export-pdf': () => {
+      void exportPdf()
+    },
+    import: () => {
+      void importDoc()
+    },
+    help: () => openModalWithCaretRestore((opts) => openHelpModal(opts)),
+    about: () => openModalWithCaretRestore((opts) => openAboutModal(opts)),
+    settings: () => openModalWithCaretRestore((opts) => openSettingsModal(opts)),
     'clear-recents': () => {
       void clearRecents()
     },
@@ -504,6 +659,7 @@ const APP_HOTKEY_IDS = [
   'save',
   'save-as',
   'export-html',
+  'export-pdf',
   'settings',
   'toggle-mode',
 ]
@@ -546,7 +702,10 @@ function wireHotkeys(): void {
     'export-html': () => {
       void exportHtml()
     },
-    settings: () => openSettingsModal(),
+    'export-pdf': () => {
+      void exportPdf()
+    },
+    settings: () => openModalWithCaretRestore((opts) => openSettingsModal(opts)),
     'toggle-mode': () => setMode(appState.get().mode === 'live' ? 'source' : 'live'),
   }
 
@@ -636,6 +795,8 @@ function wireStatusMode(): void {
 function wireWindowFocus(): void {
   window.addEventListener('focus', () => {
     if (editor === null) return
+    // Never steal focus while any modal dialog is open (settings/help/about/import).
+    if (isSettingsOpen() || isHelpOpen() || isAboutOpen() || isImportDialogOpen()) return
     const modalRoot = document.getElementById('settings-modal-root')
     if (modalRoot !== null && !modalRoot.hidden) return
     editor.focus()
@@ -719,6 +880,9 @@ export async function initApp(): Promise<void> {
   editor.onChange((content) => setContent(content))
   applyEditorSettings(settings)
   wireSettingsModal({ getSettings: () => appState.get().settings, onApply: (patch) => updateSettings(patch) })
+  wireImportDialog()
+  wireHelpModal()
+  wireAboutModal()
 
   // Render the menubar once before wiring; recents + data-action clicks live inside it.
   const menubarRoot = byId('menubar-root')

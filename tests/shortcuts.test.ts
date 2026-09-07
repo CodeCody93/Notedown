@@ -17,6 +17,7 @@ const ALL_IDS = [
   'save',
   'save-as',
   'export-html',
+  'export-pdf',
   'settings',
   'undo',
   'redo',

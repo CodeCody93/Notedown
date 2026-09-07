@@ -13,6 +13,30 @@ export interface OpenResult {
   path: string | null
 }
 
+/** Raw import-candidate payload (P3 Import). Text formats arrive decoded as a
+ * string; binary formats (pdf/docx) arrive as raw bytes for pdfjs/mammoth.
+ * The Tauri backend always yields bytes; the browser backend always yields
+ * bytes; `convertToMarkdown` in `src/app/import.ts` accepts either shape. */
+export interface ImportResult {
+  content: Uint8Array | string
+  /** Original file name (e.g. "notes.docx"). */
+  name: string
+  /** Lowercase extension including the dot (e.g. ".docx"), or "" when unknown. */
+  ext: string
+}
+
+/** File extensions accepted by the Import flow (native dialog + browser accept). */
+export const IMPORT_EXTS: string[] = [
+  '.md',
+  '.markdown',
+  '.txt',
+  '.html',
+  '.htm',
+  '.pdf',
+  '.docx',
+  '.rtf',
+]
+
 /** Extra options for saveFile (Save As / Export HTML). */
 export interface SaveOptions {
   /** Show the picker even when a path is already known (Save As). The saved path/key is always freshly generated. */
@@ -24,6 +48,8 @@ export interface SaveOptions {
 export interface FileIO {
   /** Open a document via the platform picker. Returns null when the user cancels. */
   openFile(): Promise<OpenResult | null>
+  /** Pick any importable document (see IMPORT_EXTS). Returns null when the user cancels. */
+  importFile(): Promise<ImportResult | null>
   /** Save content. When path is null — or opts.alwaysPick is set (Save As) — ask the user for a location (suggestedName is a hint). Returns the saved path/key, or null when cancelled. opts.html switches the picker to HTML filters (Export HTML). */
   saveFile(path: string | null, content: string, suggestedName?: string, opts?: SaveOptions): Promise<string | null>
   /** Read a file that was previously opened (used for Open Recent). Rejects on failure (missing/permission). */

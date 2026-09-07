@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { FileIO, OpenResult } from './types'
+import type { FileIO, ImportResult, OpenResult } from './types'
 
 // Desktop paths only for now; mobile content:// URI I/O lands in M5 (Android/iOS).
 
@@ -15,6 +15,24 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 export const tauriIO: FileIO = {
   async openFile(): Promise<OpenResult | null> {
     return call<OpenResult | null>('pick_and_read')
+  },
+
+  /**
+   * Pick an importable document via the Rust `pick_and_read_bytes` command.
+   * The invoke boundary carries the payload as a number array (the same
+   * Uint8Array boundary pattern as `saveImage`, in reverse); it is rehydrated
+   * to a Uint8Array here so `convertToMarkdown` can TextDecoder-decode text
+   * formats and hand binary formats (pdf/docx) to pdfjs/mammoth untouched.
+   */
+  async importFile(): Promise<ImportResult | null> {
+    const picked = await call<{ bytes: number[]; name: string } | null>('pick_and_read_bytes')
+    if (picked === null) return null // user cancelled the picker
+    const dot = picked.name.lastIndexOf('.')
+    return {
+      content: new Uint8Array(picked.bytes),
+      name: picked.name,
+      ext: dot >= 0 ? picked.name.slice(dot).toLowerCase() : '',
+    }
   },
 
   async saveFile(path, content, suggestedName, opts): Promise<string | null> {

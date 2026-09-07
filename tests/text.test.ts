@@ -80,7 +80,7 @@ describe('resolveAgainstDocDir', () => {
     expect(resolveAgainstDocDir('C:\\docs\\notes.md', 'pic.png')).toBe('C:\\docs\\pic.png')
   })
 
-  it('bare doc filename (no dir): separator is prefixed (verbatim legacy behavior)', () => {
-    expect(resolveAgainstDocDir('notes.md', 'pic.png')).toBe('/pic.png')
+  it('bare doc filename (no dir): stays relative (P1 — no leading separator)', () => {
+    expect(resolveAgainstDocDir('notes.md', 'pic.png')).toBe('pic.png')
   })
 })

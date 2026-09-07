@@ -105,46 +105,146 @@ md.use(sup)
 md.use(emoji)
 
 // ---------------------------------------------------------------------------
-// Spoiler inline plugin — `||text||` → <span class="md-spoiler">
+// Spoiler spans — `||text||` → <span class="md-spoiler"> (core preprocessing)
+//
+// WHY A CORE TRANSFORM (round-6 A6/B2): markdown-it's `text` rule consumes
+// everything up to the next hardcoded terminator char, and `|` (0x7C) is NOT
+// a terminator (unlike `=`/`~`/`^` used by mark/sub/sup). An inline rule
+// placed after `text` therefore never sees the `||` opener — spoilers
+// silently rendered as literal text since implementation. The classic
+// delimiter-pair pattern (à la markdown-it-mark) cannot work either: even
+// with the opener firing before `text`, the SAME `text` rule swallows the
+// CLOSER before it is ever tokenized, and whole-span inline rules only fire
+// at tokenizer retry points (line starts, after terminator-triggered tokens),
+// so mid-text `a ||b|| c` still fails. Hence string preprocessing before
+// block parsing (same seam as the dropdown rule below), with semantics
+// mirroring the live editor's per-line `||` pairing (livePreview.ts):
+// consecutive `||` runs pair up (0-1, 2-3, …), empty `||||` stays literal,
+// backtick code spans and fenced blocks are protected, table-row-like lines
+// are skipped (live skips tables too), and spans never cross blank lines.
+// The inner content is parsed normally by the subsequent block/inline
+// passes, so `||*em*||` keeps its emphasis.
 // ---------------------------------------------------------------------------
 
-md.inline.ruler.after('emphasis', 'spoiler', (state, silent) => {
-  const start = state.pos
-  const max = state.posMax
-  // Must start with || and have at least one char before closing ||
-  if (start + 2 >= max) return false
-  if (state.src.charCodeAt(start) !== 0x7c /* | */ || state.src.charCodeAt(start + 1) !== 0x7c) return false
+/** Opener/closer HTML for spoiler spans (rendered output is DOMPurify-sanitized). */
+const SPOILER_OPEN_HTML = '<span class="md-spoiler" data-revealed="false">'
+const SPOILER_CLOSE_HTML = '</span>'
 
-  // Scan for closing || (not at the same position)
-  let pos = start + 2
-  while (pos < max) {
-    if (state.src.charCodeAt(pos) === 0x7c && pos + 1 < max && state.src.charCodeAt(pos + 1) === 0x7c) {
-      // Found closing || — content is between start+2 and pos
-      if (pos === start + 2) {
-        // Empty content — not a valid spoiler
-        pos += 2
-        break
+/**
+ * Pair `||` runs on a SINGLE line into spoiler spans. Exported for tests and
+ * for the inline-only render path below (which skips core rules).
+ */
+export function applySpoilerSpansToLine(line: string): string {
+  // Table-row-like lines (a LEADING SINGLE pipe — not a `||` spoiler opener)
+  // are skipped, mirroring the live editor's table skip, so pairing can never
+  // merge cells or corrupt a table. `||x||` at line start still processes.
+  if (/^\s*\|(?!\|)/.test(line)) return line
+
+  // Collect backtick code-span ranges (an opener run of N closes only at a
+  // run of exactly N; unclosed runs are literal) so `||` inside code stays
+  // untouched. Single-line scope matches the live editor's per-line pairing.
+  const codeRanges: Array<[number, number]> = []
+  {
+    let p = 0
+    while (p < line.length) {
+      if (line.charCodeAt(p) !== 0x60 /* ` */) {
+        p++
+        continue
       }
-      if (!silent) {
-        const token_o = state.push('spoiler_open', 'span', 0)
-        token_o.markup = '||'
-        state.pos = start + 2
-        state.md.inline.tokenize(state)
-        state.pos = pos
-        const token_c = state.push('spoiler_close', 'span', -1)
-        token_c.markup = '||'
+      let openLen = 0
+      while (p + openLen < line.length && line.charCodeAt(p + openLen) === 0x60) openLen++
+      let q = p + openLen
+      let closed = false
+      while (q < line.length) {
+        if (line.charCodeAt(q) === 0x60) {
+          let closeLen = 0
+          while (q + closeLen < line.length && line.charCodeAt(q + closeLen) === 0x60) closeLen++
+          if (closeLen === openLen) {
+            codeRanges.push([p, q + closeLen])
+            p = q + closeLen
+            closed = true
+            break
+          }
+          q += closeLen
+          continue
+        }
+        q++
       }
-      state.pos = pos + 2
-      return true
+      if (!closed) p++
     }
-    pos++
   }
-  return false
-})
+  const inCode = (idx: number): boolean => codeRanges.some(([s, e]) => idx >= s && idx < e)
 
-md.renderer.rules.spoiler_open = () =>
-  '<span class="md-spoiler" data-revealed="false">'
-md.renderer.rules.spoiler_close = () => '</span>'
+  // Collect `||` run starts outside code spans and pair them consecutively.
+  const runs: number[] = []
+  const re = /\|\|/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(line)) !== null) {
+    if (!inCode(m.index)) runs.push(m.index)
+  }
+  if (runs.length < 2) return line
+
+  let out = ''
+  let last = 0
+  for (let i = 0; i + 1 < runs.length; i += 2) {
+    const open = runs[i]
+    const close = runs[i + 1]
+    // Empty `||||` — leave the pair literal and move on, exactly like the
+    // live editor (which skips pairs with no content between the runs).
+    if (close === open + 2) continue
+    out += line.slice(last, open) + SPOILER_OPEN_HTML
+    last = open + 2
+    out += line.slice(last, close) + SPOILER_CLOSE_HTML
+    last = close + 2
+  }
+  out += line.slice(last)
+  return out
+}
+
+/**
+ * Strip one trailing CR for line-regex matching. `.` never matches `\r`, so
+ * every `$`-anchored line regex silently fails on CRLF lines (round-6 A2:
+ * ref-defs, `>>>` fences and fence closers all broke in CRLF docs).
+ */
+function stripCR(line: string): string {
+  return line.endsWith('\r') ? line.slice(0, -1) : line
+}
+
+/** Line-based spoiler transform with fenced-code protection. */
+function applySpoilerSpans(src: string): string {
+  const lines = src.split('\n')
+  let inFence = false
+  let fenceChar = ''
+  let fenceLen = 0
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line)
+    if (fence) {
+      const marker = fence[1]
+      if (inFence) {
+        if (
+          marker[0] === fenceChar &&
+          marker.length >= fenceLen &&
+          /^ {0,3}[`~]+[ \t]*$/.test(stripCR(line))
+        ) {
+          inFence = false
+        }
+      } else {
+        inFence = true
+        fenceChar = marker[0]
+        fenceLen = marker.length
+      }
+      continue
+    }
+    if (inFence) continue
+    lines[i] = applySpoilerSpansToLine(line)
+  }
+  return lines.join('\n')
+}
+
+md.core.ruler.before('block', 'spoiler-spans', (state) => {
+  state.src = applySpoilerSpans(state.src)
+})
 
 // ---------------------------------------------------------------------------
 // Dropdown core rule — preprocesses `>>>` fences before block parsing.
@@ -173,7 +273,7 @@ md.core.ruler.before('block', 'md-dropdown', (state) => {
         if (
           marker[0] === codeFenceChar &&
           marker.length >= codeFenceLen &&
-          /^ {0,3}[`~]+[ \t]*$/.test(line)
+          /^ {0,3}[`~]+[ \t]*$/.test(stripCR(line))
         ) {
           inCodeFence = false
         }
@@ -186,7 +286,7 @@ md.core.ruler.before('block', 'md-dropdown', (state) => {
     }
     if (inCodeFence) continue
 
-    const m = fenceRe.exec(line)
+    const m = fenceRe.exec(stripCR(line))
     if (m) {
       if (!inFence) {
         inFence = true
@@ -217,9 +317,13 @@ export function renderInlineMarkdown(text: string): string {
  * Render inline-level markdown only (no block-level wrapping like <p>).
  * Used by livePreview.ts for table cell content where block wrappers
  * would break the cell layout.
+ *
+ * `md.renderInline` skips core rules, so the spoiler-spans transform is
+ * applied explicitly — otherwise `||x||` in a table cell would stay literal
+ * while the same line renders as a spoiler everywhere else.
  */
 export function renderInlineOnlyMarkdown(text: string): string {
-  return DOMPurify.sanitize(md.renderInline(text))
+  return DOMPurify.sanitize(md.renderInline(applySpoilerSpans(text)))
 }
 
 /**
@@ -257,6 +361,24 @@ md.renderer.rules.strong_close = (tokens, idx) =>
   tokens[idx].markup === '__' ? '</u>' : '</strong>'
 
 /**
+ * Round-6 A1 — allow sanitized SVG data URLs in links/images.
+ * markdown-it 15's default `validateLink` rejects `data:` URLs except
+ * gif/png/jpeg/webp, so an inlined `![svg](data:image/svg+xml;base64,…)`
+ * image rendered as literal text instead of an `<img>`. Accept only
+ * `data:image/svg+xml;` here.
+ * SECURITY: safe because (1) every render still passes through DOMPurify,
+ * (2) SVG bytes are sanitized by `sanitizeSvgDataUrl` before embedding,
+ * (3) an `<img>`-loaded SVG runs in secure-static mode (scripts never
+ * execute), (4) the export CSP is `img-src data: blob:`. Do NOT widen
+ * beyond `data:image/svg+xml;` — no `javascript:`/`data:text/html` etc.
+ */
+const defaultValidateLink = md.validateLink.bind(md);
+md.validateLink = (url: string) => {
+  if (url.trim().toLowerCase().startsWith('data:image/svg+xml;')) return true;
+  return defaultValidateLink(url);
+};
+
+/**
  * User-results Other #4 — accept `-[]` / `- []` / `-[ ]` / `- [ ]`
  * (and `*`/`+` variants, with or without space after the bullet). CommonMark
  * only recognises `- ` as a list marker and markdown-it-task-lists only
@@ -282,7 +404,7 @@ function normalizeTaskListMarkers(src: string): string {
         if (
           marker[0] === fenceChar &&
           marker.length >= fenceLen &&
-          /^ {0,3}[`~]+[ \t]*$/.test(line)
+          /^ {0,3}[`~]+[ \t]*$/.test(stripCR(line))
         ) {
           inFence = false
         }
@@ -493,7 +615,6 @@ export const MARKDOWN_BODY_CSS: string = `
 
 .md-body img {
   max-width: 100%;
-  width: 100%;
   height: auto;
   display: block;
 }
@@ -714,100 +835,511 @@ export function escapeHtml(s: string): string {
 }
 
 /**
- * K3 — inline local raster images as data URLs for export.
+ * P1 — classification of an image `src` for export inlining.
+ *
+ * `inline`/`local` means "resolve against the doc dir and try `expose()`";
+ * every other outcome is skip-by-design (left as-is in the export, where the
+ * `img-src data: blob:` CSP would block a non-inlined relative src anyway):
+ * `remote` (http/https), `data-url`, `blob-url`, `asset-url`, `fragment`
+ * (`#...`), `absolute` (rooted `/...` or `\...`), `empty`, and the runtime
+ * `expose-failed` (file missing/unsupported — recorded in
+ * {@link InlineResult.skipped}).
+ *
+ * SVG (round-6 A1) is `inline`, NOT skipped: an SVG loaded via
+ * `<img src="data:...">` runs in the browser's secure-static mode (scripts
+ * never execute), and the payload is additionally DOMPurify-sanitized by
+ * {@link sanitizeSvgDataUrl} before embedding — defense in depth for
+ * recipients who might extract the data URL as a standalone document.
+ */
+export interface ImageSrcClassification {
+  action: 'inline' | 'skip'
+  reason: string
+}
+
+/**
+ * P1 — pure classifier for an image `src`. No FS, no window — safe to
+ * unit-test with plain strings.
+ */
+export function classifyImageSrc(src: string): ImageSrcClassification {
+  const s = src.trim()
+  if (s === '') return { action: 'skip', reason: 'empty' }
+  if (/^data:/i.test(s)) return { action: 'skip', reason: 'data-url' }
+  if (/^blob:/i.test(s)) return { action: 'skip', reason: 'blob-url' }
+  if (/^asset:/i.test(s)) return { action: 'skip', reason: 'asset-url' }
+  if (/^https?:/i.test(s)) return { action: 'skip', reason: 'remote' }
+  if (s.startsWith('#')) return { action: 'skip', reason: 'fragment' }
+  if (/^[\\/]/.test(s)) return { action: 'skip', reason: 'absolute' }
+  return { action: 'inline', reason: 'local' }
+}
+
+/** Data-URL prefix produced by `expose_image` for SVG files. */
+const SVG_DATA_PREFIX = 'data:image/svg+xml;base64,'
+
+/**
+ * Sanitize an SVG `data:` URL payload with DOMPurify and re-encode it
+ * (round-6 A1). Strips `<script>`, event handlers and `javascript:` URIs
+ * while keeping shapes/text — safe to embed even if a recipient extracts the
+ * data URL as a standalone document. Throws on undecodable payloads (the
+ * caller records `expose-failed`).
+ */
+export function sanitizeSvgDataUrl(dataUrl: string): string {
+  const bytes = Uint8Array.from(atob(dataUrl.slice(SVG_DATA_PREFIX.length)), (c) => c.charCodeAt(0))
+  const svg = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+  const clean = DOMPurify.sanitize(svg)
+  const out = new TextEncoder().encode(clean)
+  let binary = ''
+  const CHUNK = 0x8000
+  for (let i = 0; i < out.length; i += CHUNK) {
+    binary += String.fromCharCode(...out.subarray(i, i + CHUNK))
+  }
+  return SVG_DATA_PREFIX + btoa(binary)
+}
+
+/** One skipped image src and the machine-readable `classifyImageSrc` reason. */
+export interface InlineSkipped {
+  src: string
+  reason: string
+}
+
+/**
+ * P1 — detailed result of image inlining. `inlined`/`skipped` hold UNIQUE raw
+ * src strings in first-seen order (dedupe of `expose()` calls happens by
+ * RESOLVED absolute path, so `./pic.png` and `pic.png` share one call but
+ * both appear in `inlined`).
+ */
+export interface InlineResult {
+  markdown: string
+  inlined: string[]
+  skipped: InlineSkipped[]
+}
+
+/**
+ * Split the inside of `![alt](INSIDE)` into the bare src and the optional
+ * title remainder. Handles `<src with spaces>` (title follows the `>`) and
+ * bare `src "title"` / `src 'title'` / `src (title)` forms.
+ */
+function extractImageTarget(inside: string): { src: string; titlePart: string } {
+  const trimmed = inside.trim()
+  if (trimmed.startsWith('<')) {
+    const end = trimmed.indexOf('>')
+    if (end !== -1) {
+      return { src: trimmed.slice(1, end).trim(), titlePart: trimmed.slice(end + 1).trim() }
+    }
+  }
+  const ws = trimmed.search(/\s/)
+  if (ws === -1) return { src: trimmed, titlePart: '' }
+  return { src: trimmed.slice(0, ws), titlePart: trimmed.slice(ws).trim() }
+}
+
+interface MdImageToken {
+  start: number
+  end: number
+  alt: string
+  inside: string
+}
+
+/**
+ * Scan markdown for inline `![alt](target)` images with balanced `[]`/`()`
+ * matching (quote- and `<>`-aware so titles like `"t(x)"` and destinations
+ * like `<my pic.png>` survive). Reference-style `![alt][ref]` is NOT matched
+ * here (no `(` after `]`) — it is handled via link-reference definitions.
+ */
+function scanMarkdownImages(markdown: string): MdImageToken[] {
+  const out: MdImageToken[] = []
+  let i = 0
+  while (i < markdown.length) {
+    const bang = markdown.indexOf('![', i)
+    if (bang === -1) break
+    // Balanced [...] for the alt text (backslash escapes honored).
+    let j = bang + 2
+    let depth = 1
+    while (j < markdown.length && depth > 0) {
+      const c = markdown[j]
+      if (c === '\\') {
+        j += 2
+        continue
+      }
+      if (c === '[') depth++
+      else if (c === ']') depth--
+      j++
+    }
+    if (depth !== 0) {
+      i = bang + 2
+      continue
+    }
+    const closeBracket = j - 1
+    if (markdown[j] !== '(') {
+      i = j
+      continue
+    }
+    // Balanced (...) for the target; quotes only open after whitespace so
+    // `it's.png` stays literal, and `<>` spans hide parens.
+    let k = j + 1
+    let pdepth = 1
+    let inAngle = false
+    let quote: string | null = null
+    while (k < markdown.length && pdepth > 0) {
+      const c = markdown[k]
+      const prev = markdown[k - 1]
+      if (quote !== null) {
+        if (c === quote) quote = null
+        k++
+        continue
+      }
+      if (c === '\\') {
+        k += 2
+        continue
+      }
+      if (inAngle) {
+        if (c === '>') inAngle = false
+        k++
+        continue
+      }
+      if (c === '<') {
+        inAngle = true
+        k++
+        continue
+      }
+      if ((c === '"' || c === "'") && (prev === undefined || /\s/.test(prev) || prev === '(')) {
+        quote = c
+        k++
+        continue
+      }
+      if (c === '(' && (prev === undefined || !/\s/.test(prev))) pdepth++
+      else if (c === ')') pdepth--
+      k++
+    }
+    if (pdepth !== 0) {
+      i = j + 1
+      continue
+    }
+    out.push({
+      start: bang,
+      end: k,
+      alt: markdown.slice(bang + 2, closeBracket),
+      inside: markdown.slice(j + 1, k - 1),
+    })
+    i = k
+  }
+  return out
+}
+
+interface HtmlImageToken {
+  start: number
+  end: number
+  tag: string
+}
+
+/** Scan for raw-HTML `<img ...>` tags (quote-aware so `alt="a>b"` survives). */
+function scanHtmlImages(markdown: string): HtmlImageToken[] {
+  const out: HtmlImageToken[] = []
+  const re = /<img\b/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(markdown)) !== null) {
+    let k = m.index + 4
+    let quote: string | null = null
+    while (k < markdown.length) {
+      const c = markdown[k]
+      if (quote !== null) {
+        if (c === quote) quote = null
+      } else if (c === '"' || c === "'") {
+        quote = c
+      } else if (c === '>') {
+        break
+      }
+      k++
+    }
+    if (k >= markdown.length) break // unterminated tag — leave as-is
+    out.push({ start: m.index, end: k + 1, tag: markdown.slice(m.index, k + 1) })
+    re.lastIndex = k + 1
+  }
+  return out
+}
+
+/** Normalize a link-reference label per CommonMark (whitespace + case). */
+function normalizeRefLabel(label: string): string {
+  return label.trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+/**
+ * K3 — inline local images (raster + sanitized SVG) as data URLs for export.
  *
  * Scans markdown for `![alt](src)` tokens, resolves each relative src against
  * `docPath` via `resolveAgainstDocDir`, and calls `expose(absPath)` to get a
- * `data:` URL (Tauri's `expose_image` — rejects svg/unsupported, which we
- * intentionally skip so `pic.svg` stays not-embedded and `pic.png` becomes
- * `data:image/png;base64,...`). Returns the markdown with inlined data URLs
+ * `data:` URL (`pic.png` becomes `data:image/png;base64,...`; `pic.svg`
+ * becomes a DOMPurify-sanitized `data:image/svg+xml;base64,...` via
+ * {@link sanitizeSvgDataUrl}). Returns the markdown with inlined data URLs
  * (or the original markdown when docPath is null, nothing is relative, or
  * expose fails). Duplicate srcs are de-duplicated before calling expose.
  *
- * Remote/absolute/data/blob/asset/rooted srcs and `.svg` are skipped by
- * design — they either must not be embedded or the CSP would block them
- * anyway, so the exported HTML keeps the raw src (rendered as empty/alt).
+ * P1 extensions: also inlines raw-HTML `<img src="...">` (replacing ONLY the
+ * src value, preserving all other attributes) and reference-style image
+ * definitions (`![alt][ref]` + `[ref]: path "title"` — the definition target
+ * is inlined, the markdown structure is left intact). `expose()` calls are
+ * de-duplicated by RESOLVED absolute path, not by raw string. See
+ * {@link classifyImageSrc} for the skip-by-design list and
+ * {@link inlineMarkdownImagesDetailed} for the full inlined/skipped report.
  */
 export async function inlineMarkdownImages(
   markdown: string,
   docPath: string | null,
   expose: (absPath: string) => Promise<string>,
 ): Promise<string> {
-  if (docPath === null) return markdown
-  // Find all markdown image tokens: ![alt](inside)
-  const re = /!\[([^\]]*)\]\(([^)]+)\)/g
-  const matches = [...markdown.matchAll(re)]
-  if (matches.length === 0) return markdown
-
-  // De-duplicate by raw src string (the first token inside parens, sans title).
-  // Map raw src -> dataUrl (only when expose succeeds and not svg/remote).
-  const cache = new Map<string, string>()
-
-  // Helper: extract the bare src from the inside of `![alt](INSIDE)` — handles
-  // `<src>`, title after src, and surrounding whitespace.
-  function extractSrc(inside: string): { src: string; titlePart: string } {
-    const trimmed = inside.trim()
-    if (trimmed.startsWith('<')) {
-      const end = trimmed.indexOf('>')
-      if (end !== -1) {
-        const src = trimmed.slice(1, end).trim()
-        const titlePart = trimmed.slice(end + 1).trim()
-        return { src, titlePart }
-      }
-    }
-    // First whitespace-separated token is the src; remainder is optional title.
-    const ws = trimmed.search(/\s/)
-    if (ws === -1) return { src: trimmed, titlePart: '' }
-    return { src: trimmed.slice(0, ws).trim(), titlePart: trimmed.slice(ws).trim() }
-  }
-
-  for (const m of matches) {
-    const inside = m[2]
-    const { src } = extractSrc(inside)
-    if (src.length === 0) continue
-    if (/^(https?:|data:|blob:|asset:|\/|#)/i.test(src)) continue
-    const lower = src.toLowerCase().split('?')[0].split('#')[0]
-    if (lower.endsWith('.svg')) continue
-    if (cache.has(src)) continue
-    // Cache misses are resolved now; failed exposes are not cached (leave raw).
-    try {
-      const abs = resolveAgainstDocDir(docPath, src)
-      const dataUrl = await expose(abs)
-      cache.set(src, dataUrl)
-    } catch {
-      // svg rejection, unsupported type, missing file — leave raw src
-    }
-  }
-
-  if (cache.size === 0) return markdown
-
-  // Rebuild markdown, replacing each token's src with the data URL when cached.
-  let out = ''
-  let last = 0
-  for (const m of matches) {
-    const start = m.index ?? 0
-    const full = m[0]
-    const alt = m[1]
-    const inside = m[2]
-    const { src, titlePart } = extractSrc(inside)
-    const dataUrl = cache.get(src)
-    out += markdown.slice(last, start)
-    if (dataUrl !== undefined) {
-      out += `![${alt}](${dataUrl}${titlePart !== '' ? ` ${titlePart}` : ''})`
-    } else {
-      out += full
-    }
-    last = start + full.length
-  }
-  out += markdown.slice(last)
-  return out
+  return (await inlineMarkdownImagesDetailed(markdown, docPath, expose)).markdown
 }
 
 /**
- * K3 — async export path that inlines local raster images before rendering.
+ * P1 — {@link inlineMarkdownImages} with the full detail report
+ * ({@link InlineResult}). The string-only wrapper above keeps existing
+ * callers/tests passing unchanged.
+ */
+export async function inlineMarkdownImagesDetailed(
+  markdown: string,
+  docPath: string | null,
+  expose: (absPath: string) => Promise<string>,
+): Promise<InlineResult> {
+  const empty: InlineResult = { markdown, inlined: [], skipped: [] }
+  if (docPath === null) return empty
+
+  const inlined: string[] = []
+  const inlinedSet = new Set<string>()
+  const skipped: InlineSkipped[] = []
+  const skippedSet = new Set<string>()
+  const reportInlined = (src: string): void => {
+    if (!inlinedSet.has(src)) {
+      inlinedSet.add(src)
+      inlined.push(src)
+    }
+  }
+  const reportSkipped = (src: string, reason: string): void => {
+    if (src.trim() === '' || skippedSet.has(src)) return
+    skippedSet.add(src)
+    skipped.push({ src, reason })
+  }
+
+  interface Pending {
+    rawSrc: string
+    abs: string
+  }
+  const pending: Pending[] = []
+  const absOf = new Map<string, string>() // rawSrc -> abs (first resolution wins)
+
+  /**
+   * Classify + resolve a raw src; returns the trimmed raw src when it is a
+   * candidate for inlining, or null when skipped (reported) / empty.
+   */
+  function consider(rawSrc: string): string | null {
+    const src = rawSrc.trim()
+    if (src === '') return null
+    const c = classifyImageSrc(src)
+    if (c.action === 'skip') {
+      reportSkipped(src, c.reason)
+      return null
+    }
+    const seen = absOf.get(src)
+    if (seen !== undefined) return src
+    let abs: string
+    try {
+      abs = resolveAgainstDocDir(docPath as string, src)
+    } catch {
+      reportSkipped(src, 'expose-failed')
+      return null
+    }
+    absOf.set(src, abs)
+    pending.push({ rawSrc: src, abs })
+    return src
+  }
+
+  // --- Pass 1: inline `![alt](target)` -------------------------------------
+  const mdTokens = scanMarkdownImages(markdown)
+  const mdSrcs = new Array<string | null>(mdTokens.length)
+  mdTokens.forEach((t, idx) => {
+    mdSrcs[idx] = consider(extractImageTarget(t.inside).src)
+  })
+
+  // --- Pass 2: raw-HTML `<img src="...">` ----------------------------------
+  const SRC_ATTR_RE = /\bsrc\s*=\s*("[^"]*"|'[^']*'|[^\s"'`>]+)/i
+  const htmlTokens = scanHtmlImages(markdown)
+  const htmlSrcs = new Array<string | null>(htmlTokens.length)
+  htmlTokens.forEach((t, idx) => {
+    const sm = SRC_ATTR_RE.exec(t.tag)
+    htmlSrcs[idx] = sm !== null ? consider(unquoteSrcAttr(sm[1])) : null
+  })
+
+  // --- Pass 3: reference-style definitions used by `![alt][ref]` ------------
+  const REF_USE_RE = /!\[([^\]]*)\]\[([^\]]*)\]/g
+  const imageLabels = new Set<string>()
+  for (const um of markdown.matchAll(REF_USE_RE)) {
+    const ref = um[2]
+    imageLabels.add(normalizeRefLabel(ref !== '' ? ref : um[1]))
+  }
+  interface RefDef {
+    start: number
+    end: number
+    destStart: number
+    destEnd: number
+    rawSrc: string
+  }
+  const refDefs: RefDef[] = []
+  if (imageLabels.size > 0) {
+    const TITLE_RE = /^(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\))$/
+    let lineStart = 0
+    for (const line of markdown.split('\n')) {
+      const lineEnd = lineStart + line.length
+      // CRLF tolerance (round-6 A2): `.` never matches `\r`, so the `$`
+      // anchor fails on `\r`-terminated lines and the definition is silently
+      // skipped. Match the CR-stripped line; offsets stay valid because the
+      // destination span never includes the trailing `\r`.
+      const clean = line.endsWith('\r') ? line.slice(0, -1) : line
+      const dm = /^[ ]{0,3}\[([^\]\n]+)\]:[ \t]*(.*)$/.exec(clean)
+      if (dm !== null && imageLabels.has(normalizeRefLabel(dm[1]))) {
+        const rawRest = dm[2]
+        const rest = rawRest.trim()
+        // Offset of `rest` inside `line` (dm[0] spans the whole line).
+        const restBase = lineStart + (clean.length - rawRest.length)
+        const lead = rawRest.length - rawRest.trimStart().length
+        if (rest.startsWith('<')) {
+          const lt = rawRest.indexOf('<')
+          const gt = rawRest.indexOf('>', lt + 1)
+          if (gt !== -1) {
+            const after = rawRest.slice(gt + 1).trim()
+            if (after === '' || TITLE_RE.test(after)) {
+              refDefs.push({
+                start: lineStart,
+                end: lineEnd,
+                destStart: restBase + lt,
+                destEnd: restBase + gt + 1,
+                rawSrc: rawRest.slice(lt + 1, gt).trim(),
+              })
+            }
+          }
+        } else {
+          const ws = rest.search(/\s/)
+          const dest = ws === -1 ? rest : rest.slice(0, ws)
+          const after = ws === -1 ? '' : rest.slice(ws).trim()
+          if (dest !== '' && (after === '' || TITLE_RE.test(after))) {
+            refDefs.push({
+              start: lineStart,
+              end: lineEnd,
+              destStart: restBase + lead,
+              destEnd: restBase + lead + dest.length,
+              rawSrc: dest,
+            })
+          }
+        }
+      }
+      lineStart = lineEnd + 1 // +1 for the '\n' consumed by split
+    }
+  }
+  const refSrcs = new Array<string | null>(refDefs.length)
+  refDefs.forEach((d, idx) => {
+    refSrcs[idx] = consider(d.rawSrc)
+  })
+
+  // --- Expose phase: ONE call per unique RESOLVED abs path ------------------
+  const dataByAbs = new Map<string, string>()
+  const failedAbs = new Set<string>()
+  const seenAbs = new Set<string>()
+  for (const p of pending) {
+    if (seenAbs.has(p.abs)) continue
+    seenAbs.add(p.abs)
+    try {
+      let dataUrl = await expose(p.abs)
+      // SVG payloads are sanitized before embedding (see sanitizeSvgDataUrl).
+      if (dataUrl.startsWith(SVG_DATA_PREFIX)) {
+        dataUrl = sanitizeSvgDataUrl(dataUrl)
+      }
+      dataByAbs.set(p.abs, dataUrl)
+    } catch {
+      failedAbs.add(p.abs)
+    }
+  }
+  // Raw srcs whose abs failed to expose are reported (not silently dropped).
+  for (const p of pending) {
+    if (failedAbs.has(p.abs)) reportSkipped(p.rawSrc, 'expose-failed')
+    else reportInlined(p.rawSrc)
+  }
+
+  interface Edit {
+    start: number
+    end: number
+    text: string
+  }
+  const edits: Edit[] = []
+
+  mdTokens.forEach((t, idx) => {
+    const src = mdSrcs[idx]
+    if (src === null) return
+    const dataUrl = dataByAbs.get(absOf.get(src) as string)
+    if (dataUrl === undefined) return
+    const { titlePart } = extractImageTarget(t.inside)
+    edits.push({
+      start: t.start,
+      end: t.end,
+      text: `![${t.alt}](${dataUrl}${titlePart !== '' ? ` ${titlePart}` : ''})`,
+    })
+  })
+
+  htmlTokens.forEach((t, idx) => {
+    const src = htmlSrcs[idx]
+    if (src === null) return
+    const dataUrl = dataByAbs.get(absOf.get(src) as string)
+    if (dataUrl === undefined) return
+    const sm = SRC_ATTR_RE.exec(t.tag)
+    if (sm === null || sm.index === undefined) return
+    const quote = sm[1].startsWith('"') || sm[1].startsWith("'") ? sm[1][0] : '"'
+    const before = t.tag.slice(0, sm.index)
+    const after = t.tag.slice(sm.index + sm[0].length)
+    // Replace ONLY the src attribute value; every other attr is byte-identical.
+    edits.push({
+      start: t.start,
+      end: t.end,
+      text: `${before}src=${quote}${dataUrl}${quote}${after}`,
+    })
+  })
+
+  refDefs.forEach((d, idx) => {
+    const src = refSrcs[idx]
+    if (src === null) return
+    const dataUrl = dataByAbs.get(absOf.get(src) as string)
+    if (dataUrl === undefined) return
+    edits.push({
+      start: d.destStart,
+      end: d.destEnd,
+      text: dataUrl, // bare data URL (no spaces) — valid with or without <>
+    })
+  })
+
+  if (edits.length === 0) return { markdown, inlined, skipped }
+  edits.sort((a, b) => a.start - b.start)
+  let out = ''
+  let last = 0
+  for (const e of edits) {
+    if (e.start < last) continue // overlapping spans — keep the first
+    out += markdown.slice(last, e.start) + e.text
+    last = e.end
+  }
+  out += markdown.slice(last)
+  return { markdown: out, inlined, skipped }
+}
+
+/** Strip the surrounding quotes of an HTML `src="..."` attribute value. */
+function unquoteSrcAttr(value: string): string {
+  if (value.length >= 2) {
+    const q = value[0]
+    if ((q === '"' || q === "'") && value[value.length - 1] === q) {
+      return value.slice(1, -1)
+    }
+  }
+  return value
+}
+
+/**
+ * K3 — async export path that inlines local images before rendering.
  * Keeps `renderStandaloneHtml` synchronous for tests/preview; the export
  * command (app.ts) awaits this so `pic.png` next to the doc becomes
- * `data:image/png;base64,...` while `pic.svg` stays not-embedded.
+ * `data:image/png;base64,...` and `pic.svg` a sanitized
+ * `data:image/svg+xml;base64,...`.
  */
 export async function renderStandaloneHtmlWithImages(
   markdown: string,
@@ -827,10 +1359,11 @@ export async function renderStandaloneHtmlWithImages(
  * theme; the export follows the system/browser setting), the shared
  * `.md-body` stylesheet, BOTH hljs theme stylesheets (light default, dark
  * switched in by the same media query), and a CSP meta that permits no
- * scripts and no remote resources (`default-src 'none'`; inline styles for
- * the theme, `data:`/`blob:` images only) — rendered output is sanitized by
- * DOMPurify inside renderMarkdown, and the CSP is the second layer of
- * defense.
+ * remote resources (`default-src 'none'`; inline styles for the theme,
+ * `data:`/`blob:` images only) with `script-src 'unsafe-inline'` for the
+ * single trusted inline script below (spoiler reveal + copy-code button) —
+ * rendered output is sanitized by DOMPurify inside renderMarkdown, and the
+ * CSP is the second layer of defense.
  */
 export function renderStandaloneHtml(markdown: string, opts: StandaloneHtmlOptions): string {
   const body = renderMarkdown(markdown)
@@ -850,16 +1383,33 @@ export function renderStandaloneHtml(markdown: string, opts: StandaloneHtmlOptio
     '<head>',
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    '<meta name="color-scheme" content="light dark">',
     `<title>${escapeHtml(opts.title)}</title>`,
     `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:">`,
     `<style>${themeCss}${MARKDOWN_BODY_CSS}${hljsCss}` +
       'body { margin: 0; background: var(--bg); color: var(--text); }\n' +
       'main.md-body { padding: 32px 40px; max-width: 860px; margin: 0 auto; }\n' +
+      '/* Keep in sync with PRINT_CSS in src/app/print.ts (spoiler/dropdown/link print rules) — the standalone export must print correctly on its own. */\n' +
+      '@media print {\n' +
+      '  body, main.md-body { background: #fff; color: #000; }\n' +
+      '  .md-body { background: #fff; color: #000; }\n' +
+      '  .md-code-copy { display: none; }\n' +
+      '  .md-body pre,\n' +
+      '  .md-body table,\n' +
+      '  .md-body blockquote,\n' +
+      '  .md-body img { page-break-inside: avoid; }\n' +
+      '  .md-body img { max-width: 100% !important; }\n' +
+      '  details.md-dropdown { display: block !important; border-color: #ccc !important; }\n' +
+      '  .md-body .md-dropdown-summary { background: #f5f5f5 !important; color: #000 !important; }\n' +
+      '  .md-body .md-spoiler { background: none !important; color: inherit !important; }\n' +
+      '  .md-body .md-spoiler[data-revealed="false"] { background: none !important; color: inherit !important; }\n' +
+      '  .md-body a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.85em; word-break: break-all; }\n' +
+      '}\n' +
       '</style>',
     '</head>',
     `<body><main class="md-body">${body}</main>`,
     `<script>`,
-    `(function(){document.addEventListener('click',function(e){var s=e.target.closest('.md-spoiler');if(s){s.setAttribute('data-revealed',s.getAttribute('data-revealed')==='true'?'false':'true');return}var btn=e.target.closest('.md-code-copy');if(!btn)return;e.stopPropagation();var code=btn.getAttribute('data-code');if(code!==null){var el=document.createElement('textarea');el.value=code;el.style.cssText='position:fixed;left:-9999px';document.body.appendChild(el);el.select();document.execCommand('copy');document.body.removeChild(el)}var svg=btn.innerHTML;btn.innerHTML='<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>';setTimeout(function(){btn.innerHTML=svg},2000)})})();`,
+    `(function(){function fallbackCopy(text){var el=document.createElement('textarea');el.value=text;el.style.cssText='position:fixed;left:-9999px;top:0';document.body.appendChild(el);el.select();try{document.execCommand('copy')}catch(e){}document.body.removeChild(el)}document.addEventListener('click',function(e){var s=e.target.closest('.md-spoiler');if(s){s.setAttribute('data-revealed',s.getAttribute('data-revealed')==='true'?'false':'true');return}var btn=e.target.closest('.md-code-copy');if(!btn)return;e.stopPropagation();var code=btn.getAttribute('data-code');if(code===null)return;var done=function(){var svg=btn.innerHTML;btn.innerHTML='<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>';setTimeout(function(){btn.innerHTML=svg},2000)};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(code).then(done,function(){fallbackCopy(code);done()})}else{fallbackCopy(code);done()}})})();`,
     `</script>`,
     `</body>`,
     '</html>',

@@ -1390,10 +1390,35 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
   }
 
   for (let lineNum = 1; lineNum <= state.doc.lines; lineNum++) {
-    if (activeLines.has(lineNum) || skipLines.has(lineNum) || replacedLines.has(lineNum)) continue
+    if (skipLines.has(lineNum) || replacedLines.has(lineNum)) continue
     const line = state.doc.line(lineNum)
     const text = line.text
     if (text.length === 0) continue
+
+    // `-# note` subtext (Other Noted Issues #5): hide the `-# ` prefix, style
+    // the rest of the line as muted italic. Round-6 Other Notes: unlike the
+    // branches below, this one also runs on ACTIVE lines (being edited) —
+    // fading the prefix ghost-style and keeping the tail muted — so typing a
+    // subtext reads consistently instead of raw.
+    {
+      const subtextMatch = /^\s*-#[ \t]/.exec(text)
+      if (subtextMatch !== null) {
+        const from = line.from
+        const to = from + subtextMatch[0].length
+        if (activeLines.has(lineNum)) {
+          decorations.push(
+            Decoration.mark({ class: 'cm-formatting-inline cm-formatting-inline-visible' }).range(from, to),
+          )
+        } else {
+          decorations.push(Decoration.replace({ widget: new EmptyInlineWidget(from, to) }).range(from, to))
+        }
+        if (to < line.to) {
+          decorations.push(Decoration.mark({ class: 'cm-subtext' }).range(to, line.to))
+        }
+      }
+    }
+
+    if (activeLines.has(lineNum)) continue
 
     // Task list fallback (B5/E8): all four spellings `-[]`, `- []`, `-[ ]`,
     // `- [ ]` must show ☐/☑ when the caret is elsewhere. The tree paths
@@ -1416,18 +1441,6 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
         )
         taskHandledLines.add(lineNum)
         // Don't `continue`; the tail of the line may still contain sub/sup/highlight etc.
-      }
-    }
-
-    // `-# note` subtext (Other Noted Issues #5): hide the `-# ` prefix, style
-    // the rest of the line as muted italic.
-    const subtextMatch = /^\s*-#[ \t]/.exec(text)
-    if (subtextMatch !== null) {
-      const from = line.from
-      const to = from + subtextMatch[0].length
-      decorations.push(Decoration.replace({ widget: new EmptyInlineWidget(from, to) }).range(from, to))
-      if (to < line.to) {
-        decorations.push(Decoration.mark({ class: 'cm-subtext' }).range(to, line.to))
       }
     }
 

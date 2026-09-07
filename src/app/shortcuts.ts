@@ -29,6 +29,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'save', keys: ['Mod-s'], label: 'Save' },
   { id: 'save-as', keys: ['Mod-Shift-s'], label: 'Save as' },
   { id: 'export-html', keys: ['Mod-Shift-e'], label: 'Export HTML' },
+  { id: 'export-pdf', keys: ['Mod-p'], label: 'Export PDF' },
   { id: 'settings', keys: ['Mod-,'], label: 'Settings' },
   { id: 'undo', keys: ['Mod-z'], label: 'Undo' },
   { id: 'redo', keys: ['Mod-Shift-z', 'Mod-y'], macKeys: ['Mod-Shift-z'], label: 'Redo' },

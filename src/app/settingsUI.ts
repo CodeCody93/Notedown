@@ -35,6 +35,13 @@ let els: SettingsEls | null = null
 let wired = false
 let isOpen = false
 let lastFocused: HTMLElement | null = null
+let onClose: (() => void) | null = null
+
+/** Options for {@link openSettingsModal}. */
+export interface SettingsModalOptions {
+  /** Called once after any user-initiated close (× / backdrop / Esc). */
+  onClose?: () => void
+}
 
 function byId(id: string): HTMLElement {
   const node = document.getElementById(id)
@@ -384,14 +391,16 @@ export function wireSettingsModal(nextDeps: SettingsModalDeps): void {
     detachListeners()
     isOpen = false
     lastFocused = null
+    onClose = null
   }
   els = buildDialog()
 }
 
-export function openSettingsModal(): void {
+export function openSettingsModal(opts?: SettingsModalOptions): void {
   if (deps === null || els === null) throw new Error('wireSettingsModal must run before openSettingsModal')
   if (isOpen) return
   isOpen = true
+  onClose = opts?.onClose ?? null
   lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : document.body
   refreshValues()
   els.root.hidden = false
@@ -408,6 +417,11 @@ export function closeSettingsModal(): void {
     lastFocused.focus()
     lastFocused = null
   }
+  // Round-6 D2: let the app restore the editor caret after any close path
+  // (× / backdrop / Esc all funnel through here).
+  const cb = onClose
+  onClose = null
+  cb?.()
 }
 
 export function isSettingsOpen(): boolean {

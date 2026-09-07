@@ -31,6 +31,17 @@ pub struct OpenResult {
     pub path: String,
 }
 
+/// Result of picking and reading an import-candidate file as raw bytes (serde
+/// camelCase, matches `tauri.ts`). `bytes` serializes as a JSON number array —
+/// the same Uint8Array boundary pattern as `write_image`, in reverse: the TS
+/// side rehydrates it with `new Uint8Array(bytes)`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportBytesResult {
+    pub bytes: Vec<u8>,
+    pub name: String,
+}
+
 /// "Markdown" + "All files" filters shared by the Open and Save dialogs.
 /// Static slices so they satisfy `add_filter`'s `&[&str]` parameter on every
 /// tauri-plugin-dialog 2.x signature without a Vec→slice coercion.
@@ -42,6 +53,24 @@ fn markdown_filters() -> [(&'static str, &'static [&'static str]); 2] {
 /// constraint as `markdown_filters`).
 fn html_filters() -> [(&'static str, &'static [&'static str]); 2] {
     [("HTML", &["html", "htm"]), ("All files", &["*"])]
+}
+
+/// "Import" filters for the import picker: a combined "Importable Files" entry
+/// first (so it is the dialog default), then Markdown/text, HTML, PDF, Word,
+/// RTF, plus All files (same static-slice `add_filter` constraint as the others).
+fn import_filters() -> [(&'static str, &'static [&'static str]); 7] {
+    [
+        (
+            "Importable Files",
+            &["md", "markdown", "txt", "html", "htm", "pdf", "docx", "rtf"],
+        ),
+        ("Markdown", &["md", "markdown", "txt"]),
+        ("HTML", &["html", "htm"]),
+        ("PDF", &["pdf"]),
+        ("Word", &["docx"]),
+        ("RTF", &["rtf"]),
+        ("All files", &["*"]),
+    ]
 }
 
 /// True if the string looks like a `scheme://...` URI (Android `content://`,
@@ -98,6 +127,45 @@ pub fn pick_and_read(app: AppHandle) -> Result<Option<OpenResult>, String> {
                 name,
                 path: url,
             }))
+        }
+    }
+}
+
+/// `pick_and_read_bytes(app)` — native "Import" dialog, then read the chosen
+/// file as raw bytes (P3 Import; the TS side decodes text formats and hands
+/// binary formats to pdfjs/mammoth).
+///
+/// Returns `None` when the user cancels; `Some(ImportBytesResult)` otherwise.
+/// Desktop (`FilePath::Path`) reads via `std::fs`; mobile (`FilePath::Url`)
+/// errors like the rest of the M1 seam — `content://`/`file://` import lands
+/// in M5 (see `mobile_fs`).
+#[tauri::command]
+pub fn pick_and_read_bytes(app: AppHandle) -> Result<Option<ImportBytesResult>, String> {
+    let mut dialog = app.dialog().file();
+    for (name, exts) in import_filters() {
+        dialog = dialog.add_filter(name, exts);
+    }
+
+    match dialog.blocking_pick_file() {
+        // Cancelled.
+        None => Ok(None),
+        // Desktop: real path on disk.
+        Some(FilePath::Path(p)) => {
+            let bytes = fs::read(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "import".to_string());
+            Ok(Some(ImportBytesResult { bytes, name }))
+        }
+        // Mobile: content:// or file:// URI — the M5 seam (mirrors write_file's
+        // URI guard rather than mobile_fs::read_uri, which yields text).
+        Some(FilePath::Url(u)) => {
+            let url = u.to_string();
+            Err(format!(
+                "pick_and_read_bytes: '{url}' looks like a URI — Android/iOS content:// and \
+                 file:// import lands in M5; desktop is the current test surface."
+            ))
         }
     }
 }
@@ -345,9 +413,12 @@ pub fn write_image(
 
 /// `expose_image(abs_path)` — read a local image and return it as a `data:` URL so
 /// the webview can render it (paste-image + preview of relative image paths).
-/// SVG is rejected (scriptable). Mime is derived from the extension. NOTE: data
-/// URLs are the M4 choice for simplicity; Tauri's asset protocol is the M5+ option
-/// for very large images.
+/// SVG IS allowed (round-6 A1): an SVG loaded via `<img src="data:...">` runs
+/// in the browser's secure-static mode — scripts never execute — and the TS
+/// side additionally DOMPurify-sanitizes every SVG before embedding (defense
+/// in depth for recipients who might extract the data URL as a document).
+/// Mime is derived from the extension. NOTE: data URLs are the M4 choice for
+/// simplicity; Tauri's asset protocol is the M5+ option for very large images.
 #[tauri::command]
 pub fn expose_image(abs_path: String) -> Result<String, String> {
     let mime = match Path::new(&abs_path)
@@ -360,7 +431,7 @@ pub fn expose_image(abs_path: String) -> Result<String, String> {
         Some(e) if e == "gif" => "image/gif",
         Some(e) if e == "webp" => "image/webp",
         Some(e) if e == "bmp" => "image/bmp",
-        Some(e) if e == "svg" => return Err("expose_image: svg is not allowed (scriptable)".to_string()),
+        Some(e) if e == "svg" => "image/svg+xml",
         _ => return Err(format!("expose_image: unsupported image type: {abs_path}")),
     };
     let bytes = fs::read(&abs_path).map_err(|e| format!("read {}: {e}", abs_path))?;
