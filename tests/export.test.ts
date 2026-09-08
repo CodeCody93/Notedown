@@ -19,6 +19,10 @@ import {
   HLJS_CSS_LIGHT,
   HLJS_CSS_DARK,
   escapeHtml,
+  EXPORT_FORMATS,
+  exportLossSummaryFor,
+  markdownToRtf,
+  markdownToDocxBytes,
 } from '../src/app/export'
 import { resolveAgainstDocDir, normalizeRelSrc } from '../src/app/text'
 
@@ -608,5 +612,105 @@ describe('renderStandaloneHtml — P1 export fixes', () => {
     expect(doc).toContain(`src="${P1_DATA}"`)
     expect(doc).not.toContain('src="pic.svg"')
     expect(calls).toEqual(['/docs/pic.png', '/docs/pic.svg'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Round-9 unified export — pure export core (txt/html/pdf/docx/rtf)
+// ---------------------------------------------------------------------------
+
+describe('EXPORT_FORMATS + exportLossSummaryFor (round-9 unified export)', () => {
+  it('offers txt/html/pdf/docx/rtf in order', () => {
+    expect(EXPORT_FORMATS).toEqual(['txt', 'html', 'pdf', 'docx', 'rtf'])
+  })
+
+  it('txt is verbatim source (no losses)', () => {
+    expect(exportLossSummaryFor('txt')).toEqual([])
+  })
+
+  it('html lists 1-2 image-embedding bullets', () => {
+    const bullets = exportLossSummaryFor('html')
+    expect(bullets.length).toBeGreaterThan(0)
+    expect(bullets.length).toBeLessThanOrEqual(2)
+    expect(bullets.join(' ')).toMatch(/image/i)
+  })
+
+  it('pdf notes the print stylesheet and TEXT (re-importable) output', () => {
+    const bullets = exportLossSummaryFor('pdf')
+    expect(bullets).toHaveLength(2)
+    expect(bullets.join(' ')).toMatch(/print/i)
+    expect(bullets.join(' ')).toMatch(/TEXT/)
+  })
+
+  it('docx/rtf stay honest and short (images dropped, layout lost)', () => {
+    for (const fmt of ['docx', 'rtf'] as const) {
+      const bullets = exportLossSummaryFor(fmt)
+      expect(bullets.length).toBeGreaterThan(0)
+      expect(bullets.length).toBeLessThanOrEqual(6)
+      const all = bullets.join(' ')
+      expect(all).toMatch(/[Ii]mages are dropped/)
+      expect(all).toMatch(/layout/)
+    }
+  })
+})
+
+describe('markdownToRtf (round-9 unified export)', () => {
+  it('starts with {\\rtf1 and renders bold with \\b markers', () => {
+    const rtf = markdownToRtf('Hello **bold**')
+    expect(rtf.startsWith('{\\rtf1')).toBe(true)
+    expect(rtf).toContain('\\b bold\\b0')
+  })
+
+  it('renders highlight and strikethrough control words', () => {
+    expect(markdownToRtf('==x==')).toContain('\\highlight7')
+    expect(markdownToRtf('==x==')).toContain('x')
+    expect(markdownToRtf('~~x~~')).toContain('\\strike')
+  })
+
+  it('stays 7-bit ASCII (unicode becomes hex/\\u escapes)', () => {
+    const rtf = markdownToRtf('- [ ] caf\u00e9 \u2610 \u4e2d')
+    // eslint-disable-next-line no-control-regex
+    expect(/^[\x00-\x7F]*$/.test(rtf)).toBe(true)
+    expect(rtf).toContain("\\'e9")
+  })
+
+  it('maps task checkboxes to ballot-box escapes and flattens tables', () => {
+    expect(markdownToRtf('- [ ] todo')).toContain('\\u9744?')
+    expect(markdownToRtf('- [x] done')).toContain('\\u9746?')
+    expect(markdownToRtf('| a | b |\n|---|---|\n| 1 | 2 |')).toContain(' | ')
+  })
+
+  it('flattens links/images to text (alt kept, url in parens)', () => {
+    const rtf = markdownToRtf('[t](https://a.dev) and ![alt](i.png)')
+    expect(rtf).toContain('t (https://a.dev)')
+    expect(rtf).toContain('alt')
+    expect(rtf).not.toContain('![alt]')
+  })
+})
+
+describe('markdownToDocxBytes (round-9 unified export)', () => {
+  /** Decode raw zip bytes as latin1 so ASCII spans (names + XML) survive. */
+  function latin1(bytes: Uint8Array): string {
+    return Buffer.from(bytes).toString('latin1')
+  }
+
+  it('starts with the PK zip signature and embeds document.xml', () => {
+    const bytes = markdownToDocxBytes('# Title\n\nHello **bold**')
+    expect(bytes[0]).toBe(0x50) // P
+    expect(bytes[1]).toBe(0x4b) // K
+    expect(bytes[2]).toBe(0x03)
+    expect(bytes[3]).toBe(0x04)
+    const text = latin1(bytes)
+    expect(text).toContain('word/document.xml')
+    expect(text).toContain('w:val="Heading1"')
+    expect(text).toContain('Title')
+    expect(text).toContain('bold')
+  })
+
+  it('keeps literal list prefixes and flattened tables (round-trip words)', () => {
+    const text = latin1(markdownToDocxBytes('- item\n\n1. first\n\n| a | b |\n|---|---|\n| 1 | 2 |'))
+    expect(text).toContain('- item')
+    expect(text).toContain('1. first')
+    expect(text).toContain('a')
   })
 })

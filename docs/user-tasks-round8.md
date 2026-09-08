@@ -65,28 +65,33 @@ and one `<img src="data:image/png;base64,…">`.
 
 ## C. Import PDF hardening (was: sometimes no text, silent on encrypted)
 
-- [ ] **C1 — Previous failing PDF now imports.** Re-import the PDF from round 7
+- [x] **C1 — Previous failing PDF now imports.** Re-import the PDF from round 7
   that came back empty. Expected: text extracts in reading order (multi-column
   order and table structure may flatten — acceptable, note with `-#`); one
   paragraph per line group, pages separated by a blank line.
-- [ ] **C2 — Encrypted PDF fails readably.** Import a password-protected PDF
+-# Please see Other Notes 1.
+- [x] **C2 — Encrypted PDF fails readably.** Import a password-protected PDF
   (any PDF viewer can set a password: Print → Save as PDF with security, or
   use a sample). Expected: a readable "Import failed: Password-protected PDFs
   cannot be imported (…)" alert, no hang, current doc untouched.
-- [ ] **C3 — Scanned PDF stays honest.** Import an image-only/scanned PDF if
+-# Please see Other Notes 1.
+- [x] **C3 — Scanned PDF stays honest.** Import an image-only/scanned PDF if
   available. Expected: imports as empty with the existing scanned-PDF caveat
   in the loss dialog (no error, no hang).
+-# Please see Other Notes 1.
 
 ## D. Import RTF (was: closing `**` stranded on a new line)
 
-- [ ] **D1 — Bold stays inline.** Import an `.rtf` with bold/italic/paragraphs
+- [x] **D1 — Bold stays inline.** Import an `.rtf` with bold/italic/paragraphs
   (WordPad: type "Hello", bold "bold", Enter, "world", save as `.rtf`).
   Expected: `Hello **bold**` with the closer on the SAME line as the text
   (a closer at end-of-line before a paragraph break, `**bold**` + newline, is
   correct); no line consists of a lone `**`; no `\b`/`\par` literals remain.
-- [ ] **D2 — Italic check.** Same file with an italic span. Expected: `*…*`
+-# RTF import seems to be completely broken. Please see docs/rtf-source.rtf and the resulting docs/rtf-result.md for a before and after of RTF import. It looks as though, bold, italic, underline, strikethrough, lists, subscript, superscript and highlight all do not import correctly or overflow into each other. This import feature may require a full rework.
+- [x] **D2 — Italic check.** Same file with an italic span. Expected: `*…*`
   closers likewise inline, paragraphs survive, loss dialog still notes the
   minimal converter (embeds/fonts/underline lost).
+-# Please see sebtext note for D1.
 
 ## E. Import filters + cancel/corrupt paths (untested in rounds 6–7)
 
@@ -149,3 +154,6 @@ No Word install needed for most of this — use TXT where noted.
   legitimately reopens on the next paragraph (`**a**` newline `**b**`).
 - About → "Support Notedown" placeholder stays as-is per your round-7 answer
   ("leave the placeholder") — not retested this round.
+  
+## Other Notes
+1. It has been discovered that PDF exporting has been exporting "image" PDFs which when imported again resulted in "blank" imports (since images where not imported). This has called into question the entire export workflow and I would like it redesigned like so: No longer have menu options for each export type. Rather have a unified "export" option (retaining the Mod+Shift+E hotkey) which opens an export dialog. From this dialog you should be able to chose from any of the export options (same list as import options: .txt, .html, .pdf, .docx and .rtf) where you can then chose and have it exported in the selected file type. If there is loss potential on the export then please warn the user before exporting. If possible these should be fully reversible exports when possible so no more "image" exports.

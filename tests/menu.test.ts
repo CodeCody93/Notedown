@@ -67,7 +67,7 @@ describe('renderMenubar', () => {
       'open-recent',
       'save',
       'save-as',
-      'export-html',
+      'export',
       'settings',
       'clear-recents',
       // Toolbar
@@ -113,6 +113,24 @@ describe('renderMenubar', () => {
       const el = root.querySelector<HTMLElement>(`[data-action="${id}"]`)
       expect(el, `expected a rendered element with data-action="${id}"`).toBeTruthy()
     }
+  })
+
+  it('File menu order is New, Open, Open Recent, Import…, Save, Save as, Export…, Settings, Help, About (round-9 unified export)', () => {
+    expect(FILE_MENU.map((e) => e.id)).toEqual([
+      'new',
+      'open',
+      'open-recent',
+      'import',
+      'save',
+      'save-as',
+      'export',
+      'settings',
+      'help',
+      'about',
+    ])
+    const exportEntry = FILE_MENU.find((e) => e.id === 'export')
+    expect(exportEntry?.label).toBe('Export…')
+    expect(exportEntry?.hotkey).toBe('export')
   })
 
   it('renders the Open Recent submenu with the #recent-list placeholder and Clear recent', () => {

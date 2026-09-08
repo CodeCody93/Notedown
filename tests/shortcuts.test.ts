@@ -16,8 +16,7 @@ const ALL_IDS = [
   'open-recent',
   'save',
   'save-as',
-  'export-html',
-  'export-pdf',
+  'export',
   'settings',
   'undo',
   'redo',
@@ -112,6 +111,11 @@ describe('labelFor', () => {
   it("'save-as' → Ctrl+Shift+S on win, Cmd+Shift+S on mac", () => {
     expect(labelFor('save-as', 'win')).toBe('Ctrl+Shift+S')
     expect(labelFor('save-as', 'mac')).toBe('Cmd+Shift+S')
+  })
+
+  it("'export' → Ctrl+Shift+E on win, Cmd+Shift+E on mac (round-9 unified export)", () => {
+    expect(labelFor('export', 'win')).toBe('Ctrl+Shift+E')
+    expect(labelFor('export', 'mac')).toBe('Cmd+Shift+E')
   })
 
   it("'settings' → Ctrl+, on both platforms", () => {

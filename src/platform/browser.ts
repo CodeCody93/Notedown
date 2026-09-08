@@ -94,6 +94,51 @@ const HTML_PICKER_TYPES = [
   },
 ]
 
+// Round-9 unified export picker types (browser dev/test surface only).
+const TXT_PICKER_TYPES = [
+  {
+    description: 'Text',
+    accept: {
+      'text/plain': ['.txt'],
+    },
+  },
+]
+
+const DOCX_PICKER_TYPES = [
+  {
+    description: 'Word',
+    accept: {
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+    },
+  },
+]
+
+const RTF_PICKER_TYPES = [
+  {
+    description: 'RTF',
+    accept: {
+      'text/rtf': ['.rtf'],
+    },
+  },
+]
+
+/** Round-9 unified export: resolve save-dialog picker types from SaveOptions (legacy html:true → HTML). */
+function pickerTypesFor(opts?: { html?: boolean; exportKind?: 'txt' | 'html' | 'docx' | 'rtf' }): unknown {
+  const kind = opts?.exportKind ?? (opts?.html === true ? 'html' : undefined)
+  switch (kind) {
+    case 'txt':
+      return TXT_PICKER_TYPES
+    case 'html':
+      return HTML_PICKER_TYPES
+    case 'docx':
+      return DOCX_PICKER_TYPES
+    case 'rtf':
+      return RTF_PICKER_TYPES
+    default:
+      return MARKDOWN_PICKER_TYPES
+  }
+}
+
 /** `accept=` string for the Import <input> (mirrors IMPORT_EXTS in types.ts). */
 export const IMPORT_ACCEPT = '.md,.markdown,.txt,.html,.htm,.pdf,.docx,.rtf'
 
@@ -184,7 +229,7 @@ export const browserIO: FileIO = {
       if (typeof w.showSaveFilePicker !== 'function') throw fsUnavailable()
       const handle = await w.showSaveFilePicker({
         suggestedName: suggestedName ?? 'untitled.md',
-        types: opts?.html === true ? HTML_PICKER_TYPES : MARKDOWN_PICKER_TYPES,
+        types: pickerTypesFor(opts),
       })
       const writable = await handle.createWritable()
       // Verbatim content (preserves CRLF as passed).
@@ -204,6 +249,29 @@ export const browserIO: FileIO = {
     await writable.write(content)
     await writable.close()
     return path
+  },
+
+  /**
+   * Round-9 unified export: binary save for .docx via showSaveFilePicker +
+   * `writable.write(new Blob([bytes]))`. Always picks (no stored handle
+   * reuse); stores the new handle under a fresh key like saveFile.
+   */
+  async saveBytes(bytes, suggestedName): Promise<string | null> {
+    const w = window as WindowWithFSA
+    if (typeof w.showSaveFilePicker !== 'function') throw fsUnavailable()
+    const handle = await w.showSaveFilePicker({
+      suggestedName,
+      types: DOCX_PICKER_TYPES,
+    })
+    const writable = await handle.createWritable()
+    // Type-honest BlobPart: Blob accepts a Uint8Array view directly, and
+    // `.slice()` copies exactly the viewed bytes, so sub-array views (non-zero
+    // byteOffset) can never leak surrounding buffer bytes into the file.
+    await writable.write(new Blob([bytes.slice()]))
+    await writable.close()
+    const key = makeKey()
+    await putHandle(key, handle)
+    return key
   },
 
   async readFile(path): Promise<string> {

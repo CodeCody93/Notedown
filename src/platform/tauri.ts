@@ -40,6 +40,9 @@ export const tauriIO: FileIO = {
       const picked = await call<string | null>('pick_save_path', {
         suggested: suggestedName ?? 'untitled.md',
         html: opts?.html ?? false,
+        // Round-9 unified export: pass exportKind through as kind; when kind
+        // is None the Rust side falls back to the legacy html-bool behavior.
+        kind: opts?.exportKind ?? null,
       })
       if (picked === null) return null // user cancelled the picker
       await call<void>('write_file', { path: picked, content })
@@ -47,6 +50,22 @@ export const tauriIO: FileIO = {
     }
     await call<void>('write_file', { path, content })
     return path
+  },
+
+  /**
+   * Round-9 unified export: binary save for .docx via `pick_save_path` +
+   * `write_bytes` (bytes cross the invoke boundary as a number array — the
+   * same Uint8Array boundary pattern as saveImage).
+   */
+  async saveBytes(bytes, suggestedName, opts): Promise<string | null> {
+    const picked = await call<string | null>('pick_save_path', {
+      suggested: suggestedName,
+      html: false,
+      kind: opts?.exportKind ?? 'docx',
+    })
+    if (picked === null) return null // user cancelled the picker
+    await call<void>('write_bytes', { path: picked, bytes: Array.from(bytes) })
+    return picked
   },
 
   async readFile(path): Promise<string> {

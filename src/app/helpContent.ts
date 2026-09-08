@@ -115,8 +115,7 @@ export const HELP_ENTRIES: HelpEntry[] = [
   { id: 'open-recent', title: 'Open recent', example: 'Reopen a recent file', syntax: '', hotkeyId: 'open-recent' },
   { id: 'save', title: 'Save', example: 'Save the current file', syntax: '', hotkeyId: 'save' },
   { id: 'save-as', title: 'Save as', example: 'Save under a new name', syntax: '', hotkeyId: 'save-as' },
-  { id: 'export-html', title: 'Export HTML', example: 'Export the document as HTML', syntax: '', hotkeyId: 'export-html' },
-  { id: 'export-pdf', title: 'Export PDF', example: 'Export the document as PDF', syntax: '', hotkeyId: 'export-pdf' },
+  { id: 'export', title: 'Export', example: 'Export the document as TXT, HTML, PDF, Word (.docx), or RTF', syntax: '', hotkeyId: 'export' },
   { id: 'import', title: 'Import', example: 'Import a file into the editor', syntax: '', hotkeyId: null },
   { id: 'settings', title: 'Settings', example: 'Open app settings', syntax: '', hotkeyId: 'settings' },
   {

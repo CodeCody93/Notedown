@@ -88,13 +88,15 @@ export function lossSummaryFor(format: ImportFormat): string[] {
         'Exact fonts, colors, spacing and page layout are not preserved.',
         'Headers, footers, footnotes and tracked changes may be simplified or dropped.',
         'Text boxes and complex floating elements may lose content or order.',
+        'Word checkbox / task-list items may simplify to plain bullets when the checkbox does not survive conversion.',
       ]
     case 'rtf':
       return [
-        'Converted with a minimal built-in converter: only paragraphs, line breaks, bold/italic, bullets and plain tables survive.',
+        'Converted with a minimal built-in converter: paragraphs, line breaks, bold/italic, strikethrough, sub/superscript, highlight, bullets/numbered lists and plain tables survive.',
         'Embedded images and objects are dropped.',
         'Fonts, colors and exact spacing are not preserved.',
-        'Underlined text loses its underline (Markdown has no underline).',
+        'Strikethrough → ~~text~~, subscript → ~text~, superscript → ^text^, highlight → ==text==.',
+        'Underlined text loses its underline (Markdown has no underline); bullets normalize to "-" and numbered lists keep their numbers.',
         'Tables are flattened with " | " between cells.',
       ]
   }
@@ -231,10 +233,68 @@ function addNotedownRules(service: TurndownLike): void {
     replacement: (content) => (content !== '' ? `^${content}^` : ''),
   })
 
-  // C2b — spoiler: <span class="md-spoiler"> → ||text|| (any data-revealed state)
+  // Underline: <u>/<ins> → __text__ (Notedown underline dialect). Turndown
+  // and GFM have no <u> rule, so export-side <u> would otherwise import as
+  // plain text.
+  service.addRule('notedownUnderline', {
+    filter: ['u', 'ins'],
+    replacement: (content) => (content !== '' ? `__${content}__` : ''),
+  })
+
+  // Strikethrough: pin ~~text~~ explicitly. The bundled GFM plugin (v1.0.2)
+  // emits single ~text~, which is SUBSCRIPT in our dialect — ambiguous.
+  service.addRule('notedownStrikethrough', {
+    filter: ['del', 's', 'strike'],
+    replacement: (content) => (content !== '' ? `~~${content}~~` : ''),
+  })
+
+  // Emphasis: pin *text* (Notedown italic dialect). Turndown defaults to
+  // `_`, and `__` is UNDERLINE here — never emit `_`/`__` for em/strong
+  // (strong stays on Turndown's `**` default; GFM does not touch it).
+  service.addRule('notedownEm', {
+    filter: ['em', 'i'],
+    replacement: (content) => (content !== '' ? `*${content}*` : ''),
+  })
+
+  // Thematic break: `---` (source convention in formatting.ts); Turndown
+  // defaults to `* * *`. Footnote-separator <hr>s are excluded — the
+  // notedownFootnoteSep rule below owns those.
+  service.addRule('notedownHr', {
+    filter: (node) => node.nodeName === 'HR' && !hasClass(node, 'footnotes-sep'),
+    replacement: () => '\n\n---\n\n',
+  })
+
+  // Headings: ATX like Turndown's default, but a non-empty id attribute is
+  // preserved as a ` {#id}` suffix (markdown-it-attrs dialect). Id-less
+  // headings render exactly as before.
+  service.addRule('notedownHeadings', {
+    filter: (node) => /^H[1-6]$/.test(node.nodeName),
+    replacement: (content, node) => {
+      const level = Number(node.nodeName.charAt(1))
+      const id = nodeAttr(node, 'id').trim()
+      const suffix = id !== '' ? ` {#${id}}` : ''
+      return `\n\n${'#'.repeat(level)} ${content.trim()}${suffix}\n\n`
+    },
+  })
+
+  // C2b — spoiler: <span class="md-spoiler"> → ||text|| (any data-revealed state).
+  // Turndown hoists flanking whitespace outside the replacement, so restore a
+  // single edge space inside ||…|| when the source had one (Notedown writes
+  // `|| Spoiler ||`).
   service.addRule('notedownSpoiler', {
     filter: (node) => node.nodeName === 'SPAN' && hasClass(node, 'md-spoiler'),
-    replacement: (content) => (content !== '' ? `||${content}||` : ''),
+    replacement: (content, node) => {
+      if (content === '') return ''
+      let raw = ''
+      try {
+        raw = node.textContent ?? ''
+      } catch {
+        raw = ''
+      }
+      const lead = /^[ \t\r\n]/.test(raw) ? ' ' : ''
+      const trail = /[ \t\r\n]$/.test(raw) ? ' ' : ''
+      return `||${lead}${content}${trail}||`
+    },
   })
 
   // C2b — definition lists: <dl>/<dt>/<dd> → `Term\n: Definition`
@@ -423,7 +483,12 @@ function stripDataImages(clean: string): { html: string; removed: number } {
     let removed = 0
     imgs.forEach((img) => {
       if (/^\s*data:/i.test(img.getAttribute('src') ?? '')) {
-        img.remove()
+        // Keep the alt text as plain words so the image's label survives as
+        // text (no image files are created on import); the image itself is
+        // still dropped and counted below.
+        const alt = (img.getAttribute('alt') ?? '').trim()
+        if (alt !== '') img.replaceWith(doc.createTextNode(alt))
+        else img.remove()
         removed += 1
       }
     })
@@ -441,8 +506,10 @@ async function convertDocx(bytes: Uint8Array): Promise<ImportConversion> {
   // before Turndown (SECURITY). mammoth intentionally ignores most styling and
   // emits semantic HTML — that is why the docx loss list is long by design.
   const mammoth = await import('mammoth')
-  // Slice to a fresh ArrayBuffer: the incoming view may sit on a larger pool.
-  const arrayBuffer = bytes.slice().buffer as ArrayBuffer
+  // Exact-size copy honoring byteOffset/byteLength: the incoming view may sit
+  // on a larger pool (e.g. a Node Buffer slice shares its pool), so `.buffer`
+  // alone could prepend unrelated bytes and corrupt the zip.
+  const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
   const losses = lossSummaryFor('docx')
   try {
     const result = await mammoth.convertToHtml({ arrayBuffer })
@@ -487,7 +554,15 @@ async function convertPdf(bytes: Uint8Array): Promise<ImportConversion> {
       const text = pdfPageToText(content.items)
       if (text.length > 0) pages.push(text)
     }
-    return { markdown: pages.join('\n\n'), losses: lossSummaryFor('pdf') }
+    const markdown = pages.join('\n\n')
+    const losses = lossSummaryFor('pdf')
+    if (pages.length === 0) {
+      // Every page extracted empty (scanned/image-only PDF) — a silent empty
+      // import would look like data loss, so note it. Never throw: this is a
+      // valid flow, not an import failure.
+      losses.push('No extractable text found — the PDF may be a scanned or image-only PDF; nothing was imported.')
+    }
+    return { markdown, losses }
   } finally {
     await doc.destroy()
   }
@@ -623,15 +698,17 @@ function rtfHexByte(hex: string): string {
  * per the P3 brief; no `rtf-parser` npm dep).
  *
  * Handles: `{`/`}` groups, `\par` `\line` `\cell` `\row` `\tab` `\page`
- * `\sect`, `\b`/`\b0`, `\i`/`\i0`, `\plain`, `\bullet`, typographic quotes and
- * dashes, `\uN` (with fallback-char skip) and `\'xx` (Windows-1252), `\~`
- * (nbsp → space), and skips metadata/binary destinations (font/color tables,
- * `\pict`, embedded objects, field instructions).
+ * `\sect`, `\b`/`\b0`, `\i`/`\i0`, `\strike`/`\striked`(+`0`), `\sub`
+ * `\super`/`\nosupersub`, `\highlight`(+`N`), `\plain`, `\bullet`,
+ * typographic quotes and dashes, `\uN` (with fallback-char skip) and `\'xx`
+ * (Windows-1252), `\~` (nbsp → space), WordPad `{\pntext...}` list markers
+ * (normalized to `- `/`1. `), and skips metadata/binary destinations
+ * (font/color tables, `\pict`, embedded objects, field instructions,
+ * `{\*\pn...}` list definitions).
  *
  * Known limitations (all listed in `lossSummaryFor('rtf')`): no images,
  * fonts, colors or exact spacing; underline dropped; tables flattened;
- * lists beyond literal `\bullet` chars are not reconstructed; nested or
- * malformed groups degrade to best-effort text.
+ * nested or malformed groups degrade to best-effort text.
  */
 function rtfToMarkdown(src: string): string {
   let out = ''
@@ -692,6 +769,14 @@ function rtfToMarkdown(src: string): string {
     if (entry === undefined) return
     emitClose(entry)
   }
+  // Round-8 D1 — explicit off-switches must cancel a pending lazy-reopen for
+  // the same marker (e.g. `\b bold\par\b0...` closed ** at the break, so the
+  // later \b0 must drop the pending ** instead of letting the next \i reopen
+  // it into `***italic***`). \plain already clears pending (see resetFmt).
+  const cancelPending = (marker: string): void => {
+    if (pendingReopen.length === 0) return
+    pendingReopen = pendingReopen.filter((m) => m !== marker)
+  }
   const resetFmt = (): void => {
     // \plain — trim first, then close everything, innermost first.
     pendingReopen = []
@@ -749,7 +834,7 @@ function rtfToMarkdown(src: string): string {
 
   let i = 0
   const n = src.length
-  const control = (word: string, param: number | null): void => {
+  const control = (word: string, param: number | null, hadDelimSpace: boolean): void => {
     if (RTF_SKIP_DESTINATIONS.has(word)) {
       if (skipDepth === null) skipDepth = depth
       return
@@ -773,11 +858,60 @@ function rtfToMarkdown(src: string): string {
         break
       case 'b':
         if (param === null || param !== 0) openFmt('**')
-        else closeFmt('**')
+        else {
+          cancelPending('**')
+          closeFmt('**')
+        }
         break
       case 'i':
         if (param === null || param !== 0) openFmt('*')
-        else closeFmt('*')
+        else {
+          cancelPending('*')
+          closeFmt('*')
+        }
+        break
+      // Round-8 D1 — GFM strikethrough (matches the app's own dialect).
+      case 'strike':
+      case 'striked':
+        if (param !== null && param === 0) {
+          cancelPending('~~')
+          closeFmt('~~')
+        } else openFmt('~~')
+        break
+      // Round-8 D1 — subscript / superscript (Notedown ~ / ^ dialect).
+      case 'sub':
+        openFmt('~')
+        break
+      case 'super':
+        openFmt('^')
+        break
+      case 'nosupersub': {
+        cancelPending('~')
+        cancelPending('^')
+        // Close innermost-first so nested ~ / ^ never cross.
+        const markers = stack.map((s) => s.marker)
+        if (markers.lastIndexOf('~') > markers.lastIndexOf('^')) {
+          closeFmt('~')
+          closeFmt('^')
+        } else {
+          closeFmt('^')
+          closeFmt('~')
+        }
+        // Round-8 D2 — WordPad emits boundary-without-space
+        // (`subscript\nosupersub text`: the space after \nosupersub is the
+        // swallowed control-word delimiter, so output would merge to
+        // `subscripttext`). Re-emit one space here only, when a delimiter
+        // space was consumed and output doesn't already end with whitespace.
+        // Other closers must NOT do this (would corrupt mid-word \b0/\i0).
+        if (hadDelimSpace && !ignoring() && out.length > 0 && !/\s$/.test(out)) out += ' '
+        break
+      }
+      // Round-8 D1 — highlight (param 0 / absent = off, nonzero = on).
+      case 'highlight':
+        if (param === null || param === 0) {
+          cancelPending('==')
+          closeFmt('==')
+        } else openFmt('==')
         break
       case 'plain':
         resetFmt()
@@ -914,14 +1048,29 @@ function rtfToMarkdown(src: string): string {
       param = parseInt(src.slice(i, k), 10)
       i = k
     }
-    if (src[i] === ' ') i++
-    else if (src[i] === '\r' && src[i + 1] === '\n') i += 2
+    let hadDelimSpace = false
+    if (src[i] === ' ') {
+      hadDelimSpace = true
+      i++
+    } else if (src[i] === '\r' && src[i + 1] === '\n') i += 2
     else if (src[i] === '\r' || src[i] === '\n') i++
-    control(word, param)
+    control(word, param, hadDelimSpace)
   }
 
   resetFmt() // close any dangling markers so output never has unbalanced **/*
-  return out
+  // Round-8 D2 — WordPad list markers arrive as literal text (`·\t...` from
+  // {\pntext...} groups; the {\*\pn...} definitions are already skipped via
+  // the \* rule). Normalize them here, on the final line split before the
+  // existing whitespace cleanup. Round-10: skip pipe-table separator lines
+  // (`--- | ---`) — our own exporter emits them literally and the leading
+  // `--- ` would otherwise match the bullet run below (`- | --- | ---`).
+  const lines = out.split('\n').map((line) => {
+    if (/^\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+$/.test(line)) return line
+    if (/^[•·‣⁃○●▪◦\-*o]+[ \t]+/.test(line)) return line.replace(/^[•·‣⁃○●▪◦\-*o]+[ \t]+/, '- ')
+    return line.replace(/^(\d+\.)[ \t]+/, '$1 ')
+  })
+  return lines
+    .join('\n')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()

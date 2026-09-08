@@ -50,9 +50,24 @@ fn markdown_filters() -> [(&'static str, &'static [&'static str]); 2] {
 }
 
 /// "HTML" + "All files" filters for the Export-HTML save dialog (same static-slice
-/// constraint as `markdown_filters`).
+/// constraint as `markdown_filters`). Round-9 unified export keeps this for the
+/// 'html' exportKind / legacy `html: true` path.
 fn html_filters() -> [(&'static str, &'static [&'static str]); 2] {
     [("HTML", &["html", "htm"]), ("All files", &["*"])]
+}
+
+/// Round-9 unified export filters for the txt/docx/rtf exportKinds (same
+/// static-slice `add_filter` constraint as `markdown_filters`).
+fn txt_filters() -> [(&'static str, &'static [&'static str]); 2] {
+    [("Text", &["txt"]), ("All files", &["*"])]
+}
+
+fn docx_filters() -> [(&'static str, &'static [&'static str]); 2] {
+    [("Word", &["docx"]), ("All files", &["*"])]
+}
+
+fn rtf_filters() -> [(&'static str, &'static [&'static str]); 2] {
+    [("RTF", &["rtf"]), ("All files", &["*"])]
 }
 
 /// "Import" filters for the import picker: a combined "Importable Files" entry
@@ -177,24 +192,51 @@ pub fn read_file(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))
 }
 
-/// `pick_save_path(app, suggested, html)` — native "Save" dialog; returns the
+/// `pick_save_path(app, suggested, html, kind)` — native "Save" dialog; returns the
 /// chosen path string (desktop) or URI string (mobile). `suggested` (when
-/// present) pre-fills the file name in the dialog. `html` (when true) switches
-/// the filters to HTML for the Export-HTML flow. `None` when cancelled.
+/// present) pre-fills the file name in the dialog. Round-9 unified export:
+/// `kind` selects txt/html/docx/rtf filters; when `kind` is None, fall back to
+/// the legacy `html`-bool behavior (true → HTML filters, else Markdown).
+/// `None` when cancelled.
 #[tauri::command]
 pub fn pick_save_path(
     app: AppHandle,
     suggested: Option<String>,
     html: Option<bool>,
+    kind: Option<String>,
 ) -> Result<Option<String>, String> {
     let mut dialog = app.dialog().file();
-    if html.unwrap_or(false) {
-        for (name, exts) in html_filters() {
-            dialog = dialog.add_filter(name, exts);
+    match kind.as_deref() {
+        Some("txt") => {
+            for (name, exts) in txt_filters() {
+                dialog = dialog.add_filter(name, exts);
+            }
         }
-    } else {
-        for (name, exts) in markdown_filters() {
-            dialog = dialog.add_filter(name, exts);
+        Some("html") => {
+            for (name, exts) in html_filters() {
+                dialog = dialog.add_filter(name, exts);
+            }
+        }
+        Some("docx") => {
+            for (name, exts) in docx_filters() {
+                dialog = dialog.add_filter(name, exts);
+            }
+        }
+        Some("rtf") => {
+            for (name, exts) in rtf_filters() {
+                dialog = dialog.add_filter(name, exts);
+            }
+        }
+        _ => {
+            if html.unwrap_or(false) {
+                for (name, exts) in html_filters() {
+                    dialog = dialog.add_filter(name, exts);
+                }
+            } else {
+                for (name, exts) in markdown_filters() {
+                    dialog = dialog.add_filter(name, exts);
+                }
+            }
         }
     }
     if let Some(name) = suggested {
@@ -222,6 +264,20 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
         ));
     }
     fs::write(&path, content).map_err(|e| format!("write {path}: {e}"))
+}
+
+/// `write_bytes(path, bytes)` — round-9 unified export binary save for .docx.
+/// Desktop only: the same URI guard as `write_file` — a URI-looking `path`
+/// (mobile) returns a clear error; see `mobile_fs` for the M5 plan.
+#[tauri::command]
+pub fn write_bytes(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    if looks_like_uri(&path) {
+        return Err(format!(
+            "write_bytes: '{path}' looks like a URI — Android/iOS content:// and \
+             file:// I/O lands in M5; desktop is the M1 test surface."
+        ));
+    }
+    fs::write(&path, bytes).map_err(|e| format!("write {path}: {e}"))
 }
 
 // ---------------------------------------------------------------------------

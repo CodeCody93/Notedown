@@ -12,6 +12,7 @@ pub fn run() {
             io::read_file,
             io::pick_save_path,
             io::write_file,
+            io::write_bytes,
             io::read_settings,
             io::write_settings,
             io::read_recents,

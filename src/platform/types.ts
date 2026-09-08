@@ -37,12 +37,14 @@ export const IMPORT_EXTS: string[] = [
   '.rtf',
 ]
 
-/** Extra options for saveFile (Save As / Export HTML). */
+/** Extra options for saveFile (Save As / round-9 unified export). */
 export interface SaveOptions {
   /** Show the picker even when a path is already known (Save As). The saved path/key is always freshly generated. */
   alwaysPick?: boolean
-  /** Use HTML file filters instead of markdown ones (Export HTML). */
+  /** Use HTML file filters instead of markdown ones (Export HTML). Kept working: treated as exportKind 'html'. */
   html?: boolean
+  /** Round-9 unified export: selects the export save-dialog filters. When absent with html:true, treated as 'html'. */
+  exportKind?: 'txt' | 'html' | 'docx' | 'rtf'
 }
 
 export interface FileIO {
@@ -50,8 +52,10 @@ export interface FileIO {
   openFile(): Promise<OpenResult | null>
   /** Pick any importable document (see IMPORT_EXTS). Returns null when the user cancels. */
   importFile(): Promise<ImportResult | null>
-  /** Save content. When path is null — or opts.alwaysPick is set (Save As) — ask the user for a location (suggestedName is a hint). Returns the saved path/key, or null when cancelled. opts.html switches the picker to HTML filters (Export HTML). */
+  /** Save content. When path is null — or opts.alwaysPick is set (Save As) — ask the user for a location (suggestedName is a hint). Returns the saved path/key, or null when cancelled. opts.html switches the picker to HTML filters (Export HTML); opts.exportKind (round-9 unified export) selects txt/html/docx/rtf filters. */
   saveFile(path: string | null, content: string, suggestedName?: string, opts?: SaveOptions): Promise<string | null>
+  /** Round-9 unified export: binary save for .docx. Asks the user for a location, writes the bytes, resolves the saved path/key, or null on cancel. */
+  saveBytes(bytes: Uint8Array, suggestedName: string, opts?: { exportKind?: 'docx' }): Promise<string | null>
   /** Read a file that was previously opened (used for Open Recent). Rejects on failure (missing/permission). */
   readFile(path: string): Promise<string>
   /** Platform confirm dialog (browser: window.confirm; Tauri: native dialog). */

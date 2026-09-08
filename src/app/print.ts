@@ -7,7 +7,7 @@
  * destination produces the PDF with zero Rust changes and zero new
  * dependencies. Browser dev mode works natively (same `window.print()`).
  *
- * Flow (wired by the orchestrator in `app.ts`, mirroring `exportHtml()`):
+ * Flow (wired by the unified Export dialog in `app.ts`, mirroring the HTML export path):
  *   1. `renderStandaloneHtmlWithImages(doc.content, opts, doc.path, expose)`
  *      produces the self-contained standalone HTML (images inlined).
  *   2. That string is passed to {@link printStandaloneHtml}, which prints it
@@ -113,6 +113,7 @@ export const PRINT_CSS: string = `@media print {
   details.md-dropdown {
     display: block !important;
     border-color: #ccc !important;
+    overflow: visible !important;
   }
   .md-body .md-dropdown-summary {
     background: #f5f5f5 !important;
@@ -125,6 +126,18 @@ export const PRINT_CSS: string = `@media print {
   .md-body .md-spoiler[data-revealed="false"] {
     background: none !important;
     color: inherit !important;
+  }
+  /* Rasterization guard: any CSS filter on an ancestor (including an inline
+     style="filter:..." on raw HTML that survives sanitization) forces the
+     Chromium print pipeline to rasterize the whole filtered subtree as an
+     image, destroying the selectable-text layer. Our own styles set no
+     filters on content, but neutralize them in print so NOTHING can push
+     text into a bitmap. backdrop-filter is included for the same reason. */
+  .md-body *,
+  .md-body *::before,
+  .md-body *::after {
+    filter: none !important;
+    backdrop-filter: none !important;
   }
   .md-body a {
     color: #000 !important;
@@ -172,10 +185,10 @@ export function buildPrintableHtml(markdown: string, title: string): string {
  * Print an already-rendered standalone HTML document (the `renderStandaloneHtml`
  * / `renderStandaloneHtmlWithImages` output that `app.ts` holds).
  *
- * Creates a hidden same-origin `<iframe>` (`display: none`), writes the HTML
- * via `srcdoc`, waits for `load`, then calls `iframe.contentWindow.print()`
- * and removes the iframe on `afterprint` (with a fallback timeout for
- * webviews that never fire `afterprint`).
+ * Creates a hidden same-origin `<iframe>` (off-screen, zero-size — see below),
+ * writes the HTML via `srcdoc`, waits for `load`, then calls
+ * `iframe.contentWindow.print()` and removes the iframe on `afterprint`
+ * (with a fallback timeout for webviews that never fire `afterprint`).
  *
  * POPUP-BLOCKER NOTE: `print()` MUST be called synchronously inside the user
  * click/key handler chain (menu item / hotkey / toolbar button). Do not
@@ -199,7 +212,19 @@ export function printStandaloneHtml(standaloneHtml: string): void {
   const iframe = document.createElement('iframe')
   iframe.setAttribute('aria-hidden', 'true')
   iframe.setAttribute('title', 'print')
-  iframe.style.display = 'none'
+  // Off-screen but laid out: a `display: none` frame has no layout box, and
+  // printing a box-less document is a documented blank-page hazard across
+  // browsers/versions. A zero-size fixed-position frame stays invisible while
+  // keeping the identical print pipeline of a visible document, so the OS
+  // "Save as PDF" destination lays out — and emits as selectable text — the
+  // same content seen on screen. No `sandbox` attribute on purpose: a
+  // sandboxed frame without `allow-modals` blocks `print()`.
+  iframe.style.position = 'fixed'
+  iframe.style.right = '0'
+  iframe.style.bottom = '0'
+  iframe.style.width = '0'
+  iframe.style.height = '0'
+  iframe.style.border = '0'
   // srcdoc keeps the frame same-origin so contentWindow.print() is allowed.
   iframe.srcdoc = standaloneHtml
 

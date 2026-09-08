@@ -80,9 +80,19 @@ registerLanguages()
  * raw HTML passthrough; the `highlight` callback returns '' for unknown or
  * empty languages so markdown-it falls back to its default escaped `<code>`
  * output (hljs resolves aliases like "ts" automatically).
+ *
+ * WHY `breaks: true` (soft-break parity): every source single `\n` must
+ * produce a visible line break in all export formats — RTF emits `\line`
+ * and DOCX emits `<w:br/>` for interior softbreaks, so the HTML path renders
+ * `<br>` (markdown-it's documented `softbreak` → `<br>\n` behavior) instead
+ * of a bare `\n` that browsers collapse to a space. Preview and standalone
+ * export share this instance so they stay identical. Round-trip is safe: the
+ * HTML importer (Turndown) converts `<br>` back to a line break that
+ * re-renders as `<br>`.
  */
 const md = new MarkdownIt({
   html: true,
+  breaks: true,
   highlight: (code: string, lang: string) => {
     if (lang === '' || !hljs.getLanguage(lang)) return ''
     try {
@@ -102,7 +112,13 @@ md.use(deflist)
 md.use(mark)
 md.use(sub)
 md.use(sup)
-md.use(emoji)
+// WHY shortcuts off (round-10 export round-trip, bug 8): the `full` preset
+// bundles ASCII-emoticon shortcuts (`:D` → 😄, `:)` → 🙂, `<3` → ❤ …) that
+// rewrite literal prose — e.g. `:D` inside a table cell — while Notedown
+// documents emoji as `:shortcode:` (helpContent) and the picker inserts raw
+// unicode. Clearing `shortcuts` keeps the full `:name:` defs (`:joy:` → 😂
+// keeps working) and leaves emoticons byte-identical everywhere.
+md.use(emoji, { shortcuts: {} })
 
 // ---------------------------------------------------------------------------
 // Spoiler spans — `||text||` → <span class="md-spoiler"> (core preprocessing)
@@ -1399,7 +1415,8 @@ export function renderStandaloneHtml(markdown: string, opts: StandaloneHtmlOptio
       '  .md-body blockquote,\n' +
       '  .md-body img { page-break-inside: avoid; }\n' +
       '  .md-body img { max-width: 100% !important; }\n' +
-      '  details.md-dropdown { display: block !important; border-color: #ccc !important; }\n' +
+      '  details.md-dropdown { display: block !important; border-color: #ccc !important; overflow: visible !important; }\n' +
+      '  .md-body *, .md-body *::before, .md-body *::after { filter: none !important; backdrop-filter: none !important; }\n' +
       '  .md-body .md-dropdown-summary { background: #f5f5f5 !important; color: #000 !important; }\n' +
       '  .md-body .md-spoiler { background: none !important; color: inherit !important; }\n' +
       '  .md-body .md-spoiler[data-revealed="false"] { background: none !important; color: inherit !important; }\n' +
@@ -1414,4 +1431,954 @@ export function renderStandaloneHtml(markdown: string, opts: StandaloneHtmlOptio
     `</body>`,
     '</html>',
   ].join('\n')
+}
+
+// ---------------------------------------------------------------------------
+// Round-9 unified export — pure export core (txt/html/pdf/docx/rtf).
+//
+// WHY THIS MODULE GREW (round-9 unified export): the per-type Export HTML/PDF
+// menu items are replaced by ONE Export dialog offering txt/html/pdf/docx/rtf
+// (the same list as import). PDF stays print-to-PDF (text, re-importable —
+// never an image). This section is the PURE core the dialog + wiring packets
+// consume, so the exported contract below is load-bearing: ExportFormat,
+// EXPORT_FORMATS, exportLossSummaryFor, markdownToRtf, markdownToDocxBytes.
+//
+// Purity: no DOM/window access here (unlike renderMarkdown above, which needs
+// DOMPurify). Outputs are plain text/bytes; docx text is XML-escaped and RTF
+// text is RTF-escaped, so there is no HTML injection surface.
+// ---------------------------------------------------------------------------
+
+/** Formats offered by the unified Export dialog (mirrors the import list). */
+export type ExportFormat = 'txt' | 'html' | 'pdf' | 'docx' | 'rtf'
+
+/** Ordered format list for the dialog (wiring packet renders these in order). */
+export const EXPORT_FORMATS: ExportFormat[] = ['txt', 'html', 'pdf', 'docx', 'rtf']
+
+/**
+ * Static fidelity notes per format for the Export dialog (round-9 unified
+ * export). The per-file dynamic skip alert lives in app wiring; these lists
+ * stay static and short (each ≤6 bullets). txt is verbatim source, so `[]`.
+ */
+export function exportLossSummaryFor(format: ExportFormat): string[] {
+  switch (format) {
+    case 'txt':
+      return []
+    case 'html':
+      return [
+        'Remote (http/https) and absolute-path images are not embedded — they stay linked and need network access to display.',
+        'Local images that cannot be read are left as-is and listed in the export skip alert.',
+      ]
+    case 'pdf':
+      return [
+        'Uses the print stylesheet — layout and page breaks may differ from the on-screen preview.',
+        'Output is a TEXT pdf (selectable, re-importable via Import) — never an image scan.',
+      ]
+    case 'docx':
+      return [
+        'Headings, bold, italic, lists, code and basic tables survive; tables flatten to " | " text lines with a --- separator after the header.',
+        'Images are dropped (alt text kept) — no image files are created.',
+        'Exact fonts, colors, spacing and page layout are lost (minimal Normal + Heading1-3 styles).',
+        'Underline stays underlined but re-imports as plain text; spoilers export revealed as plain text.',
+        'Dropdowns expand statically (title + body); tasks become \u2610/\u2612 literals; footnotes, subtext and definition lists flatten to text.',
+      ]
+    case 'rtf':
+      return [
+        'Headings, bold, italic, lists, code and basic tables survive; tables flatten to " | " text lines with a --- separator after the header.',
+        'Images are dropped (alt text kept) — no image files are created.',
+        'Exact fonts, colors, spacing and layout are lost (Calibri/Consolas only).',
+        'Underline stays underlined but re-imports as plain text; spoilers export revealed as plain text.',
+        'Dropdowns expand statically (title + body); tasks become \u2610/\u2612 literals; footnotes, subtext and definition lists flatten to text.',
+      ]
+  }
+}
+
+// --- Shared file-local block/inline parser (not exported) -------------------
+// ONE small parser feeds BOTH converters so RTF and DOCX agree on structure.
+// Blocks: heading/bullet(task)/ordered/code-fence/blockquote/table/hr/
+// dropdown-fence/footnote-def/subtext-kept-literal/para (blank-line joined).
+
+interface ExportSeg {
+  t: string
+  b: boolean
+  i: boolean
+  u: boolean
+  strike: boolean
+  mark: boolean
+  sup: boolean
+  sub: boolean
+  code: boolean
+}
+
+interface InlineFlags {
+  b: boolean
+  i: boolean
+  u: boolean
+  strike: boolean
+  mark: boolean
+  sup: boolean
+  sub: boolean
+  code: boolean
+}
+
+const PLAIN_FLAGS: InlineFlags = {
+  b: false, i: false, u: false, strike: false, mark: false, sup: false, sub: false, code: false,
+}
+
+function plainSeg(t: string): ExportSeg {
+  return { t, ...PLAIN_FLAGS }
+}
+
+function findUnescaped(src: string, ch: string, from: number): number {
+  for (let k = from; k < src.length; k++) {
+    if (src[k] === '\\') {
+      k++
+      continue
+    }
+    if (src[k] === ch) return k
+  }
+  return -1
+}
+
+/** Parse one inline range until `closer` (or end when null). Handles nesting. */
+function parseInlineRange(
+  src: string,
+  pos: number,
+  closer: string | null,
+  flags: InlineFlags,
+): { segs: ExportSeg[]; pos: number } {
+  const segs: ExportSeg[] = []
+  let buf = ''
+  const flush = (): void => {
+    if (buf !== '') {
+      segs.push({ t: buf, ...flags })
+      buf = ''
+    }
+  }
+  /** Parse `inner` with extra flags and append the result. */
+  const nest = (inner: string, extra: Partial<InlineFlags>): void => {
+    const r = parseInlineRange(inner, 0, null, { ...flags, ...extra })
+    segs.push(...r.segs)
+  }
+  while (pos < src.length) {
+    if (closer !== null && src.startsWith(closer, pos)) {
+      flush()
+      return { segs, pos: pos + closer.length }
+    }
+    const c = src[pos]
+    // Backslash escape.
+    if (c === '\\' && pos + 1 < src.length) {
+      buf += src[pos + 1]
+      pos += 2
+      continue
+    }
+    // Backtick code span (same-length closer; content stays literal).
+    if (c === '`') {
+      let n = 0
+      while (src[pos + n] === '`') n++
+      const run = '`'.repeat(n)
+      const end = src.indexOf(run, pos + n)
+      if (end === -1) {
+        buf += run
+        pos += n
+        continue
+      }
+      flush()
+      segs.push({ t: src.slice(pos + n, end), ...flags, code: true })
+      pos = end + n
+      continue
+    }
+    // Image `![alt](src)` / `![alt][ref]` / bare `![alt]` → alt text only.
+    if (c === '!' && src[pos + 1] === '[') {
+      const close = findUnescaped(src, ']', pos + 2)
+      if (close === -1) {
+        buf += '!'
+        pos++
+        continue
+      }
+      const alt = src.slice(pos + 2, close)
+      let next = close + 1
+      if (src[next] === '(') {
+        const paren = findUnescaped(src, ')', next + 1)
+        if (paren !== -1) next = paren + 1
+      } else if (src[next] === '[') {
+        const ref = findUnescaped(src, ']', next + 1)
+        if (ref !== -1) next = ref + 1
+      }
+      flush()
+      nest(alt, {})
+      pos = next
+      continue
+    }
+    // Link `[t](u)` → `t (u)`; `[t][ref]` → `t`.
+    if (c === '[') {
+      const close = findUnescaped(src, ']', pos + 1)
+      const after = close !== -1 ? src[close + 1] : ''
+      if (close !== -1 && after === '(') {
+        const paren = findUnescaped(src, ')', close + 2)
+        if (paren !== -1) {
+          const text = src.slice(pos + 1, close)
+          let url = src.slice(close + 2, paren).trim()
+          const ws = url.search(/\s/)
+          if (ws !== -1) url = url.slice(0, ws)
+          url = url.replace(/^<|>$/g, '').trim()
+          flush()
+          nest(text, {})
+          if (url !== '') segs.push({ t: ` (${url})`, ...flags })
+          pos = paren + 1
+          continue
+        }
+      } else if (close !== -1 && after === '[') {
+        const ref = findUnescaped(src, ']', close + 2)
+        if (ref !== -1) {
+          flush()
+          nest(src.slice(pos + 1, close), {})
+          pos = ref + 1
+          continue
+        }
+      }
+      buf += '['
+      pos++
+      continue
+    }
+    // Multi-char markers first (`***` before `**`, or the bold half pairs and
+    // strands a literal `*`: "***__~~all~~__***" must read bold+italic
+    // outside. `||` is spoiler, revealed as plain).
+    const multi: Array<[string, Partial<InlineFlags>]> = [
+      ['***', { b: true, i: true }],
+      ['**', { b: true }],
+      ['__', { u: true }],
+      ['~~', { strike: true }],
+      ['==', { mark: true }],
+      ['||', {}],
+    ]
+    let matched: [string, Partial<InlineFlags>] | null = null
+    for (const cand of multi) {
+      if (src.startsWith(cand[0], pos)) {
+        matched = cand
+        break
+      }
+    }
+    if (matched !== null) {
+      const [marker, extra] = matched
+      const end = src.indexOf(marker, pos + marker.length)
+      if (end === -1) {
+        buf += marker
+        pos += marker.length
+        continue
+      }
+      flush()
+      nest(src.slice(pos + marker.length, end), extra)
+      pos = end + marker.length
+      continue
+    }
+    // Single-char runs: * _ → italic, ^ → super, ~ → sub.
+    if (c === '*' || c === '_' || c === '^' || c === '~') {
+      const end = src.indexOf(c, pos + 1)
+      if (end === -1) {
+        buf += c
+        pos++
+        continue
+      }
+      flush()
+      const extra: Partial<InlineFlags> =
+        c === '^' ? { sup: true } : c === '~' ? { sub: true } : { i: true }
+      nest(src.slice(pos + 1, end), extra)
+      pos = end + 1
+      continue
+    }
+    buf += c
+    pos++
+  }
+  flush()
+  return { segs, pos }
+}
+
+/** Tokenize one inline string into styled segments (links flattened). */
+function parseExportInline(src: string): ExportSeg[] {
+  return parseInlineRange(src, 0, null, PLAIN_FLAGS).segs
+}
+
+type ExportBlock =
+  | { kind: 'heading'; level: number; text: string }
+  | { kind: 'bullet'; text: string }
+  | { kind: 'ordered'; num: string; text: string }
+  | { kind: 'task'; checked: boolean; text: string }
+  | { kind: 'code'; lines: string[] }
+  | { kind: 'quote'; text: string }
+  | { kind: 'hr' }
+  | { kind: 'table'; rows: string[][] }
+  | { kind: 'dropdown'; title: string; body: ExportBlock[] }
+  | { kind: 'para'; text: string }
+
+/** A `|---|---|` separator row (cells of optional colons + dashes). */
+function isTableSep(line: string): boolean {
+  const t = line.trim().replace(/^\||\|$/g, '')
+  if (!t.includes('-')) return false
+  const cells = t.split('|')
+  return cells.length > 0 && cells.every((cell) => /^\s*:?-{1,}:?\s*$/.test(cell))
+}
+
+const TABLE_CELL_ESC = String.fromCharCode(0)
+
+/** Split a table row into cells (handles `\|` escapes and edge pipes). */
+function splitTableRow(line: string): string[] {
+  const tmp = line.replace(/\\\|/g, TABLE_CELL_ESC)
+  let t = tmp.trim()
+  if (t.startsWith('|')) t = t.slice(1)
+  if (t.endsWith('|')) t = t.slice(0, -1)
+  return t.split('|').map((cell) => cell.trim().split(TABLE_CELL_ESC).join('|'))
+}
+
+/** Classify + join plain lines into blocks (CRLF normalized first). */
+function parseExportBlocks(src: string): ExportBlock[] {
+  const lines = src.replace(/\r\n?/g, '\n').split('\n')
+  const blocks: ExportBlock[] = []
+  let para: string[] = []
+  const flushPara = (): void => {
+    if (para.length > 0) {
+      blocks.push({ kind: 'para', text: para.join('\n') })
+      para = []
+    }
+  }
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    const trimmed = line.trim()
+    if (trimmed === '') {
+      flushPara()
+      i++
+      continue
+    }
+    // Fenced code (``` or ~~~, closer = same char, ≥3 long).
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line)
+    if (fence !== null) {
+      flushPara()
+      const ch = fence[1][0]
+      const closerRe = new RegExp(`^ {0,3}${ch === '`' ? '`{3,}' : '~{3,}'}\\s*$`)
+      const buf: string[] = []
+      i++
+      while (i < lines.length && !closerRe.test(lines[i])) {
+        buf.push(lines[i].replace(/\t/g, '    '))
+        i++
+      }
+      if (i < lines.length) i++ // consume closer
+      blocks.push({ kind: 'code', lines: buf })
+      continue
+    }
+    // >>> dropdown fence → title line + body (unclosed stays literal text).
+    const dd = /^\s*>>>\s*(.*)$/.exec(line)
+    if (dd !== null) {
+      flushPara()
+      const title = (dd[1] ?? '').trim()
+      const inner: string[] = []
+      i++
+      while (i < lines.length && !/^\s*>>>\s*$/.test(lines[i])) {
+        inner.push(lines[i])
+        i++
+      }
+      if (i < lines.length) {
+        i++ // consume closer
+        blocks.push({ kind: 'dropdown', title, body: parseExportBlocks(inner.join('\n')) })
+      } else {
+        para.push(line.trim())
+        for (const l of inner) {
+          if (l.trim() === '') flushPara()
+          else para.push(l.trim())
+        }
+      }
+      continue
+    }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
+      flushPara()
+      blocks.push({ kind: 'hr' })
+      i++
+      continue
+    }
+    const h = /^(#{1,6})\s+(.*)$/.exec(trimmed)
+    if (h !== null) {
+      flushPara()
+      blocks.push({ kind: 'heading', level: h[1].length, text: h[2].trim().replace(/\s+#+$/, '').trim() })
+      i++
+      continue
+    }
+    if (/^\s*>\s?/.test(line)) {
+      flushPara()
+      const parts: string[] = []
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        parts.push(lines[i].replace(/^\s*>\s?/, ''))
+        i++
+      }
+      blocks.push({ kind: 'quote', text: parts.join('\n') })
+      continue
+    }
+    if (line.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      flushPara()
+      const rows: string[][] = [splitTableRow(line)]
+      i += 2
+      while (i < lines.length && lines[i].trim() !== '' && lines[i].includes('|')) {
+        rows.push(splitTableRow(lines[i]))
+        i++
+      }
+      blocks.push({ kind: 'table', rows })
+      continue
+    }
+    // WHY no-space shorthand (round-10 export round-trip, bug 2): mirrors
+    // TASK_MARKER_RE above — `-[]`/`-[ ]`/`-[x]` with NO space after the
+    // bullet are tasks in preview, so they must be tasks here too (otherwise
+    // adjacent task lines merge into one paragraph). `(?=\s|$)` keeps
+    // `-[]glued` literal, exactly like the preview normalizer.
+    const task = /^\s*[-*+•]\s*\[([ xX]?)\](?=\s|$)\s*(.*)$/.exec(line)
+    if (task !== null) {
+      flushPara()
+      blocks.push({ kind: 'task', checked: task[1].toLowerCase() === 'x', text: task[2] })
+      i++
+      continue
+    }
+    const ord = /^\s*(\d+)[.)]\s+(.*)$/.exec(line)
+    if (ord !== null) {
+      flushPara()
+      blocks.push({ kind: 'ordered', num: ord[1], text: ord[2] })
+      i++
+      continue
+    }
+    const bul = /^\s*([-*+•])\s+(.*)$/.exec(line)
+    if (bul !== null) {
+      flushPara()
+      blocks.push({ kind: 'bullet', text: bul[2] })
+      i++
+      continue
+    }
+    // Footnote defs stay literal (reversibility wins); normal ref defs drop.
+    if (/^\s*\[\^[^\]]+\]:/.test(line)) {
+      flushPara()
+      blocks.push({ kind: 'para', text: trimmed })
+      i++
+      continue
+    }
+    if (/^\s{0,3}\[[^\]]+\]:\s*\S/.test(line)) {
+      i++
+      continue
+    }
+    // `-# ` subtext falls through here unchanged (no bullet match: no space
+    // after `-`), keeping the literal marker so re-import preserves it.
+    para.push(trimmed)
+    i++
+  }
+  flushPara()
+  return blocks
+}
+
+// --- RTF -------------------------------------------------------------------
+
+/** Escape text to 7-bit ASCII RTF (reversibility: \'xx ≤0xFF, \uN? above). */
+function rtfEscapeText(s: string): string {
+  let out = ''
+  for (const ch of s) {
+    if (ch === '\\') out += '\\\\'
+    else if (ch === '{') out += '\\{'
+    else if (ch === '}') out += '\\}'
+    else {
+      const cp = ch.codePointAt(0) as number
+      if (cp < 32) {
+        if (cp === 9) out += '\\tab '
+      } else if (cp < 128) {
+        out += ch
+      } else if (cp <= 255) {
+        out += `\\'${cp.toString(16).padStart(2, '0')}`
+      } else if (cp <= 0xffff) {
+        out += `\\u${cp > 32767 ? cp - 65536 : cp}?`
+      } else {
+        // Astral code points → two signed-16-bit \u surrogates (RTF readers
+        // expect UTF-16 units); `?` is the \uc1 fallback char.
+        const t = cp - 0x10000
+        const hi = (t >> 10) + 0xd800
+        const lo = (t & 0x3ff) + 0xdc00
+        const s16 = (v: number): number => (v > 32767 ? v - 65536 : v)
+        out += `\\u${s16(hi)}?\\u${s16(lo)}?`
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * Wrap code text in literal backtick markers so the words round-trip as code
+ * (round-10 export round-trip, bug 4): RTF/DOCX carry code as Consolas styling
+ * that mammoth and our rtfToMarkdown both drop. Tick length is one past the
+ * longest run inside (CommonMark-style), space-padded when an edge touches a
+ * backtick.
+ */
+function wrapCodeTicks(t: string): string {
+  let run = 0
+  let longest = 0
+  for (const ch of t) {
+    if (ch === '`') {
+      run++
+      if (run > longest) longest = run
+    } else {
+      run = 0
+    }
+  }
+  const fence = '`'.repeat(longest + 1)
+  const pad = t.startsWith('`') || t.endsWith('`') ? ' ' : ''
+  return `${fence}${pad}${t}${pad}${fence}`
+}
+
+/** Styled segments → RTF control words (caller supplies paragraph scope). */
+function exportSegsToRtf(segs: ExportSeg[]): string {
+  let out = ''
+  for (const s of segs) {
+    let pre = ''
+    let post = ''
+    if (s.code) {
+      pre += '{\\f1 '
+      post = '}' + post
+    }
+    if (s.b) {
+      pre += '\\b '
+      post = '\\b0 ' + post
+    }
+    if (s.i) {
+      pre += '\\i '
+      post = '\\i0 ' + post
+    }
+    if (s.u) {
+      pre += '\\ul '
+      post = '\\ulnone ' + post
+    }
+    if (s.strike) {
+      pre += '\\strike '
+      post = '\\strike0 ' + post
+    }
+    if (s.mark) {
+      pre += '\\highlight7 '
+      post = '\\highlight0 ' + post
+    }
+    if (s.sup) {
+      // WHY grouped (round-10 export round-trip, bug 3): a bare `\nosupersub `
+      // trailing delimiter space is re-emitted as content by our own
+      // rtfToMarkdown (round-8 D2), so "~sub~text" reimported with a phantom
+      // space. Closing the group with `}` terminates the control word with NO
+      // delimiter space, and the group end resets the style for strict readers
+      // too. `\b0`-style resets keep their swallowed space (importer-safe).
+      pre += '{\\super '
+      post = '\\nosupersub}' + post
+    }
+    if (s.sub) {
+      // Same grouping as \super above (same D2 delimiter-space leak).
+      pre += '{\\sub '
+      post = '\\nosupersub}' + post
+    }
+    // WHY soft breaks (single `\n` inside a para/quote block): blank lines
+    // flush paras, so an interior `\n` is a soft break, not a new paragraph.
+    // rtfEscapeText drops `\n`, so joining with `\n` alone would silently
+    // merge words — emit an explicit `\line ` between the escaped pieces.
+    // Each piece re-opens/re-closes the formatting (no style spans the
+    // `\line`), and empty pieces contribute nothing but the separator, so a
+    // segment that is only `\n` still produces a break.
+    const pieces = s.t.split('\n')
+    const formatted: string[] = []
+    for (const piece of pieces) {
+      if (piece === '') {
+        formatted.push('')
+        continue
+      }
+      // WHY backticks (round-10 export round-trip, bug 4): the importer is
+      // font-blind (ignores \f1/Consolas), so bare code text reimported as plain
+      // prose and fences vanished. Literal markers survive as text.
+      const esc = rtfEscapeText(s.code ? wrapCodeTicks(piece) : piece)
+      if (esc === '') {
+        formatted.push('')
+        continue
+      }
+      formatted.push(pre + esc + post)
+    }
+    if (pieces.length === 1 && formatted[0] === '') continue
+    out += formatted.join('\\line ')
+  }
+  return out
+}
+
+/** Blocks → RTF paragraph bodies (joined with \par by the caller). */
+function exportBlocksToRtfParas(blocks: ExportBlock[]): string[] {
+  const paras: string[] = []
+  // WHY literal list prefixes (round-9 unified export): real RTF list tables
+  // (\listtable/\listoverridetable) are verbose and our RTF-import path reads
+  // literal `- `/`1. ` text back losslessly — the same convention as tables
+  // (` | ` separators), so exports round-trip through Import.
+  const inline = (t: string): string => exportSegsToRtf(parseExportInline(t))
+  for (const b of blocks) {
+    switch (b.kind) {
+      case 'heading': {
+        // WHY literal `#` prefix, NO bold (round-10 export round-trip, bug 5):
+        // size+bold alone reimports as `**header**` (levels lost), and bold
+        // around the prefix reimports as `**# header**` (a bold literal, still
+        // not a heading). Plain size + literal `#… ` text reimports as a real
+        // heading; the font size keeps WordPad/Word pretty. (DOCX keeps real
+        // Heading1-3 styles — mammoth recovers them — so no prefix needed.)
+        const sizes = [56, 48, 40, 32, 28, 24]
+        const sz = sizes[Math.min(Math.max(b.level, 1), 6) - 1]
+        paras.push(`{\\f0\\fs${sz} ${rtfEscapeText(`${'#'.repeat(b.level)} `)}${inline(b.text)}}`)
+        break
+      }
+      case 'bullet':
+        paras.push(`{\\f0\\fs24 - ${inline(b.text)}}`)
+        break
+      case 'ordered':
+        paras.push(`{\\f0\\fs24 ${rtfEscapeText(`${b.num}. `)}${inline(b.text)}}`)
+        break
+      case 'task':
+        paras.push(`{\\f0\\fs24 ${rtfEscapeText(b.checked ? '☒ ' : '☐ ')}${inline(b.text)}}`)
+        break
+      case 'code': {
+        // WHY literal fences (bug 4): Consolas styling alone is invisible to
+        // the importer, so ``` lines bracket the block (blank lines stay
+        // inside the fences instead of splitting it on reimport).
+        for (const l of [`\`\`\``, ...b.lines, `\`\`\``]) {
+          const esc = rtfEscapeText(l)
+          paras.push(esc === '' ? '' : `{\\f1 ${esc}}`)
+        }
+        break
+      }
+      case 'quote':
+        paras.push(`{\\f0\\fs24 > ${inline(b.text)}}`)
+        break
+      case 'hr':
+        // WHY literal `---` (round-10 verification): an empty para reimports
+        // as a blank line (marker lost); literal text round-trips through our
+        // own importer and re-exports as an hr again.
+        paras.push(`{\\f0\\fs24 ---}`)
+        break
+      case 'table': {
+        // WHY literal separator (round-10, bug 7): static expansion stays (no
+        // real RTF tables), but a `--- | ---` line after the header keeps the
+        // header/body structure visible instead of N identical text lines.
+        b.rows.forEach((row, idx) => {
+          paras.push(`{\\f0\\fs24 ${row.map((cell) => inline(cell)).join(' | ')}}`)
+          if (idx === 0) paras.push(`{\\f0\\fs24 ${row.map(() => '---').join(' | ')}}`)
+        })
+        break
+      }
+      case 'dropdown': {
+        if (b.title !== '') paras.push(`{\\f0\\fs24 ${inline(b.title)}}`)
+        paras.push(...exportBlocksToRtfParas(b.body))
+        break
+      }
+      case 'para':
+        paras.push(`{\\f0\\fs24 ${inline(b.text)}}`)
+        break
+    }
+  }
+  return paras
+}
+
+/**
+ * Zero-dependency Markdown → RTF (round-9 unified export). Returns a full
+ * ASCII RTF document (Calibri body + Consolas code). Tables flatten to
+ * ` | ` lines and lists keep literal prefixes so the app's RTF-import
+ * convention reads them back; `-# ` subtext and footnote defs stay literal.
+ */
+export function markdownToRtf(markdown: string): string {
+  const paras = exportBlocksToRtfParas(parseExportBlocks(markdown))
+  const body = paras.length > 0 ? paras.join('\\par\n') + '\\par' : '\\par'
+  return (
+    '{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Calibri;}{\\f1 Consolas;}}\\viewkind4\\uc1\\f0\\fs24 ' +
+    body +
+    '}'
+  )
+}
+
+// --- DOCX ------------------------------------------------------------------
+
+/** CRC32 table for the STORED zip writer (polynomial 0xEDB88320). */
+const ZIP_CRC_TABLE: Uint32Array = (() => {
+  const table = new Uint32Array(256)
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    table[n] = c >>> 0
+  }
+  return table
+})()
+
+function zipCrc32(data: Uint8Array): number {
+  let crc = 0xffffffff
+  for (let k = 0; k < data.length; k++) crc = (crc >>> 8) ^ ZIP_CRC_TABLE[(crc ^ data[k]) & 0xff]
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+/** Minimal STORED (method 0) zip writer — no compression, no new deps. */
+function buildStoredZip(entries: Array<{ name: string; data: Uint8Array }>): Uint8Array {
+  const enc = new TextEncoder()
+  const names = entries.map((e) => enc.encode(e.name))
+  let total = 22 // EOCD
+  for (let k = 0; k < entries.length; k++) total += 30 + names[k].length + entries[k].data.length
+  for (const n of names) total += 46 + n.length
+  const out = new Uint8Array(total)
+  const view = new DataView(out.buffer)
+  let off = 0
+  const u16 = (v: number): void => {
+    view.setUint16(off, v, true)
+    off += 2
+  }
+  const u32 = (v: number): void => {
+    view.setUint32(off, v >>> 0, true)
+    off += 4
+  }
+  const bytes = (b: Uint8Array): void => {
+    out.set(b, off)
+    off += b.length
+  }
+  const offsets: number[] = []
+  for (let k = 0; k < entries.length; k++) {
+    const data = entries[k].data
+    const crc = zipCrc32(data)
+    offsets.push(off)
+    u32(0x04034b50)
+    u16(20) // version needed
+    u16(0) // flags
+    u16(0) // method: STORED
+    u16(0) // mod time
+    u16(0x0021) // mod date (1980-01-01)
+    u32(crc)
+    u32(data.length)
+    u32(data.length)
+    u16(names[k].length)
+    u16(0) // extra length
+    bytes(names[k])
+    bytes(data)
+  }
+  const centralStart = off
+  for (let k = 0; k < entries.length; k++) {
+    const data = entries[k].data
+    u32(0x02014b50)
+    u16(20) // version made by
+    u16(20) // version needed
+    u16(0) // flags
+    u16(0) // method
+    u16(0) // mod time
+    u16(0x0021) // mod date
+    u32(zipCrc32(data))
+    u32(data.length)
+    u32(data.length)
+    u16(names[k].length)
+    u16(0) // extra
+    u16(0) // comment
+    u16(0) // disk start
+    u16(0) // internal attrs
+    u32(0) // external attrs
+    u32(offsets[k])
+    bytes(names[k])
+  }
+  // P0 (round-10 DOCX corruption): snapshot the central-directory size BEFORE
+  // writing the EOCD header. `off` advances 12 bytes through the EOCD
+  // signature + disk fields below, so `u32(off - centralStart)` here
+  // overstated cdSize by exactly 12 — strict parsers (JSZip/mammoth) failed
+  // with "missing 12 bytes" while lenient ones (.NET) ignored it. cdOff was
+  // always correct; only cdSize lied.
+  const centralSize = off - centralStart
+  u32(0x06054b50)
+  u16(0) // disk number
+  u16(0) // central-dir disk
+  u16(entries.length)
+  u16(entries.length)
+  u32(centralSize)
+  u32(centralStart)
+  u16(0) // comment length
+  // Consistency assert: the precomputed `total` must equal the bytes written
+  // (guards future field-size drift between the prologue and the writers).
+  if (off !== total) throw new Error(`buildStoredZip: wrote ${off} bytes, expected ${total}`)
+  return out
+}
+
+/** XML-escape docx text (strips chars illegal in XML 1.0). */
+function docxEscape(s: string): string {
+  return s
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/** Styled segments → Word runs (b/i/u/strike/highlight/sub+super/mono). */
+function exportSegsToDocxRuns(segs: ExportSeg[]): string {
+  let out = ''
+  for (const s of segs) {
+    if (s.t === '') continue
+    let rpr = ''
+    if (s.b) rpr += '<w:b/>'
+    if (s.i) rpr += '<w:i/>'
+    if (s.u) rpr += '<w:u w:val="single"/>'
+    if (s.strike) rpr += '<w:strike w:val="true"/>'
+    if (s.mark) rpr += '<w:highlight w:val="yellow"/>'
+    if (s.sup) rpr += '<w:vertAlign w:val="superscript"/>'
+    else if (s.sub) rpr += '<w:vertAlign w:val="subscript"/>'
+    if (s.code) {
+      rpr += '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/><w:sz w:val="20"/><w:szCs w:val="20"/>'
+    }
+    // WHY soft breaks (RTF twin): a single `\n` inside a para/quote block is
+    // a soft break, not a new paragraph. Split the run text on `\n` and emit
+    // `<w:br/>` between `<w:t>` pieces inside the SAME `<w:r>` (same rPr) so
+    // mammoth maps it back to a line break. Empty pieces contribute nothing
+    // but the separator, so a segment that is only `\n` still breaks.
+    const pieces = s.t.split('\n')
+    const inner = pieces
+      .map((piece) => {
+        if (piece === '') return ''
+        // WHY backticks (bug 4, RTF twin): mammoth drops Consolas styling, so
+        // inline code keeps literal ` markers as text to reimport as code.
+        const text = s.code ? wrapCodeTicks(piece) : piece
+        const esc = docxEscape(text)
+        if (esc === '') return ''
+        return `<w:t xml:space="preserve">${esc}</w:t>`
+      })
+      .join('<w:br/>')
+    if (inner === '') continue
+    out += `<w:r>${rpr !== '' ? `<w:rPr>${rpr}</w:rPr>` : ''}${inner}</w:r>`
+  }
+  return out
+}
+
+/** Blocks → Word paragraphs. */
+function exportBlocksToDocxParas(blocks: ExportBlock[]): string[] {
+  // WHY literal list prefixes (round-9 unified export): real OOXML numbering
+  // needs numbering.xml + abstractNum plumbing, and mammoth extracts literal
+  // `- `/`1. ` text back as words — simple AND round-trips, so keep literals.
+  const paras: string[] = []
+  const p = (ppr: string, runs: string): string =>
+    `<w:p>${ppr !== '' ? `<w:pPr>${ppr}</w:pPr>` : ''}${runs}</w:p>`
+  const runsFor = (t: string): string => exportSegsToDocxRuns(parseExportInline(t))
+  // Merge the prefix into a leading plain run so the common case stays ONE
+  // <w:t> (nicer XML; mammoth concatenates runs either way).
+  const prefixed = (prefix: string, t: string): string => {
+    const inner = parseExportInline(t)
+    const first = inner[0]
+    if (
+      first !== undefined &&
+      !first.b && !first.i && !first.u && !first.strike && !first.mark &&
+      !first.sup && !first.sub && !first.code
+    ) {
+      return exportSegsToDocxRuns([{ ...first, t: prefix + first.t }, ...inner.slice(1)])
+    }
+    return exportSegsToDocxRuns([plainSeg(prefix), ...inner])
+  }
+  for (const b of blocks) {
+    switch (b.kind) {
+      case 'heading': {
+        const style = b.level <= 1 ? 'Heading1' : b.level === 2 ? 'Heading2' : 'Heading3'
+        paras.push(p(`<w:pStyle w:val="${style}"/>`, runsFor(b.text)))
+        break
+      }
+      case 'bullet':
+        paras.push(p('', prefixed('- ', b.text)))
+        break
+      case 'ordered':
+        paras.push(p('', prefixed(`${b.num}. `, b.text)))
+        break
+      case 'task':
+        paras.push(p('', prefixed(b.checked ? '☒ ' : '☐ ', b.text)))
+        break
+      case 'code': {
+        // WHY literal fences (bug 4, RTF twin): code lines already stay
+        // literal; ``` brackets make the block reimport fenced via mammoth.
+        const fence = exportSegsToDocxRuns([{ ...plainSeg('```'), code: true }])
+        paras.push(p('', fence))
+        for (const l of b.lines) {
+          if (l === '') {
+            paras.push('<w:p/>')
+            continue
+          }
+          // Code lines stay literal (no inline parsing inside fences).
+          paras.push(
+            p('', exportSegsToDocxRuns([{ ...plainSeg(l), code: true }])),
+          )
+        }
+        paras.push(p('', fence))
+        break
+      }
+      case 'quote':
+        paras.push(p('<w:ind w:left="720"/>', prefixed('> ', b.text)))
+        break
+      case 'hr':
+        paras.push('<w:p/>')
+        break
+      case 'table': {
+        // WHY literal separator (round-10, bug 7 — RTF twin): see above.
+        b.rows.forEach((row, ridx) => {
+          const joined: ExportSeg[] = []
+          row.forEach((cell, cidx) => {
+            if (cidx > 0) joined.push(plainSeg(' | '))
+            joined.push(...parseExportInline(cell))
+          })
+          paras.push(p('', exportSegsToDocxRuns(joined)))
+          if (ridx === 0) {
+            paras.push(p('', exportSegsToDocxRuns([plainSeg(row.map(() => '---').join(' | '))])))
+          }
+        })
+        break
+      }
+      case 'dropdown': {
+        if (b.title !== '') paras.push(p('', runsFor(b.title)))
+        paras.push(...exportBlocksToDocxParas(b.body))
+        break
+      }
+      case 'para':
+        paras.push(p('', runsFor(b.text)))
+        break
+    }
+  }
+  return paras
+}
+
+/**
+ * Zero-dependency Markdown → .docx bytes (round-9 unified export). Minimal
+ * OOXML with STORED zip entries; Word must open it and mammoth must extract
+ * the words back. Images become alt text only; tables/lists use the same
+ * literal conventions as the RTF path so both round-trip through Import.
+ */
+export function markdownToDocxBytes(markdown: string): Uint8Array {
+  const paras = exportBlocksToDocxParas(parseExportBlocks(markdown))
+  const documentXml =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' +
+    paras.join('') +
+    '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>' +
+    '</w:body></w:document>'
+  const stylesXml =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+    '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/>' +
+    '<w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/>' +
+    '<w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:style>' +
+    '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/>' +
+    '<w:basedOn w:val="Normal"/><w:next w:val="Normal"/>' +
+    '<w:rPr><w:b/><w:sz w:val="56"/><w:szCs w:val="56"/></w:rPr></w:style>' +
+    '<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/>' +
+    '<w:basedOn w:val="Normal"/><w:next w:val="Normal"/>' +
+    '<w:rPr><w:b/><w:sz w:val="48"/><w:szCs w:val="48"/></w:rPr></w:style>' +
+    '<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/>' +
+    '<w:basedOn w:val="Normal"/><w:next w:val="Normal"/>' +
+    '<w:rPr><w:b/><w:sz w:val="40"/><w:szCs w:val="40"/></w:rPr></w:style>' +
+    '</w:styles>'
+  const contentTypesXml =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+    '<Default Extension="xml" ContentType="application/xml"/>' +
+    '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+    '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
+    '</Types>'
+  const relsXml =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+    '</Relationships>'
+  const enc = new TextEncoder()
+  return buildStoredZip([
+    { name: '[Content_Types].xml', data: enc.encode(contentTypesXml) },
+    { name: '_rels/.rels', data: enc.encode(relsXml) },
+    { name: 'word/document.xml', data: enc.encode(documentXml) },
+    { name: 'word/styles.xml', data: enc.encode(stylesXml) },
+  ])
 }

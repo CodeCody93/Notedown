@@ -77,6 +77,7 @@
   details.md-dropdown {
     display: block !important;
     border-color: #ccc !important;
+    overflow: visible !important;
   }
   .md-body .md-dropdown-summary {
     background: #f5f5f5 !important;
@@ -89,6 +90,14 @@
   .md-body .md-spoiler[data-revealed="false"] {
     background: none !important;
     color: inherit !important;
+  }
+  /* Rasterization guard (mirror of PRINT_CSS): any CSS filter forces the
+     Chromium print pipeline to rasterize the subtree as an image. */
+  .md-body *,
+  .md-body *::before,
+  .md-body *::after {
+    filter: none !important;
+    backdrop-filter: none !important;
   }
   .md-body a {
     color: #000 !important;

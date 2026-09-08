@@ -14,7 +14,9 @@ import {
   shouldRecover,
   writeSession,
 } from './draft'
-import { classifyImageSrc, inlineMarkdownImagesDetailed, renderStandaloneHtml, renderStandaloneHtmlWithImages } from './export'
+import { classifyImageSrc, inlineMarkdownImagesDetailed, markdownToDocxBytes, markdownToRtf, renderStandaloneHtml } from './export'
+import type { ExportFormat } from './export'
+import { chooseExportFormat, isExportDialogOpen, wireExportDialog } from './exportDialog'
 import { printStandaloneHtml } from './print'
 import { convertToMarkdown, detectFormat, lossSummaryFor } from './import'
 import { confirmImportLosses, isImportDialogOpen, wireImportDialog } from './importDialog'
@@ -238,80 +240,153 @@ function collectUnsavedImageSrcs(markdown: string): string[] {
 // as `data:` URLs via `exposeImage` so the exported HTML is self-contained
 // and works offline; SVGs are DOMPurify-sanitized before embedding (safe:
 // scripts never execute inside `<img>`-loaded SVG).
-async function exportHtml(): Promise<void> {
+//
+// Round-9 unified export: the image-inlining + unsaved-doc guard + skip-report
+// logic below is shared by BOTH the html and pdf paths (pdf prints the same
+// inlined standalone HTML via printStandaloneHtml, so the unsaved-doc
+// local-image guard applies to it too).
+async function writeHtmlExport(): Promise<void> {
   const doc = appState.get().doc
-  if (doc.path === null) {
-    const srcs = collectUnsavedImageSrcs(doc.content)
-    if (srcs.some((s) => classifyImageSrc(s).action === 'inline')) {
-      await showAlert(
-        'HTML export does not support images in unsaved documents: local images cannot be resolved without a saved file location, so they will appear broken. Save the document first, then export again to embed them.'
-      )
-      return
-    }
-  }
-  const opts = {
-    title: doc.name,
-    theme: resolveTheme(appState.get().settings.theme),
-  } as const
-  let html: string
-  let inlined = 0
-  let skipped: { src: string; reason: string }[] = []
-  try {
-    const detailed = await inlineMarkdownImagesDetailed(doc.content, doc.path, (abs) => io.exposeImage(abs))
-    html = renderStandaloneHtml(detailed.markdown, opts)
-    inlined = detailed.inlined.length
-    skipped = detailed.skipped
-  } catch {
-    // Inline path failed for an unexpected reason (e.g. exposeImage transport
-    // error) — fall back to the plain render so export still succeeds; svg
-    // and per-image failures are already handled inside inlineMarkdownImages.
-    html = renderStandaloneHtml(doc.content, opts)
-  }
-  const htmlName = doc.name.replace(/\.[^./\\]+$/, '') + '.html'
-  try {
-    const saved = await io.saveFile(null, html, htmlName, { html: true })
-    if (saved === null) return // user cancelled the save dialog
-    // Only genuinely-at-risk skips are reported: `data:` URLs are already
-    // self-contained and `blob:`/`asset:`/fragments are intentional, so
-    // reporting them as "skipped" would be noise (round-6 A4 follow-up).
-    const reportable = skipped.filter(
-      (s) => s.reason === 'remote' || s.reason === 'absolute' || s.reason === 'expose-failed',
+  if (doc.path === null && unsavedDocHasLocalImages(doc.content)) {
+    await showAlert(
+      'HTML export does not support images in unsaved documents: local images cannot be resolved without a saved file location, so they will appear broken. Save the document first, then export again to embed them.'
     )
-    if (reportable.length > 0) {
-      const reasons = reportable
-        .slice(0, 5)
-        .map((s) => `"${s.src}" (${s.reason})`)
-        .join(', ')
-      const more = reportable.length > 5 ? ` and ${reportable.length - 5} more` : ''
-      await showAlert(
-        `Exported with ${inlined} image${inlined === 1 ? '' : 's'} embedded, ${reportable.length} skipped: ${reasons}${more}. Skipped images (remote links, absolute paths, or unreadable files) are left as-is and may appear broken offline.`
-      )
+    return
+  }
+  const { html, inlined, skipped } = await buildInlinedStandaloneHtml()
+  const htmlName = exportBaseName(doc.name) + '.html'
+  try {
+    const saved = await io.saveFile(null, html, htmlName, { exportKind: 'html' })
+    if (saved === null) return // user cancelled the save dialog
+    await reportSkippedImages(inlined, skipped)
+  } catch (err) {
+    await showAlert(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+// Round-9 unified export: print-to-PDF via the OS print dialog (the dialog's
+// "Save as PDF" destination is the PDF). Prints the same images-inlined
+// standalone HTML as the html path through a hidden same-origin iframe
+// (printStandaloneHtml) — no file is written, and the OS print dialog itself
+// is the confirm, so no pre-confirm is shown.
+async function printPdfExport(): Promise<void> {
+  const doc = appState.get().doc
+  if (doc.path === null && unsavedDocHasLocalImages(doc.content)) {
+    await showAlert(
+      'PDF export does not support images in unsaved documents: local images cannot be resolved without a saved file location, so they will appear broken. Save the document first, then export again to embed them.'
+    )
+    return
+  }
+  const { html } = await buildInlinedStandaloneHtml()
+  printStandaloneHtml(html)
+}
+
+// Round-9 unified export: single entry point behind the File → Export… menu
+// item (hotkey Mod+Shift+E). The export dialog (chooseExportFormat) shows
+// per-format loss warnings itself, so NO second confirm is needed here.
+async function exportDoc(): Promise<void> {
+  let fmt: ExportFormat | null
+  try {
+    fmt = await chooseExportFormat('html')
+  } catch (err) {
+    await showAlert(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
+  if (fmt === null) return // user cancelled the export dialog
+  const doc = appState.get().doc
+  const base = exportBaseName(doc.name)
+  try {
+    switch (fmt) {
+      case 'txt':
+        // Verbatim markdown source, saved as .txt.
+        await io.saveFile(null, doc.content, `${base}.txt`, { exportKind: 'txt' })
+        break
+      case 'html':
+        await writeHtmlExport()
+        break
+      case 'pdf':
+        await printPdfExport()
+        break
+      case 'rtf':
+        await io.saveFile(null, markdownToRtf(doc.content), `${base}.rtf`, { exportKind: 'rtf' })
+        break
+      case 'docx':
+        await io.saveBytes(markdownToDocxBytes(doc.content), `${base}.docx`, { exportKind: 'docx' })
+        break
     }
   } catch (err) {
     await showAlert(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
 
-// Phase 3 — print-to-PDF via the OS print dialog (user chose print-dialog over
-// native Rust PDF / jsPDF). Builds the same images-inlined standalone HTML as
-// exportHtml, then prints it through a hidden same-origin iframe
-// (printStandaloneHtml) — the dialog's "Save as PDF" destination is the PDF.
-async function exportPdf(): Promise<void> {
+/** Round-9 unified export: doc.name minus its extension (fallback for odd names). */
+function exportBaseName(name: string): string {
+  const stripped = name.replace(/\.[^./\\]+$/, '')
+  return stripped === '' ? 'untitled' : stripped
+}
+
+/**
+ * Round-9 unified export: true when an unsaved doc references local images
+ * that would need a saved file location to resolve. False positives just
+ * warn+abort (safe), matching the round-6 A4 pre-flight gate this reuses.
+ */
+function unsavedDocHasLocalImages(markdown: string): boolean {
+  return collectUnsavedImageSrcs(markdown).some((s) => classifyImageSrc(s).action === 'inline')
+}
+
+/**
+ * Round-9 unified export: build the images-inlined standalone HTML shared by
+ * the html and pdf paths (previously duplicated inline in each per-format
+ * path — both now share this helper, including the fall back to the plain
+ * render when inlining fails unexpectedly).
+ */
+async function buildInlinedStandaloneHtml(): Promise<{
+  html: string
+  inlined: number
+  skipped: { src: string; reason: string }[]
+}> {
   const doc = appState.get().doc
   const opts = {
     title: doc.name,
     theme: resolveTheme(appState.get().settings.theme),
   } as const
-  let html: string
   try {
-    html = await renderStandaloneHtmlWithImages(doc.content, opts, doc.path, (abs) => io.exposeImage(abs))
+    const detailed = await inlineMarkdownImagesDetailed(doc.content, doc.path, (abs) => io.exposeImage(abs))
+    return {
+      html: renderStandaloneHtml(detailed.markdown, opts),
+      inlined: detailed.inlined.length,
+      skipped: detailed.skipped,
+    }
   } catch {
-    html = renderStandaloneHtml(doc.content, opts)
+    // Inline path failed for an unexpected reason (e.g. exposeImage transport
+    // error) — fall back to the plain render so export still succeeds; svg
+    // and per-image failures are already handled inside inlineMarkdownImages.
+    return { html: renderStandaloneHtml(doc.content, opts), inlined: 0, skipped: [] }
   }
-  try {
-    printStandaloneHtml(html)
-  } catch (err) {
-    await showAlert(`Print failed: ${err instanceof Error ? err.message : String(err)}`)
+}
+
+/**
+ * Round-9 unified export: report genuinely-at-risk image skips after an html
+ * export (previously inline in the old per-format html path). `data:` URLs are already self-contained
+ * and `blob:`/`asset:`/fragments are intentional, so reporting them as
+ * "skipped" would be noise (round-6 A4 follow-up).
+ */
+async function reportSkippedImages(
+  inlined: number,
+  skipped: { src: string; reason: string }[],
+): Promise<void> {
+  const reportable = skipped.filter(
+    (s) => s.reason === 'remote' || s.reason === 'absolute' || s.reason === 'expose-failed',
+  )
+  if (reportable.length > 0) {
+    const reasons = reportable
+      .slice(0, 5)
+      .map((s) => `"${s.src}" (${s.reason})`)
+      .join(', ')
+    const more = reportable.length > 5 ? ` and ${reportable.length - 5} more` : ''
+    await showAlert(
+      `Exported with ${inlined} image${inlined === 1 ? '' : 's'} embedded, ${reportable.length} skipped: ${reasons}${more}. Skipped images (remote links, absolute paths, or unreadable files) are left as-is and may appear broken offline.`
+    )
   }
 }
 
@@ -588,11 +663,8 @@ function wireMenu(): void {
     'save-as': () => {
       void saveAsDoc()
     },
-    'export-html': () => {
-      void exportHtml()
-    },
-    'export-pdf': () => {
-      void exportPdf()
+    'export': () => {
+      void exportDoc()
     },
     import: () => {
       void importDoc()
@@ -658,8 +730,7 @@ const APP_HOTKEY_IDS = [
   'open-recent',
   'save',
   'save-as',
-  'export-html',
-  'export-pdf',
+  'export',
   'settings',
   'toggle-mode',
 ]
@@ -699,11 +770,8 @@ function wireHotkeys(): void {
     'save-as': () => {
       void saveAsDoc()
     },
-    'export-html': () => {
-      void exportHtml()
-    },
-    'export-pdf': () => {
-      void exportPdf()
+    'export': () => {
+      void exportDoc()
     },
     settings: () => openModalWithCaretRestore((opts) => openSettingsModal(opts)),
     'toggle-mode': () => setMode(appState.get().mode === 'live' ? 'source' : 'live'),
@@ -795,8 +863,8 @@ function wireStatusMode(): void {
 function wireWindowFocus(): void {
   window.addEventListener('focus', () => {
     if (editor === null) return
-    // Never steal focus while any modal dialog is open (settings/help/about/import).
-    if (isSettingsOpen() || isHelpOpen() || isAboutOpen() || isImportDialogOpen()) return
+    // Never steal focus while any modal dialog is open (settings/help/about/import/export).
+    if (isSettingsOpen() || isHelpOpen() || isAboutOpen() || isImportDialogOpen() || isExportDialogOpen()) return
     const modalRoot = document.getElementById('settings-modal-root')
     if (modalRoot !== null && !modalRoot.hidden) return
     editor.focus()
@@ -881,6 +949,7 @@ export async function initApp(): Promise<void> {
   applyEditorSettings(settings)
   wireSettingsModal({ getSettings: () => appState.get().settings, onApply: (patch) => updateSettings(patch) })
   wireImportDialog()
+  wireExportDialog()
   wireHelpModal()
   wireAboutModal()
 
