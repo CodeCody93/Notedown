@@ -500,6 +500,188 @@ function stripDataImages(clean: string): { html: string; removed: number } {
 
 // --- DOCX (mammoth) ----------------------------------------------------------
 
+/**
+ * DOCX reimport repair: the .docx exporter writes literal Markdown prefixes
+ * (`- `, `1. `, `> `, ```` ``` ````, `---`, `[^1]`, `` `code` ``) as plain
+ * <w:p> text. Mammoth maps each to a plain <p> (no list/table semantics), so
+ * Turndown's escapeMarkdown escapes them (`\-`, `1\.`, `\>`, `` \` ``,
+ * `\[`, `\_`) and splits every <w:p> with a blank line (fragmenting
+ * tables/fences/lists). Ballot task prefixes also convert (`☐`→`-[]`, `☒`/`☑`→`-[x]`, outside fences).
+ * This reverses ONLY those exporter conventions —
+ * generic `*`/`_` mid-text escapes stay, so the sibling convertHtml path is
+ * untouched. Idempotent on clean Markdown except intentional loose→tight
+ * list/fence collapsing (still valid Markdown); `\\` literal backslashes stay.
+ */
+export function postprocessDocxMarkdown(md: string): string {
+  if (md === '') return ''
+  // Pass 1 — per-line unescapes. Fence-aware so literal code content is never
+  // touched (inline/footnote/sup fixes apply outside fences only).
+  const fixed: string[] = []
+  let inFence = false
+  for (const raw of md.split('\n')) {
+    let line = fixDocxBlockStart(raw)
+    if (isDocxFenceMarker(line)) {
+      // Fence markers: every backtick arrived escaped (`\`\`\``) — strip the
+      // single-escapes parity-aware so `\\` (literal backslash) would survive.
+      line = line.replace(/(\\+)`/g, (m: string, run: string) => `${docxDropOne(run)}${m.slice(-1)}`)
+      fixed.push(line)
+      inFence = !inFence
+      continue
+    }
+    if (!inFence) line = fixDocxInline(line)
+    if (!inFence) line = fixDocxTaskbox(line)
+    fixed.push(line)
+  }
+  // Pass 2 — rejoin the blank lines Turndown inserted per <w:p> between pipe
+  // table rows, inside fences, and between same-kind list items.
+  const out: string[] = []
+  let inF = false
+  let i = 0
+  while (i < fixed.length) {
+    const line: string = fixed[i] ?? ''
+    if (isDocxFenceMarker(line)) {
+      out.push(line)
+      inF = !inF
+      i += 1
+      continue
+    }
+    if (inF) {
+      // Inside fences Turndown's `\n\n` per paragraph is just noise — drop
+      // blank lines (simplest per spec: `\n\n` → `\n` while inside fences).
+      if (line.trim() === '') {
+        i += 1
+        continue
+      }
+      out.push(line)
+      i += 1
+      continue
+    }
+    if (line.trim() !== '') {
+      out.push(line)
+      i += 1
+      continue
+    }
+    // Blank run outside fences — peek at the neighbours before deciding.
+    let j = i + 1
+    while (j < fixed.length && (fixed[j] ?? '').trim() === '') j += 1
+    const prev: string = out.length > 0 ? (out[out.length - 1] ?? '') : ''
+    const next: string = j < fixed.length ? (fixed[j] ?? '') : ''
+    // Tables: blanks between two pipe-lines invalidate the table — drop all.
+    if (prev.trim() !== '' && next.trim() !== '' && !isDocxFenceMarker(next) && prev.includes('|') && next.includes('|')) {
+      i = j
+      continue
+    }
+    // Lists: one blank between two same-kind items → tight list. Loose lists
+    // stay valid so stay conservative (same kind only, single blank only).
+    if (j - i === 1 && prev.trim() !== '' && next.trim() !== '') {
+      const a = docxListKind(prev)
+      const b = docxListKind(next)
+      if (a !== null && a === b) {
+        i = j
+        continue
+      }
+    }
+    // Otherwise keep a single blank (collapse longer runs).
+    out.push('')
+    i = j
+  }
+  return out.join('\n')
+}
+
+/** Strip ONE backslash from odd-length runs (Turndown single-escape); even runs (`\\` literal) stay. */
+function docxDropOne(run: string): string {
+  return run.length % 2 === 1 ? run.slice(1) : run
+}
+
+/**
+ * True for a fence marker line in either shape: ```` ``` ```` (clean) or
+ * `\`\`\`` (Turndown-escaped) plus an optional info string, nothing else.
+ */
+function isDocxFenceMarker(line: string): boolean {
+  return /^(?:\\`|`){3,}[^`]*$/.test(line.trim())
+}
+
+/** Classify a line for the conservative same-kind list rejoin (`- `, `N. `, `☐`/`☒`, `-# `, `> `). */
+function docxListKind(line: string): string | null {
+  const t = line.trimStart()
+  if (t.startsWith('>')) return 'blockquote'
+  if (/^-#(\s|$)/.test(t)) return 'subtext'
+  if (/^\d+\.\s/.test(t)) return 'ordered'
+  if (/^[☐☑☒](\s|$)/.test(t)) return 'taskbox'
+  if (/^-(?:\[[ xX]?\]| \[[ xX]?\])(?=\s|$)/.test(t)) return 'taskbox'
+  if (/^-\s/.test(t)) return 'bullet'
+  return null
+}
+
+/**
+ * Line-leading unescapes for the exporter's literal prefixes. Only the FIRST
+ * char was escaped by Turndown (`^-` → `\-`, `^>` → `\>`, `^N\.` → `N\.`),
+ * so only the leading run is stripped, parity-aware. A `> ` prefix is split
+ * off first so list/hr fixes also apply to `> \- item`-style remainders.
+ */
+function fixDocxBlockStart(raw: string): string {
+  let line = raw.replace(/^(\s*)(\\+)>/, (_m: string, indent: string, run: string) => `${indent}${docxDropOne(run)}>`)
+  const bq = /^(\s*(?:>\s?)*)(.*)$/.exec(line)
+  const prefix = bq?.[1] ?? ''
+  let rest = bq?.[2] ?? line
+  // Nested second-level `\>` after a `> ` prefix (e.g. `> \> nested`).
+  rest = rest.replace(/^(\s*)(\\+)>/, (_m: string, indent: string, run: string) => `${indent}${docxDropOne(run)}>`)
+  // Subtext `-#` before bullets so `\-# Subtext` restores to `-# Subtext`.
+  rest = rest.replace(/^(\s*)(\\+)-#(?=\s|$)/, (_m: string, indent: string, run: string) => `${indent}${docxDropOne(run)}-#`)
+  // Bullets `\- ` → `- ` (start-anchored, so mid-line `\-` stays escaped).
+  rest = rest.replace(/^(\s*)(\\+)-(?=[ \t])/, (_m: string, indent: string, run: string) => `${indent}${docxDropOne(run)}-`)
+  // Ordered `1\. ` → `1. `.
+  rest = rest.replace(/^(\s*)(\d+)(\\+)\.(?=[ \t])/, (_m: string, indent: string, num: string, run: string) => `${indent}${num}${docxDropOne(run)}.`)
+  // HR / table separators: only the first dash was escaped (`\---` → `---`).
+  rest = rest.replace(/^(\s*)(\\+)-(?=-)/, (_m: string, indent: string, run: string) => `${indent}${docxDropOne(run)}-`)
+  return `${prefix}${rest}`
+}
+
+/** Inline unescapes for full lines outside fences (surgical — never global `*`/`_` unescaping). */
+function fixDocxInline(line: string): string {
+  let out = line
+  // Inline code ticks: replace single-escape `` \` `` with `` ` `` only when
+  // they form plausible spans (even count ≥ 2), parity-aware so `\\` survives.
+  const tickRuns = out.match(/(\\+)`/g) ?? []
+  let singles = 0
+  for (const m of tickRuns) {
+    if ((m.length - 1) % 2 === 1) singles += 1
+  }
+  if (singles >= 2 && singles % 2 === 0) {
+    out = out.replace(/(\\+)`/g, (m: string, run: string) => `${docxDropOne(run)}${m.slice(-1)}`)
+  }
+  // Footnotes only (`\[^1\]` → `[^1]`, defs included via the same match) —
+  // never bare `[text]` (would risk accidental links). Each bracket's run is
+  // stripped independently so `\\[` (literal backslash) stays escaped.
+  out = out.replace(/(\\*)\[\^(\d+)(\\*)\]/g, (_m: string, pre: string, num: string, post: string) => `${docxDropOne(pre)}[^${num}${docxDropOne(post)}]`)
+  // Superscript/subscript `_`: Turndown escapes every `_`, so literal `^_^`
+  // arrives as `^\_^`. Unescape `\_` → `_` ONLY inside `^...^` / `~...~`
+  // spans (single markers — `~~strike~~` is excluded via the lookarounds).
+  out = out.replace(/(?<!\^)\^([^^\n]+?)\^(?!\^)/g, (_m: string, inner: string) => `^${inner.replace(/(\\+)_/g, (_mm: string, run: string) => `${docxDropOne(run)}_`)}^`)
+  out = out.replace(/(?<!~)~([^~\n]+?)~(?!~)/g, (_m: string, inner: string) => `~${inner.replace(/(\\+)_/g, (_mm: string, run: string) => `${docxDropOne(run)}_`)}~`)
+  return out
+}
+
+/**
+ * WHY: the exporter writes tasks as literal ballot-box prefixes (`☐ `/`☒ `)
+ * as plain <w:p> text; Mammoth/Turndown pass the ballot chars through, so a
+ * reimport would hold raw `☐`/`☒` instead of task tags. Convert a leading
+ * ballot to its Notedown task tag (`☐` → `-[]`, `☒`/`☑` → `-[x]` — `☑` is
+ * what the editor widgets use and is common in real Word docs). Start-anchored
+ * with `(?=\s|$)` (mirroring the exporter's rule) so `☐glued` and mid-line
+ * ballots stay literal; the separator after the ballot normalizes to one space.
+ */
+function fixDocxTaskbox(line: string): string {
+  const m = /^(\s*(?:>\s?)*\s*)([☐☑☒])(?=\s|$)(.*)$/.exec(line)
+  if (m === null) return line
+  const prefix = m[1] ?? ''
+  const ballot = m[2] ?? ''
+  const rest = m[3] ?? ''
+  const tag = ballot === '☐' ? '-[]' : '-[x]'
+  if (rest.trim() === '') return `${prefix}${tag}`
+  return `${prefix}${tag} ${rest.replace(/^\s+/, '')}`
+}
+
 async function convertDocx(bytes: Uint8Array): Promise<ImportConversion> {
   // mammoth is lazy-loaded (large, import-only). NOTE: mammoth performs NO
   // sanitisation of the source document, so its HTML goes through DOMPurify
@@ -512,10 +694,15 @@ async function convertDocx(bytes: Uint8Array): Promise<ImportConversion> {
   const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
   const losses = lossSummaryFor('docx')
   try {
-    const result = await mammoth.convertToHtml({ arrayBuffer })
+    // WHY: mammoth drops w:highlight without an explicit style-map rule (no
+    // default mapping), so map it to <mark> which the notedownMark Turndown
+    // rule converts back to ==text==. The bare `highlight` matcher
+    // intentionally matches all highlight colors; exact spelling matters —
+    // mammoth warns-and-ignores unknown mappings (surfaced via result.messages).
+    const result = await mammoth.convertToHtml({ arrayBuffer }, { styleMap: 'highlight => mark' })
     for (const message of result.messages.slice(0, 5)) losses.push(`Word warning: ${message.message}`)
     const service = await createTurndown()
-    return { markdown: service.turndown(DOMPurify.sanitize(result.value)).trim(), losses }
+    return { markdown: postprocessDocxMarkdown(service.turndown(DOMPurify.sanitize(result.value))).trim(), losses }
   } catch {
     // Formatted conversion failed (corrupt zip, legacy .doc renamed to .docx,
     // …) — still recover the words as raw text.

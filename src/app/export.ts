@@ -2280,19 +2280,21 @@ function exportBlocksToDocxParas(blocks: ExportBlock[]): string[] {
         paras.push(p('', prefixed(b.checked ? '☒ ' : '☐ ', b.text)))
         break
       case 'code': {
-        // WHY literal fences (bug 4, RTF twin): code lines already stay
-        // literal; ``` brackets make the block reimport fenced via mammoth.
-        const fence = exportSegsToDocxRuns([{ ...plainSeg('```'), code: true }])
+        // WHY literal fences+lines (RTF twin): wrapCodeTicks is for genuine
+        // inline code only — fences/inner lines stay literal or each line
+        // reimports as inline code. Consolas styling kept for Word; text
+        // goes through docxEscape only, no tick wrapping.
+        const mono = (t: string): string =>
+          `<w:r><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><w:t xml:space="preserve">${docxEscape(t)}</w:t></w:r>`
+        const fence = mono('```')
         paras.push(p('', fence))
         for (const l of b.lines) {
           if (l === '') {
             paras.push('<w:p/>')
             continue
           }
-          // Code lines stay literal (no inline parsing inside fences).
-          paras.push(
-            p('', exportSegsToDocxRuns([{ ...plainSeg(l), code: true }])),
-          )
+          // Code lines stay literal (no inline parsing, no tick wrap).
+          paras.push(p('', mono(l)))
         }
         paras.push(p('', fence))
         break
@@ -2301,7 +2303,9 @@ function exportBlocksToDocxParas(blocks: ExportBlock[]): string[] {
         paras.push(p('<w:ind w:left="720"/>', prefixed('> ', b.text)))
         break
       case 'hr':
-        paras.push('<w:p/>')
+        // WHY literal `---` (RTF twin): an empty para reimports as a blank
+        // line (marker lost); literal text round-trips and re-exports as hr.
+        paras.push(p('', exportSegsToDocxRuns([plainSeg('---')])))
         break
       case 'table': {
         // WHY literal separator (round-10, bug 7 — RTF twin): see above.
