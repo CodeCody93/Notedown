@@ -1438,8 +1438,8 @@ export function renderStandaloneHtml(markdown: string, opts: StandaloneHtmlOptio
 //
 // WHY THIS MODULE GREW (round-9 unified export): the per-type Export HTML/PDF
 // menu items are replaced by ONE Export dialog offering txt/html/pdf/docx/rtf
-// (the same list as import). PDF stays print-to-PDF (text, re-importable —
-// never an image). This section is the PURE core the dialog + wiring packets
+// (the same list as import). PDF is now a direct text-based export via pdf-lib
+// (selectable, re-importable — never an image). This section is the PURE core the dialog + wiring packets
 // consume, so the exported contract below is load-bearing: ExportFormat,
 // EXPORT_FORMATS, exportLossSummaryFor, markdownToRtf, markdownToDocxBytes.
 //
@@ -1470,8 +1470,12 @@ export function exportLossSummaryFor(format: ExportFormat): string[] {
       ]
     case 'pdf':
       return [
-        'Uses the print stylesheet — layout and page breaks may differ from the on-screen preview.',
-        'Output is a TEXT pdf (selectable, re-importable via Import) — never an image scan.',
+        'Output is a selectable TEXT pdf, re-importable via Import — never an image scan.',
+        'Tables render as bordered grids with shaded headers that repeat across pages; very wide tables shrink columns to fit, and images inside cells embed after the table.',
+        'Local PNG/JPG images are embedded; SVG, remote, or unreadable images fall back to alt text and are listed in the skip alert.',
+        'Tasks render as ASCII "- [ ]" / "- [x]" so they round-trip through Import.',
+        'Fonts are Helvetica/Courier (WinAnsi) only — emoji and CJK degrade to "?" (documented loss).',
+        'Layout and pagination are minimal and differ from the on-screen preview.',
       ]
     case 'docx':
       return [
@@ -1693,8 +1697,11 @@ function parseInlineRange(
   return { segs, pos }
 }
 
-/** Tokenize one inline string into styled segments (links flattened). */
-function parseExportInline(src: string): ExportSeg[] {
+/**
+ * Tokenize one inline string into styled segments (links flattened).
+ * Exported for tests (lets PDF unit tests build flows from real syntax).
+ */
+export function parseExportInline(src: string): ExportSeg[] {
   return parseInlineRange(src, 0, null, PLAIN_FLAGS).segs
 }
 
@@ -2385,4 +2392,761 @@ export function markdownToDocxBytes(markdown: string): Uint8Array {
     { name: 'word/document.xml', data: enc.encode(documentXml) },
     { name: 'word/styles.xml', data: enc.encode(stylesXml) },
   ])
+}
+
+// --- PDF (direct text-based export via pdf-lib) -------------------------------
+// Reuses the shared parseExportBlocks / parseExportInline / wrapCodeTicks
+// helpers so PDF agrees with RTF/DOCX on structure (tables as " | " lines +
+// "---" separator, literal ``` fences, expanded dropdowns, literal footnote /
+// subtext paras). pdf-lib is lazy-loaded INSIDE the functions below so the
+// main bundle stays small (same discipline as the pdfjs/mammoth/turndown lazy
+// chunks). Pure: no document/window/DOM access — pdf-lib is pure math + bytes.
+
+/** Result of the image-aware PDF export (mirrors {@link InlineResult}). */
+export interface PdfExportResult {
+  bytes: Uint8Array
+  inlined: string[]
+  skipped: Array<{ src: string; reason: string }>
+}
+
+const PDF_PAGE_W = 595.28
+const PDF_PAGE_H = 841.89
+const PDF_MARGIN = 34
+/** Exported for tests. */
+export const PDF_CONTENT_W = PDF_PAGE_W - PDF_MARGIN * 2
+const PDF_BASE_SIZE = 11
+const PDF_HEADING_SIZES = [20, 17, 14, 12, 11, 10]
+const PDF_CODE_SIZE = 9
+const PDF_LINE_FACTOR = 1.3
+
+/** Cell horizontal padding inside PDF table cells. Exported for tests. */
+export const PDF_TABLE_PAD_X = 5
+/** Cell vertical padding inside PDF table cells. Exported for tests. */
+export const PDF_TABLE_PAD_Y = 4
+/** Minimum column width when shrinking wide tables. Exported for tests. */
+export const PDF_TABLE_MIN_COL_W = 36
+
+/**
+ * WinAnsi sanitize for pdf-lib standard fonts (Helvetica/Courier): every
+ * drawn string passes through here so the renderer never throws. Chars above
+ * U+00FF (emoji, CJK, ☐/☒ — tasks use ASCII so they never arrive) and C0/C1
+ * controls become '?'; WORDS always survive as '?' placeholders.
+ */
+function sanitizePdfText(s: string): string {
+  let out = ''
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) as number
+    if (cp < 32 || (cp >= 127 && cp <= 159) || cp > 255) out += '?'
+    else out += ch
+  }
+  return out
+}
+
+/** Embedded standard fonts (all WinAnsi-only). `any` avoids a static pdf-lib import. */
+interface PdfFonts {
+  regular: any
+  bold: any
+  italic: any
+  boldItalic: any
+  mono: any
+  monoBold: any
+  monoItalic: any
+  monoBoldItalic: any
+}
+
+interface PdfState {
+  doc: any
+  rgb: any
+  page: any
+  y: number
+  fonts: PdfFonts
+  imageCache: Map<string, any>
+}
+
+/** Segment → font: b/i map to Helvetica variants, code maps to Courier. */
+function pdfFontForSeg(seg: ExportSeg, fonts: PdfFonts, forceBold: boolean): any {
+  if (seg.code) {
+    if (seg.b || forceBold) return seg.i ? fonts.monoBoldItalic : fonts.monoBold
+    return seg.i ? fonts.monoItalic : fonts.mono
+  }
+  const b = seg.b || forceBold
+  if (b && seg.i) return fonts.boldItalic
+  if (b) return fonts.bold
+  if (seg.i) return fonts.italic
+  return fonts.regular
+}
+
+/** Measured width of already-sanitized text (falls back to ½em per char). */
+function pdfTextWidth(font: any, text: string, size: number): number {
+  const clean = sanitizePdfText(text)
+  try {
+    return font.widthOfTextAtSize(clean, size)
+  } catch {
+    return clean.length * size * 0.5
+  }
+}
+
+const PDF_IMAGE_DATA_RE = /^data:image\/(png|jpe?g);base64,/i
+
+/**
+ * Collect embeddable PNG/JPEG data-URL images from a raw text fragment.
+ * Reuses the file-local markdown image scanner so tokenizing matches the
+ * inliner. SVG data URLs never match (alt text only, never embedded).
+ */
+function collectPdfImagesFromText(text: string): Array<{ alt: string; dataUrl: string }> {
+  const out: Array<{ alt: string; dataUrl: string }> = []
+  for (const t of scanMarkdownImages(text)) {
+    const { src } = extractImageTarget(t.inside)
+    const clean = src.trim()
+    if (PDF_IMAGE_DATA_RE.test(clean)) out.push({ alt: t.alt, dataUrl: clean })
+  }
+  return out
+}
+
+/** Base64 data-URL payload → bytes (atob is a pure global, not DOM). */
+function decodePdfDataUrl(dataUrl: string): Uint8Array {
+  const comma = dataUrl.indexOf(',')
+  const b64 = dataUrl.slice(comma + 1).replace(/\s/g, '')
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let k = 0; k < bin.length; k++) out[k] = bin.charCodeAt(k)
+  return out
+}
+
+function pdfNewPage(state: PdfState): void {
+  state.page = state.doc.addPage([PDF_PAGE_W, PDF_PAGE_H])
+  state.y = PDF_PAGE_H - PDF_MARGIN
+}
+
+/** Exported for tests. */
+export interface PdfDrawRun {
+  text: string
+  font: any
+  size: number
+  u: boolean
+  strike: boolean
+  mark: boolean
+  sup: boolean
+  sub: boolean
+  dy: number
+}
+
+/** Exported for tests. */
+export type PdfFlowItem =
+  | { kind: 'br' }
+  | { kind: 'tok'; text: string; font: any; size: number; u: boolean; strike: boolean; mark: boolean; sup: boolean; sub: boolean; dy: number }
+
+/**
+ * Segments → flow items. Code segs get literal backtick markers via
+ * wrapCodeTicks (same round-trip convention as RTF/DOCX); interior '\n'
+ * becomes a forced break; whitespace runs collapse to single-space tokens.
+ * Underline/strike/highlight flags ride on every token (including inter-word
+ * spaces so `__a b__` underlines the gap, and char-split fragments
+ * downstream) so the draw step can rule them. Sup/sub runs use 0.7× size
+ * with a baseline shift (sup +0.35×base, sub −0.25×base; sup wins if both).
+ * Exported for tests.
+ */
+export function pdfFlowItems(segs: ExportSeg[], fonts: PdfFonts, size: number, forceBold: boolean): PdfFlowItem[] {
+  const items: PdfFlowItem[] = []
+  for (const s of segs) {
+    const font = pdfFontForSeg(s, fonts, forceBold)
+    let tokSize = size
+    let tokDy = 0
+    if (s.sup) {
+      tokSize = size * 0.7
+      tokDy = size * 0.35
+    } else if (s.sub) {
+      tokSize = size * 0.7
+      tokDy = size * -0.25
+    }
+    const pieces = s.t.split('\n')
+    for (let pi = 0; pi < pieces.length; pi++) {
+      if (pi > 0) items.push({ kind: 'br' })
+      const piece = pieces[pi] as string
+      if (piece === '') continue
+      const wrapped = s.code ? wrapCodeTicks(piece) : piece
+      for (const part of wrapped.split(/(\s+)/)) {
+        if (part === '') continue
+        if (/^\s+$/.test(part)) items.push({ kind: 'tok', text: ' ', font, size: tokSize, u: s.u, strike: s.strike, mark: s.mark, sup: s.sup, sub: s.sub, dy: tokDy })
+        else items.push({ kind: 'tok', text: part, font, size: tokSize, u: s.u, strike: s.strike, mark: s.mark, sup: s.sup, sub: s.sub, dy: tokDy })
+      }
+    }
+  }
+  return items
+}
+
+/** Greedy word-wrap with char-splitting for over-long words. Exported for tests. */
+export function pdfWrapItems(items: PdfFlowItem[], maxFirst: number, maxCont: number): PdfDrawRun[][] {
+  const lines: PdfDrawRun[][] = []
+  let cur: PdfDrawRun[] = []
+  let curW = 0
+  let lineIdx = 0
+  const maxFor = (): number => (lineIdx === 0 ? maxFirst : maxCont)
+  const pushLine = (): void => {
+    while (cur.length > 0 && cur[cur.length - 1].text === ' ') {
+      cur.pop()
+    }
+    // Recompute width after trimming (cheap: sum again).
+    curW = 0
+    for (const r of cur) curW += pdfTextWidth(r.font, r.text, r.size)
+    lines.push(cur)
+    cur = []
+    curW = 0
+    lineIdx++
+  }
+  for (const it of items) {
+    if (it.kind === 'br') {
+      if (cur.length > 0) pushLine()
+      continue
+    }
+    if (it.text === ' ') {
+      if (cur.length === 0) continue // no leading spaces
+      const w = pdfTextWidth(it.font, ' ', it.size)
+      if (curW + w > maxFor()) pushLine()
+      else {
+        cur.push({ text: ' ', font: it.font, size: it.size, u: it.u, strike: it.strike, mark: it.mark, sup: it.sup, sub: it.sub, dy: it.dy })
+        curW += w
+      }
+      continue
+    }
+    const w = pdfTextWidth(it.font, it.text, it.size)
+    if (curW + w <= maxFor()) {
+      cur.push({ text: it.text, font: it.font, size: it.size, u: it.u, strike: it.strike, mark: it.mark, sup: it.sup, sub: it.sub, dy: it.dy })
+      curW += w
+      continue
+    }
+    if (cur.length === 0) {
+      // Over-long word on an empty line: split by chars.
+      for (const ch of it.text) {
+        const cw = pdfTextWidth(it.font, ch, it.size)
+        if (curW + cw > maxFor() && cur.length > 0) pushLine()
+        cur.push({ text: ch, font: it.font, size: it.size, u: it.u, strike: it.strike, mark: it.mark, sup: it.sup, sub: it.sub, dy: it.dy })
+        curW += cw
+      }
+      continue
+    }
+    pushLine()
+    const w2 = pdfTextWidth(it.font, it.text, it.size)
+    if (w2 <= maxFor()) {
+      cur.push({ text: it.text, font: it.font, size: it.size, u: it.u, strike: it.strike, mark: it.mark, sup: it.sup, sub: it.sub, dy: it.dy })
+      curW = w2
+    } else {
+      curW = 0
+      for (const ch of it.text) {
+        const cw = pdfTextWidth(it.font, ch, it.size)
+        if (curW + cw > maxFor() && cur.length > 0) pushLine()
+        cur.push({ text: ch, font: it.font, size: it.size, u: it.u, strike: it.strike, mark: it.mark, sup: it.sup, sub: it.sub, dy: it.dy })
+        curW += cw
+      }
+    }
+  }
+  if (cur.length > 0) pushLine()
+  return lines
+}
+
+/**
+ * Draw one wrapped line's runs at (x0, yBase). Single home for the
+ * mark/u/strike geometry so body text and table cells agree byte-for-byte:
+ * highlight rect behind the text, text at the shifted baseline, then the
+ * underline/strike rules anchored on the DRAWN baseline. Returns final x.
+ */
+function pdfDrawRunsAt(page: any, rgb: any, runs: PdfDrawRun[], x0: number, yBase: number): number {
+  let x = x0
+  for (const run of runs) {
+    const txt = sanitizePdfText(run.text)
+    if (txt === '') continue
+    const w = pdfTextWidth(run.font, txt, run.size)
+    const drawnY = yBase + (run.dy ?? 0)
+    if (run.mark) {
+      page.drawRectangle({
+        x,
+        y: drawnY - run.size * 0.25,
+        width: w,
+        height: run.size * 1.05,
+        color: rgb(1, 1, 0.55),
+        borderWidth: 0,
+      })
+    }
+    page.drawText(txt, { x, y: drawnY, size: run.size, font: run.font, color: rgb(0, 0, 0) })
+    if (run.u) {
+      const uy = drawnY - run.size * 0.12
+      page.drawLine({
+        start: { x, y: uy },
+        end: { x: x + w, y: uy },
+        thickness: Math.max(0.5, run.size * 0.06),
+        color: rgb(0, 0, 0),
+      })
+    }
+    if (run.strike) {
+      const sy = drawnY + run.size * 0.28
+      page.drawLine({
+        start: { x, y: sy },
+        end: { x: x + w, y: sy },
+        thickness: Math.max(0.5, run.size * 0.05),
+        color: rgb(0, 0, 0),
+      })
+    }
+    x += w
+  }
+  return x
+}
+
+/**
+ * Draw wrapped lines; codeBg paints the light-grey code rect behind each.
+ * Underlined / struck / highlighted / raised-lowered runs are drawn per-run
+ * via pdfDrawRunsAt (mark rect behind, text at state.y + dy, u/strike rules
+ * anchored on the drawn baseline). Visual only — pdfjs text extraction
+ * ignores drawn rects/rules, so re-import yields the plain words. Line height
+ * still comes from opts.size (sup/sub never expand the line). Exported for tests.
+ */
+export function pdfDrawLines(
+  state: PdfState,
+  lines: PdfDrawRun[][],
+  opts: { size: number; indent: number; prefixW: number; codeBg: boolean },
+): void {
+  const lineH = opts.size * PDF_LINE_FACTOR
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li] as PdfDrawRun[]
+    if (state.y - lineH < PDF_MARGIN) pdfNewPage(state)
+    state.y -= lineH
+    if (opts.codeBg) {
+      state.page.drawRectangle({
+        x: PDF_MARGIN,
+        y: state.y - 3,
+        width: PDF_CONTENT_W,
+        height: lineH + 1,
+        color: state.rgb(0.953, 0.953, 0.945),
+        borderWidth: 0,
+      })
+    }
+    if (line.length === 0) continue
+    const x = PDF_MARGIN + opts.indent + (li > 0 ? opts.prefixW : 0)
+    pdfDrawRunsAt(state.page, state.rgb, line, x, state.y)
+  }
+}
+
+/** Generic paragraph: prefix is one atomic token (markers never split). */
+function pdfDrawPara(
+  state: PdfState,
+  segs: ExportSeg[],
+  opts: { size: number; forceBold: boolean; indent: number; prefix: string; gapAfter: number; codeBg: boolean },
+): void {
+  const items = pdfFlowItems(segs, state.fonts, opts.size, opts.forceBold)
+  if (opts.prefix !== '') {
+    items.unshift({ kind: 'tok', text: opts.prefix, font: state.fonts.regular, size: opts.size, u: false, strike: false, mark: false, sup: false, sub: false, dy: 0 })
+  }
+  const prefixW = opts.prefix !== '' ? pdfTextWidth(state.fonts.regular, opts.prefix, opts.size) : 0
+  const maxFirst = PDF_CONTENT_W - opts.indent
+  const maxCont = PDF_CONTENT_W - opts.indent - prefixW
+  const lines = pdfWrapItems(items, maxFirst, maxCont)
+  if (lines.length === 0) {
+    state.y -= opts.gapAfter
+    if (state.y < PDF_MARGIN) pdfNewPage(state)
+    return
+  }
+  pdfDrawLines(state, lines, { size: opts.size, indent: opts.indent, prefixW, codeBg: opts.codeBg })
+  state.y -= opts.gapAfter
+  if (state.y < PDF_MARGIN) pdfNewPage(state)
+}
+
+/** One literal code line (no inline parsing): preserves leading indent. */
+function pdfDrawCodeLine(state: PdfState, line: string): void {
+  const size = PDF_CODE_SIZE
+  const lineH = size * PDF_LINE_FACTOR
+  if (line === '') {
+    if (state.y - lineH < PDF_MARGIN) pdfNewPage(state)
+    state.y -= lineH
+    state.page.drawRectangle({
+      x: PDF_MARGIN,
+      y: state.y - 3,
+      width: PDF_CONTENT_W,
+      height: lineH + 1,
+      color: state.rgb(0.953, 0.953, 0.945),
+      borderWidth: 0,
+    })
+    return
+  }
+  let indentSpaces = 0
+  while (indentSpaces < line.length && line[indentSpaces] === ' ') indentSpaces++
+  const spaceW = pdfTextWidth(state.fonts.mono, ' ', size)
+  const indent = indentSpaces * spaceW
+  const rest = line.slice(indentSpaces)
+  const items: PdfFlowItem[] = []
+  for (const part of rest.split(/(\s+)/)) {
+    if (part === '') continue
+    if (/^\s+$/.test(part)) items.push({ kind: 'tok', text: ' ', font: state.fonts.mono, size, u: false, strike: false, mark: false, sup: false, sub: false, dy: 0 })
+    else items.push({ kind: 'tok', text: part, font: state.fonts.mono, size, u: false, strike: false, mark: false, sup: false, sub: false, dy: 0 })
+  }
+  const max = PDF_CONTENT_W - indent
+  const lines = pdfWrapItems(items, max, max)
+  if (lines.length === 0) {
+    if (state.y - lineH < PDF_MARGIN) pdfNewPage(state)
+    state.y -= lineH
+    return
+  }
+  pdfDrawLines(state, lines, { size, indent, prefixW: 0, codeBg: true })
+}
+
+/**
+ * Column widths for a table's raw rows (rows[0] is the header). Normalizes
+ * ragged rows, measures each cell's single-line natural width (header cells
+ * forceBold to match preview `th`), and either uses naturals when they fit
+ * or scales proportionally with a MIN floor then renormalizes to exactly
+ * PDF_CONTENT_W. Exported for tests.
+ */
+export function pdfTableColumnWidths(rows: string[][], fonts: PdfFonts): number[] {
+  if (rows.length === 0) return []
+  let cols = 0
+  for (const r of rows) cols = Math.max(cols, r.length)
+  if (cols === 0) return []
+  const naturals: number[] = new Array(cols).fill(0)
+  for (let c = 0; c < cols; c++) {
+    let best = 0
+    for (let r = 0; r < rows.length; r++) {
+      const cell = (rows[r] as string[])[c] ?? ''
+      const items = pdfFlowItems(parseExportInline(cell), fonts, PDF_BASE_SIZE, r === 0)
+      let w = 0
+      for (const it of items) {
+        if (it.kind === 'br') continue
+        w += pdfTextWidth(it.font, it.text, it.size)
+      }
+      const natural = w + 2 * PDF_TABLE_PAD_X
+      if (natural > best) best = natural
+    }
+    naturals[c] = best
+  }
+  const total = naturals.reduce((a, b) => a + b, 0)
+  if (total <= PDF_CONTENT_W) return naturals
+  // Proportional shrink with a MIN floor, then renormalize to exactly
+  // PDF_CONTENT_W (clamp + rescale loop; final drift fix keeps it total-exact).
+  let widths = naturals.map((n) => (n * PDF_CONTENT_W) / total)
+  for (let iter = 0; iter < 10; iter++) {
+    let deficit = 0
+    let flexSum = 0
+    for (let i = 0; i < cols; i++) {
+      const w = widths[i] as number
+      if (w < PDF_TABLE_MIN_COL_W) deficit += PDF_TABLE_MIN_COL_W - w
+      else flexSum += w
+    }
+    if (deficit === 0) break
+    for (let i = 0; i < cols; i++) {
+      if ((widths[i] as number) < PDF_TABLE_MIN_COL_W) widths[i] = PDF_TABLE_MIN_COL_W
+    }
+    if (flexSum === 0) break
+    for (let i = 0; i < cols; i++) {
+      if ((widths[i] as number) > PDF_TABLE_MIN_COL_W) {
+        widths[i] = (widths[i] as number) - deficit * ((widths[i] as number) / flexSum)
+      }
+    }
+  }
+  const sum = widths.reduce((a, b) => a + b, 0)
+  if (sum !== 0) {
+    const k = PDF_CONTENT_W / sum
+    widths = widths.map((w) => w * k)
+    const drift = PDF_CONTENT_W - widths.reduce((a, b) => a + b, 0)
+    widths[cols - 1] = (widths[cols - 1] as number) + drift
+  }
+  return widths
+}
+
+/**
+ * Draw a real bordered table grid (no `|` separators, no `---` line).
+ * Ragged rows are padded with empty bordered cells; inline styles
+ * (bold/code/highlight/underline/sup/sub) work via the shared
+ * pdfDrawRunsAt path. Rows that don't fit break to a fresh page with the
+ * header row repeated first. Exported for tests.
+ */
+export function pdfDrawTable(state: PdfState, rows: string[][]): void {
+  if (rows.length === 0) return
+  let cols = 0
+  for (const r of rows) cols = Math.max(cols, r.length)
+  if (cols === 0) return
+  const norm: string[][] = rows.map((r) => {
+    const out = r.slice()
+    while (out.length < cols) out.push('')
+    return out
+  })
+  const colWs = pdfTableColumnWidths(rows, state.fonts)
+  const lineH = PDF_BASE_SIZE * PDF_LINE_FACTOR
+  const cellLines = norm.map((row) => row.map(() => [] as PdfDrawRun[][]))
+  for (let r = 0; r < norm.length; r++) {
+    for (let c = 0; c < cols; c++) {
+      const cell = (norm[r] as string[])[c] as string
+      const avail = Math.max(10, (colWs[c] as number) - 2 * PDF_TABLE_PAD_X)
+      const items = pdfFlowItems(parseExportInline(cell), state.fonts, PDF_BASE_SIZE, r === 0)
+      ;(cellLines[r] as PdfDrawRun[][][])[c] = pdfWrapItems(items, avail, avail)
+    }
+  }
+  const rowHs: number[] = cellLines.map((cells) => {
+    let ml = 1
+    for (const lines of cells as PdfDrawRun[][][]) {
+      const n = (lines as PdfDrawRun[][]).length === 0 ? 1 : (lines as PdfDrawRun[][]).length
+      if (n > ml) ml = n
+    }
+    return ml * lineH + 2 * PDF_TABLE_PAD_Y
+  })
+  const drawRow = (rIdx: number): void => {
+    const rowH = rowHs[rIdx] as number
+    const rowTop = state.y
+    const cells = cellLines[rIdx] as PdfDrawRun[][][]
+    let cellX = PDF_MARGIN
+    for (let c = 0; c < cols; c++) {
+      const isHeader = rIdx === 0
+      state.page.drawRectangle({
+        x: cellX,
+        y: rowTop - rowH,
+        width: colWs[c],
+        height: rowH,
+        color: isHeader ? state.rgb(0.949, 0.949, 0.945) : state.rgb(1, 1, 1),
+        borderColor: state.rgb(0.7, 0.7, 0.7),
+        borderWidth: 0.75,
+      })
+      const lines = (cells[c] as PdfDrawRun[][]) ?? []
+      for (let li = 0; li < lines.length; li++) {
+        const yBase = rowTop - PDF_TABLE_PAD_Y - PDF_BASE_SIZE - li * lineH
+        pdfDrawRunsAt(state.page, state.rgb, lines[li] as PdfDrawRun[], cellX + PDF_TABLE_PAD_X, yBase)
+      }
+      cellX += colWs[c] as number
+    }
+    state.y = rowTop - rowH
+  }
+  for (let r = 0; r < norm.length; r++) {
+    const rh = rowHs[r] as number
+    if (state.y - rh < PDF_MARGIN) {
+      pdfNewPage(state)
+      if (r !== 0) drawRow(0)
+    }
+    drawRow(r)
+  }
+}
+
+/**
+ * Embed PNG/JPEG images below the current cursor. Never throws: undecodable
+ * bytes, unsupported kinds and oversized payloads fall back to the alt-text
+ * line already drawn. Images are centered, scaled to fit the content width
+ * (never upscaled) and page-break-avoid (fresh page when they don't fit).
+ */
+async function pdfEmbedImages(state: PdfState, images: Array<{ alt: string; dataUrl: string }>): Promise<void> {
+  for (const img of images) {
+    let bytes: Uint8Array
+    try {
+      bytes = decodePdfDataUrl(img.dataUrl)
+    } catch {
+      continue
+    }
+    const isPng = /^data:image\/png/i.test(img.dataUrl)
+    const isJpg = /^data:image\/jpe?g/i.test(img.dataUrl)
+    if (!isPng && !isJpg) continue
+    try {
+      let pdfImg = state.imageCache.get(img.dataUrl)
+      if (pdfImg === undefined) {
+        pdfImg = isPng ? await state.doc.embedPng(bytes) : await state.doc.embedJpg(bytes)
+        state.imageCache.set(img.dataUrl, pdfImg)
+      }
+      const w = pdfImg.width as number
+      const h = pdfImg.height as number
+      if (!(w > 0 && h > 0)) continue
+      const scale = Math.min(1, PDF_CONTENT_W / w, (PDF_PAGE_H - PDF_MARGIN * 2) / h)
+      const sw = w * scale
+      const sh = h * scale
+      if (state.y - (sh + 12) < PDF_MARGIN) pdfNewPage(state)
+      state.y -= sh + 4
+      const x = PDF_MARGIN + (PDF_CONTENT_W - sw) / 2
+      state.page.drawImage(pdfImg, { x, y: state.y, width: sw, height: sh })
+      state.y -= 8
+    } catch {
+      continue
+    }
+  }
+}
+
+/** Blocks → PDF pages. `withImages` gates embedding (plain path: text only). */
+async function pdfRenderBlocks(state: PdfState, blocks: ExportBlock[], withImages: boolean): Promise<void> {
+  for (const b of blocks) {
+    switch (b.kind) {
+      case 'heading': {
+        const level = Math.min(Math.max(b.level, 1), 6)
+        const size = PDF_HEADING_SIZES[level - 1] as number
+        const before = level === 1 ? 14 : level === 2 ? 12 : 8
+        if (state.y !== PDF_PAGE_H - PDF_MARGIN) {
+          state.y -= before
+          if (state.y < PDF_MARGIN + size * PDF_LINE_FACTOR) pdfNewPage(state)
+        }
+        pdfDrawPara(state, parseExportInline(b.text), {
+          size,
+          forceBold: true,
+          indent: 0,
+          prefix: '',
+          gapAfter: 6,
+          codeBg: false,
+        })
+        if (withImages) await pdfEmbedImages(state, collectPdfImagesFromText(b.text))
+        break
+      }
+      case 'bullet':
+        pdfDrawPara(state, parseExportInline(b.text), {
+          size: PDF_BASE_SIZE,
+          forceBold: false,
+          indent: 0,
+          prefix: '- ',
+          gapAfter: 2,
+          codeBg: false,
+        })
+        if (withImages) await pdfEmbedImages(state, collectPdfImagesFromText(b.text))
+        break
+      case 'ordered':
+        pdfDrawPara(state, parseExportInline(b.text), {
+          size: PDF_BASE_SIZE,
+          forceBold: false,
+          indent: 0,
+          prefix: `${b.num}. `,
+          gapAfter: 2,
+          codeBg: false,
+        })
+        if (withImages) await pdfEmbedImages(state, collectPdfImagesFromText(b.text))
+        break
+      case 'task':
+        pdfDrawPara(state, parseExportInline(b.text), {
+          size: PDF_BASE_SIZE,
+          forceBold: false,
+          indent: 0,
+          prefix: b.checked ? '- [x] ' : '- [ ] ',
+          gapAfter: 2,
+          codeBg: false,
+        })
+        if (withImages) await pdfEmbedImages(state, collectPdfImagesFromText(b.text))
+        break
+      case 'code': {
+        for (const l of ['```', ...b.lines, '```']) pdfDrawCodeLine(state, l)
+        state.y -= 6
+        if (state.y < PDF_MARGIN) pdfNewPage(state)
+        break
+      }
+      case 'quote':
+        pdfDrawPara(state, parseExportInline(b.text), {
+          size: PDF_BASE_SIZE,
+          forceBold: false,
+          indent: 18,
+          prefix: '> ',
+          gapAfter: 6,
+          codeBg: false,
+        })
+        if (withImages) await pdfEmbedImages(state, collectPdfImagesFromText(b.text))
+        break
+      case 'hr': {
+        if (state.y - 22 < PDF_MARGIN) pdfNewPage(state)
+        state.y -= 10
+        state.page.drawLine({
+          start: { x: PDF_MARGIN, y: state.y },
+          end: { x: PDF_PAGE_W - PDF_MARGIN, y: state.y },
+          thickness: 1,
+          color: state.rgb(0.6, 0.6, 0.6),
+        })
+        state.y -= 10
+        break
+      }
+      case 'table': {
+        pdfDrawTable(state, b.rows)
+        if (withImages) {
+          for (const row of b.rows) {
+            for (const cell of row) {
+              const imgs = collectPdfImagesFromText(cell)
+              if (imgs.length > 0) await pdfEmbedImages(state, imgs)
+            }
+          }
+        }
+        state.y -= 4
+        if (state.y < PDF_MARGIN) pdfNewPage(state)
+        break
+      }
+      case 'dropdown': {
+        if (b.title !== '') {
+          pdfDrawPara(state, parseExportInline(b.title), {
+            size: PDF_BASE_SIZE,
+            forceBold: false,
+            indent: 0,
+            prefix: '',
+            gapAfter: 3,
+            codeBg: false,
+          })
+          if (withImages) await pdfEmbedImages(state, collectPdfImagesFromText(b.title))
+        }
+        await pdfRenderBlocks(state, b.body, withImages)
+        break
+      }
+      case 'para':
+        pdfDrawPara(state, parseExportInline(b.text), {
+          size: PDF_BASE_SIZE,
+          forceBold: false,
+          indent: 0,
+          prefix: '',
+          gapAfter: 6,
+          codeBg: false,
+        })
+        if (withImages) await pdfEmbedImages(state, collectPdfImagesFromText(b.text))
+        break
+    }
+  }
+}
+
+/** Embed the 8 standard fonts (Helvetica + Courier families). */
+async function pdfEmbedFonts(doc: any, StandardFonts: any): Promise<PdfFonts> {
+  return {
+    regular: await doc.embedFont(StandardFonts.Helvetica),
+    bold: await doc.embedFont(StandardFonts.HelveticaBold),
+    italic: await doc.embedFont(StandardFonts.HelveticaOblique),
+    boldItalic: await doc.embedFont(StandardFonts.HelveticaBoldOblique),
+    mono: await doc.embedFont(StandardFonts.Courier),
+    monoBold: await doc.embedFont(StandardFonts.CourierBold),
+    monoItalic: await doc.embedFont(StandardFonts.CourierOblique),
+    monoBoldItalic: await doc.embedFont(StandardFonts.CourierBoldOblique),
+  }
+}
+
+/**
+ * Markdown → PDF bytes (text-based, selectable, re-importable via Import).
+ * Empty input yields one blank page (never empty/invalid bytes).
+ */
+export async function markdownToPdfBytes(markdown: string): Promise<Uint8Array> {
+  const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib')
+  const doc = await PDFDocument.create()
+  const fonts = await pdfEmbedFonts(doc, StandardFonts)
+  const state: PdfState = {
+    doc,
+    rgb,
+    page: doc.addPage([PDF_PAGE_W, PDF_PAGE_H]),
+    y: PDF_PAGE_H - PDF_MARGIN,
+    fonts,
+    imageCache: new Map(),
+  }
+  await pdfRenderBlocks(state, parseExportBlocks(markdown), false)
+  return await doc.save()
+}
+
+/**
+ * Markdown → PDF bytes with local PNG/JPG images embedded. Inlines images via
+ * {@link inlineMarkdownImagesDetailed} first (inlined/skipped report is
+ * returned verbatim); SVG / remote / unreadable sources fall back to their
+ * alt-text lines and never throw.
+ */
+export async function markdownToPdfBytesWithImages(
+  markdown: string,
+  docPath: string | null,
+  expose: (absPath: string) => Promise<string>,
+): Promise<PdfExportResult> {
+  const detailed = await inlineMarkdownImagesDetailed(markdown, docPath, expose)
+  const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib')
+  const doc = await PDFDocument.create()
+  const fonts = await pdfEmbedFonts(doc, StandardFonts)
+  const state: PdfState = {
+    doc,
+    rgb,
+    page: doc.addPage([PDF_PAGE_W, PDF_PAGE_H]),
+    y: PDF_PAGE_H - PDF_MARGIN,
+    fonts,
+    imageCache: new Map(),
+  }
+  await pdfRenderBlocks(state, parseExportBlocks(detailed.markdown), true)
+  const bytes = await doc.save()
+  return { bytes, inlined: detailed.inlined, skipped: detailed.skipped }
 }

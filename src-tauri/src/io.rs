@@ -70,6 +70,10 @@ fn rtf_filters() -> [(&'static str, &'static [&'static str]); 2] {
     [("RTF", &["rtf"]), ("All files", &["*"])]
 }
 
+fn pdf_filters() -> [(&'static str, &'static [&'static str]); 2] {
+    [("PDF", &["pdf"]), ("All files", &["*"])]
+}
+
 /// "Import" filters for the import picker: a combined "Importable Files" entry
 /// first (so it is the dialog default), then Markdown/text, HTML, PDF, Word,
 /// RTF, plus All files (same static-slice `add_filter` constraint as the others).
@@ -195,7 +199,7 @@ pub fn read_file(path: String) -> Result<String, String> {
 /// `pick_save_path(app, suggested, html, kind)` — native "Save" dialog; returns the
 /// chosen path string (desktop) or URI string (mobile). `suggested` (when
 /// present) pre-fills the file name in the dialog. Round-9 unified export:
-/// `kind` selects txt/html/docx/rtf filters; when `kind` is None, fall back to
+/// `kind` selects txt/html/docx/rtf/pdf filters; when `kind` is None, fall back to
 /// the legacy `html`-bool behavior (true → HTML filters, else Markdown).
 /// `None` when cancelled.
 #[tauri::command]
@@ -224,6 +228,11 @@ pub fn pick_save_path(
         }
         Some("rtf") => {
             for (name, exts) in rtf_filters() {
+                dialog = dialog.add_filter(name, exts);
+            }
+        }
+        Some("pdf") => {
+            for (name, exts) in pdf_filters() {
                 dialog = dialog.add_filter(name, exts);
             }
         }

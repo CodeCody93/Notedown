@@ -635,11 +635,12 @@ describe('EXPORT_FORMATS + exportLossSummaryFor (round-9 unified export)', () =>
     expect(bullets.join(' ')).toMatch(/image/i)
   })
 
-  it('pdf notes the print stylesheet and TEXT (re-importable) output', () => {
+  it('pdf notes direct TEXT (re-importable) output, not print', () => {
     const bullets = exportLossSummaryFor('pdf')
-    expect(bullets).toHaveLength(2)
-    expect(bullets.join(' ')).toMatch(/print/i)
+    expect(bullets.length).toBeGreaterThan(0)
+    expect(bullets.length).toBeLessThanOrEqual(6)
     expect(bullets.join(' ')).toMatch(/TEXT/)
+    expect(bullets.join(' ')).not.toMatch(/print stylesheet/)
   })
 
   it('docx/rtf stay honest and short (images dropped, layout lost)', () => {

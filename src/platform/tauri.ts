@@ -53,7 +53,7 @@ export const tauriIO: FileIO = {
   },
 
   /**
-   * Round-9 unified export: binary save for .docx via `pick_save_path` +
+   * Round-9 unified export: binary save for .docx/.pdf via `pick_save_path` +
    * `write_bytes` (bytes cross the invoke boundary as a number array — the
    * same Uint8Array boundary pattern as saveImage).
    */

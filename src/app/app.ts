@@ -14,10 +14,9 @@ import {
   shouldRecover,
   writeSession,
 } from './draft'
-import { classifyImageSrc, inlineMarkdownImagesDetailed, markdownToDocxBytes, markdownToRtf, renderStandaloneHtml } from './export'
+import { classifyImageSrc, inlineMarkdownImagesDetailed, markdownToDocxBytes, markdownToPdfBytesWithImages, markdownToRtf, renderStandaloneHtml } from './export'
 import type { ExportFormat } from './export'
 import { chooseExportFormat, isExportDialogOpen, wireExportDialog } from './exportDialog'
-import { printStandaloneHtml } from './print'
 import { convertToMarkdown, detectFormat, lossSummaryFor } from './import'
 import { confirmImportLosses, isImportDialogOpen, wireImportDialog } from './importDialog'
 import { addRecent, parseRecents, removeRecent } from './recent'
@@ -242,9 +241,8 @@ function collectUnsavedImageSrcs(markdown: string): string[] {
 // scripts never execute inside `<img>`-loaded SVG).
 //
 // Round-9 unified export: the image-inlining + unsaved-doc guard + skip-report
-// logic below is shared by BOTH the html and pdf paths (pdf prints the same
-// inlined standalone HTML via printStandaloneHtml, so the unsaved-doc
-// local-image guard applies to it too).
+// logic below backs the html path via the buildInlinedStandaloneHtml helper
+// (the PDF path generates bytes directly — see writePdfExport).
 async function writeHtmlExport(): Promise<void> {
   const doc = appState.get().doc
   if (doc.path === null && unsavedDocHasLocalImages(doc.content)) {
@@ -264,12 +262,10 @@ async function writeHtmlExport(): Promise<void> {
   }
 }
 
-// Round-9 unified export: print-to-PDF via the OS print dialog (the dialog's
-// "Save as PDF" destination is the PDF). Prints the same images-inlined
-// standalone HTML as the html path through a hidden same-origin iframe
-// (printStandaloneHtml) — no file is written, and the OS print dialog itself
-// is the confirm, so no pre-confirm is shown.
-async function printPdfExport(): Promise<void> {
+// Direct PDF export: generate PDF bytes via markdownToPdfBytesWithImages and
+// write them with saveBytes (exportKind 'pdf'). The OS print dialog is no
+// longer involved, and there is no popup-blocker timing constraint.
+async function writePdfExport(): Promise<void> {
   const doc = appState.get().doc
   if (doc.path === null && unsavedDocHasLocalImages(doc.content)) {
     await showAlert(
@@ -277,8 +273,15 @@ async function printPdfExport(): Promise<void> {
     )
     return
   }
-  const { html } = await buildInlinedStandaloneHtml()
-  printStandaloneHtml(html)
+  try {
+    const result = await markdownToPdfBytesWithImages(doc.content, doc.path, (abs) => io.exposeImage(abs))
+    const pdfName = exportBaseName(doc.name) + '.pdf'
+    const saved = await io.saveBytes(result.bytes, pdfName, { exportKind: 'pdf' })
+    if (saved === null) return // user cancelled the save dialog
+    await reportSkippedImages(result.inlined.length, result.skipped)
+  } catch (err) {
+    await showAlert(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
 // Round-9 unified export: single entry point behind the File → Export… menu
@@ -305,7 +308,7 @@ async function exportDoc(): Promise<void> {
         await writeHtmlExport()
         break
       case 'pdf':
-        await printPdfExport()
+        await writePdfExport()
         break
       case 'rtf':
         await io.saveFile(null, markdownToRtf(doc.content), `${base}.rtf`, { exportKind: 'rtf' })

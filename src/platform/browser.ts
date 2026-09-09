@@ -122,8 +122,17 @@ const RTF_PICKER_TYPES = [
   },
 ]
 
+const PDF_PICKER_TYPES = [
+  {
+    description: 'PDF',
+    accept: {
+      'application/pdf': ['.pdf'],
+    },
+  },
+]
+
 /** Round-9 unified export: resolve save-dialog picker types from SaveOptions (legacy html:true → HTML). */
-function pickerTypesFor(opts?: { html?: boolean; exportKind?: 'txt' | 'html' | 'docx' | 'rtf' }): unknown {
+function pickerTypesFor(opts?: { html?: boolean; exportKind?: 'txt' | 'html' | 'docx' | 'rtf' | 'pdf' }): unknown {
   const kind = opts?.exportKind ?? (opts?.html === true ? 'html' : undefined)
   switch (kind) {
     case 'txt':
@@ -134,6 +143,8 @@ function pickerTypesFor(opts?: { html?: boolean; exportKind?: 'txt' | 'html' | '
       return DOCX_PICKER_TYPES
     case 'rtf':
       return RTF_PICKER_TYPES
+    case 'pdf':
+      return PDF_PICKER_TYPES
     default:
       return MARKDOWN_PICKER_TYPES
   }
@@ -252,16 +263,16 @@ export const browserIO: FileIO = {
   },
 
   /**
-   * Round-9 unified export: binary save for .docx via showSaveFilePicker +
+   * Round-9 unified export: binary save for .docx/.pdf via showSaveFilePicker +
    * `writable.write(new Blob([bytes]))`. Always picks (no stored handle
    * reuse); stores the new handle under a fresh key like saveFile.
    */
-  async saveBytes(bytes, suggestedName): Promise<string | null> {
+  async saveBytes(bytes, suggestedName, opts?: { exportKind?: 'docx' | 'pdf' }): Promise<string | null> {
     const w = window as WindowWithFSA
     if (typeof w.showSaveFilePicker !== 'function') throw fsUnavailable()
     const handle = await w.showSaveFilePicker({
       suggestedName,
-      types: DOCX_PICKER_TYPES,
+      types: opts?.exportKind === 'pdf' ? PDF_PICKER_TYPES : DOCX_PICKER_TYPES,
     })
     const writable = await handle.createWritable()
     // Type-honest BlobPart: Blob accepts a Uint8Array view directly, and
