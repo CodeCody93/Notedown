@@ -21,6 +21,9 @@
  */
 
 import DOMPurify from 'dompurify'
+// Type-only: pdfVector is loaded lazily inside convertPdf (never statically —
+// the app shell must not gain a new eager chunk). Types erase at build.
+import type { PdfRect, PdfTableGrid } from './pdfVector'
 
 export type ImportFormat = 'markdown' | 'txt' | 'html' | 'pdf' | 'docx' | 'rtf'
 
@@ -76,9 +79,9 @@ export function lossSummaryFor(format: ImportFormat): string[] {
       ]
     case 'pdf':
       return [
-        'Only text is extracted — images and vector graphics are dropped.',
-        'Page layout, columns and tables may be flattened or reordered.',
-        'Fonts, sizes and colors are not preserved.',
+        'Only text is extracted — images are dropped; underlines, highlights and table rulings inform markup but are not preserved visually.',
+        'Tables with clear ruling grids are rebuilt as Markdown tables; other layouts and columns may flatten or reorder.',
+        'Bold/italic (from each font\'s style name in the PDF\'s font resources, resolved per span), headings (from relative type size) and sub/superscript (from baseline position) survive as best-effort heuristics — exact fonts, sizes and colors are not preserved.',
         'Scanned (image-only) PDFs contain no extractable text and import as empty.',
         'Password-protected PDFs cannot be imported.',
       ]
@@ -738,7 +741,60 @@ async function convertPdf(bytes: Uint8Array): Promise<ImportConversion> {
     for (let n = 1; n <= doc.numPages; n++) {
       const page = await doc.getPage(n)
       const content = await page.getTextContent()
-      const text = pdfPageToText(content.items)
+      // Vector pass (best-effort): ruling grids → tables, horizontal rules →
+      // underline/strike, standalone fills → highlight (see pdfPageToText).
+      // pdfVector rides a lazy import (never an app-shell chunk); OPS comes
+      // off the already-loaded pdfjs module. Any failure here (weird page,
+      // odd operator stream) falls back to the text layer for that page.
+      let decorations: PdfPageDecorations | undefined
+      try {
+        const opList = (await page.getOperatorList()) as unknown as {
+          fnArray?: ArrayLike<number>
+          argsArray?: ArrayLike<unknown>
+        }
+        const OPS = (pdfjs as unknown as { OPS?: Record<string, number> }).OPS
+        if (
+          OPS !== undefined &&
+          opList !== null &&
+          typeof opList === 'object' &&
+          opList.fnArray !== undefined &&
+          opList.argsArray !== undefined
+        ) {
+          const { analyzePdfVectors, classifyHorizontalRule } = await import('./pdfVector')
+          const analysis = analyzePdfVectors(opList.fnArray, opList.argsArray, OPS)
+          if (
+            analysis.tables.length > 0 ||
+            analysis.underlines.length > 0 ||
+            analysis.highlights.length > 0
+          ) {
+            decorations = {
+              tables: analysis.tables,
+              rules: analysis.underlines,
+              highlights: analysis.highlights,
+              classifyRule: classifyHorizontalRule,
+            }
+          }
+        }
+      } catch {
+        decorations = undefined
+      }
+      // Font-resource pass (best-effort, never fails the import): resolve each
+      // opaque text-layer font id through page.commonObjs to its true BaseFont
+      // style (see pdfCollectFontStyles). Runs AFTER getOperatorList above —
+      // that call pulls the font dependencies to the main thread, which is
+      // what makes the synchronous-looking commonObjs.get callbacks fire.
+      try {
+        const fontStyles = await pdfCollectFontStyles(
+          page.commonObjs as unknown as PdfFontStore,
+          pdfContentFontNames(content.items),
+        ).catch(() => new Map<string, PdfFontStyle>())
+        if (fontStyles.size > 0) {
+          decorations = { ...(decorations ?? {}), fontStyles }
+        }
+      } catch {
+        /* style resolution never fails the import */
+      }
+      const text = pdfPageToText(content.items, content.styles, decorations)
       if (text.length > 0) pages.push(text)
     }
     const markdown = pages.join('\n\n')
@@ -765,45 +821,1212 @@ function readablePdfError(err: unknown): Error {
 }
 
 /**
- * Reconstruct one page's text from pdfjs text items (round-7 C4). Items carry
- * per-span fragments plus `hasEOL` line-break flags: spans are space-joined
- * within a line, lines break on `hasEOL`, and whitespace-only lines are
- * dropped. Items without `hasEOL` (older shapes) fall back to the legacy
- * space-join so text still survives.
+ * Classify a PDF font name as bold/italic (text-layer import heuristic).
+ *
+ * Fully generic: matches on the PostScript-style name only — an optional
+ * `XXXXXX+` subset prefix (6 uppercase alphanumerics + '+') is stripped, then
+ * /bold/i → bold and /italic|oblique/i → italic, so `ABCDEF+Helvetica-Bold`
+ * is bold, `Times-Oblique` is italic and `Helvetica-BoldOblique` is both.
+ * Anything else (regular names, empty, non-strings) is regular. Never throws.
  */
-function pdfPageToText(items: readonly unknown[]): string {
-  const seg = (item: unknown): string =>
-    typeof item === 'object' && item !== null && 'str' in item && typeof (item as { str: unknown }).str === 'string'
-      ? (item as { str: string }).str
-      : ''
-  const hasEol = (item: unknown): boolean | undefined =>
-    typeof item === 'object' && item !== null && 'hasEOL' in item
-      ? (item as { hasEOL: unknown }).hasEOL as boolean | undefined
-      : undefined
-  if (!items.some((item) => typeof hasEol(item) === 'boolean')) {
-    // Text items are per-span fragments in visual order; join with spaces
-    // and collapse runs. Multi-column order and table structure are NOT
-    // reconstructed (documented loss).
-    return items
-      .map(seg)
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim()
+export function pdfStyleOfFont(fontName: string): { bold: boolean; italic: boolean } {
+  try {
+    if (typeof fontName !== 'string' || fontName === '') return { bold: false, italic: false }
+    const base = fontName.replace(/^[A-Z0-9]{6}\+/, '')
+    return { bold: /bold/i.test(base), italic: /italic|oblique/i.test(base) }
+  } catch {
+    return { bold: false, italic: false }
   }
-  const lines: string[] = []
-  let segs: string[] = []
-  for (const item of items) {
-    segs.push(seg(item))
-    if (hasEol(item) === true) {
-      lines.push(segs.join(' '))
-      segs = []
+}
+
+/** Resolved style for one page font (from its PDF font-resource object). */
+export interface PdfFontStyle {
+  bold: boolean
+  italic: boolean
+}
+
+/**
+ * Classify a pdfjs main-thread font object as bold/italic (pure, never throws,
+ * defensive reads only). OR-combines two layers:
+ *
+ * (a) pdfjs's own booleans when strictly `=== true` (`.bold` / `.italic` on
+ *     the resolved FontFaceObject); (b) the existing {@link pdfStyleOfFont}
+ *     keyword match on `.name` when it is a string (the true BaseFont, e.g.
+ *     `Helvetica-Bold`, subset prefixes like `ABCDEF+Helvetica-Bold` intact —
+ *     subset-prefix aware via the same `/^[A-Z0-9]{6}\+/` strip pdfjs itself
+ *     uses, worker lines 26807-26808).
+ *
+ * Mechanism (orchestrator probe, do not re-derive): pdfjs `TextItem.fontName`
+ * is opaque (`g_d0_f1`), so text-layer keyword matching can never fire on real
+ * output — but after `page.getOperatorList()` runs, `page.commonObjs.get(id)`
+ * resolves each id to a FontFaceObject carrying the true BaseFont as `.name`
+ * plus `.bold`/`.italic` (proven: g_d0_f1 → Helvetica-Bold/bold,
+ * g_d0_f2 → Helvetica/regular, g_d0_f3 → Helvetica-Oblique/italic). Anything
+ * else (null, garbage, keyword-free names) classifies as regular.
+ */
+export function pdfClassifyFontObject(font: unknown): PdfFontStyle {
+  try {
+    if (typeof font !== 'object' || font === null) return { bold: false, italic: false }
+    const rec = font as Record<string, unknown>
+    let bold = false
+    let italic = false
+    try {
+      if (rec['bold'] === true) bold = true
+      if (rec['italic'] === true) italic = true
+    } catch {
+      /* ignore boolean reads */
+    }
+    try {
+      const name = rec['name']
+      if (typeof name === 'string' && name !== '') {
+        const named = pdfStyleOfFont(name)
+        if (named.bold) bold = true
+        if (named.italic) italic = true
+      }
+    } catch {
+      /* ignore name reads */
+    }
+    return { bold, italic }
+  } catch {
+    return { bold: false, italic: false }
+  }
+}
+
+/** Structural minimum of pdfjs PDFObjects (page.commonObjs) for style resolution. */
+export interface PdfFontStore {
+  get(id: string, callback: (font: unknown) => void): void
+}
+
+/**
+ * Distinct non-empty string `fontName`s from text items, in first-seen order
+ * (pure, exported for tests). Non-object items, missing/non-string/empty
+ * `fontName`s are skipped.
+ */
+export function pdfContentFontNames(items: readonly unknown[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  try {
+    for (const item of items) {
+      let name: unknown
+      try {
+        name =
+          typeof item === 'object' && item !== null && 'fontName' in item
+            ? (item as { fontName: unknown }).fontName
+            : undefined
+      } catch {
+        continue
+      }
+      if (typeof name !== 'string' || name === '' || seen.has(name)) continue
+      seen.add(name)
+      out.push(name)
+    }
+  } catch {
+    /* untrusted shape — return what we have */
+  }
+  return out
+}
+
+/**
+ * Resolve each distinct font id through the page font store and classify it
+ * (never rejects, never hangs).
+ *
+ * TIMING CONTRACT: works because `convertPdf` calls it AFTER
+ * `page.getOperatorList()`, which pulls the page's font dependencies to the
+ * main thread — so `store.get(id, cb)` callbacks fire promptly for live ids.
+ * BOUND: each id races its `get`+callback against a `timeoutMs` (default
+ * 1500ms) timer; a timed-out id is simply absent from the returned map and
+ * the caller treats it as regular. Ids are deduped, empties skipped, and all
+ * ids resolve in parallel.
+ *
+ * Defensive: a null/undefined store, a non-function `store.get`, a
+ * synchronously-throwing `get`, or an odd callback value all degrade to that
+ * id being absent (regular) — the import never fails on style resolution.
+ *
+ * KNOWN LIMIT (do NOT implement): fully-obfuscated BaseFonts (random,
+ * keyword-free names) cannot be classified — the raw FontDescriptor
+ * (FontWeight/Flags) is not exposed on main-thread font objects and text
+ * items carry no resource id to join a PDF-level parse against
+ * (orchestrator-verified). Those words still survive as plain text.
+ */
+export async function pdfCollectFontStyles(
+  store: PdfFontStore | null | undefined,
+  fontNames: readonly string[],
+  timeoutMs = 1500,
+): Promise<Map<string, PdfFontStyle>> {
+  const out = new Map<string, PdfFontStyle>()
+  try {
+    if (store === null || store === undefined) return out
+    let getFn: unknown
+    try {
+      getFn = (store as PdfFontStore).get
+    } catch {
+      return out
+    }
+    if (typeof getFn !== 'function') return out
+    const ids: string[] = []
+    const seen = new Set<string>()
+    try {
+      for (const name of fontNames ?? []) {
+        if (typeof name !== 'string' || name === '' || seen.has(name)) continue
+        seen.add(name)
+        ids.push(name)
+      }
+    } catch {
+      return out
+    }
+    if (ids.length === 0) return out
+    let bound = timeoutMs
+    try {
+      if (typeof bound !== 'number' || !Number.isFinite(bound) || bound < 0) bound = 1500
+    } catch {
+      bound = 1500
+    }
+    const get = getFn as (id: string, cb: (font: unknown) => void) => void
+    const jobs = ids.map(
+      (id) =>
+        new Promise<{ id: string; style: PdfFontStyle } | null>((resolve) => {
+          let settled = false
+          let timer: ReturnType<typeof setTimeout> | undefined
+          try {
+            timer = setTimeout(() => {
+              if (!settled) {
+                settled = true
+                resolve(null)
+              }
+            }, bound)
+            // Do not pin the process on a never-firing font callback.
+            try {
+              const maybeUnref = (timer as unknown as { unref?: () => void }).unref
+              if (typeof maybeUnref === 'function') maybeUnref.call(timer)
+            } catch {
+              /* browser or odd timer — ignore */
+            }
+          } catch {
+            resolve(null)
+            return
+          }
+          try {
+            get.call(store, id, (font: unknown) => {
+              if (settled) return
+              settled = true
+              try {
+                if (timer !== undefined) clearTimeout(timer)
+              } catch {
+                /* ignore */
+              }
+              try {
+                if (font === null || font === undefined) {
+                  resolve(null)
+                  return
+                }
+                resolve({ id, style: pdfClassifyFontObject(font) })
+              } catch {
+                resolve(null)
+              }
+            })
+          } catch {
+            if (!settled) {
+              settled = true
+              try {
+                if (timer !== undefined) clearTimeout(timer)
+              } catch {
+                /* ignore */
+              }
+              resolve(null)
+            }
+          }
+        }),
+    )
+    let results: Array<{ id: string; style: PdfFontStyle } | null>
+    try {
+      results = await Promise.all(jobs)
+    } catch {
+      return out
+    }
+    for (const r of results) {
+      if (r !== null) out.set(r.id, r.style)
+    }
+    return out
+  } catch {
+    return out
+  }
+}
+
+/** Nominal font-style lookup for a page's `styles` dict (pdfjs `TextContent.styles`). */
+export interface PdfImportFontStyle {
+  fontFamily?: unknown
+}
+
+/**
+ * A raw styled span from one pdfjs text item. Geometry (`height`, `y`) is
+ * kept alongside the text so the size/baseline heuristics can run per line;
+ * `x0`/`x1` (transform[4] .. +width, user space) ride along for the
+ * vector-decoration pass — absent (non-finite source) when unknown, in which
+ * case the span simply skips vector marks (graceful degradation).
+ */
+export interface PdfRawSpan {
+  text: string
+  bold: boolean
+  italic: boolean
+  height: number
+  y: number
+  x0?: number
+  x1?: number
+}
+
+/**
+ * A line span with super/subscript resolved — the emission input. `u`,
+ * `strike` and `mark` are set ONLY by the vector-decoration pass inside
+ * {@link pdfPageToText} (never by {@link pdfFlagSupSub}, whose output shape
+ * is pinned by tests) — absent means undecorated.
+ */
+export interface PdfImportSpan {
+  text: string
+  bold: boolean
+  italic: boolean
+  sup: boolean
+  sub: boolean
+  u?: boolean
+  strike?: boolean
+  mark?: boolean
+}
+
+/** Text of a pdfjs item, or null for non-text items (marked content, junk). */
+function pdfItemText(item: unknown): string | null {
+  if (typeof item !== 'object' || item === null || !('str' in item)) return null
+  const str = (item as { str: unknown }).str
+  return typeof str === 'string' ? str : null
+}
+
+/** Font name of a pdfjs item ('' when absent — classifies as regular). */
+function pdfItemFontName(item: unknown): string {
+  if (typeof item === 'object' && item !== null && 'fontName' in item) {
+    const name = (item as { fontName: unknown }).fontName
+    if (typeof name === 'string') return name
+  }
+  return ''
+}
+
+/** Item `height` as a finite number, else NaN (excluded from size stats). */
+function pdfItemHeight(item: unknown): number {
+  if (typeof item === 'object' && item !== null && 'height' in item) {
+    const height = (item as { height: unknown }).height
+    if (typeof height === 'number' && Number.isFinite(height)) return height
+  }
+  return NaN
+}
+
+/** Item `transform[4]` (x origin, user space) as a finite number, else NaN. */
+function pdfItemX(item: unknown): number {
+  if (typeof item === 'object' && item !== null && 'transform' in item) {
+    const transform = (item as { transform: unknown }).transform
+    if (Array.isArray(transform)) {
+      const x = transform[4]
+      if (typeof x === 'number' && Number.isFinite(x)) return x
     }
   }
-  if (segs.length > 0) lines.push(segs.join(' '))
+  return NaN
+}
+
+/** Item advance `width` (user space) as a finite non-negative number, else NaN. */
+function pdfItemWidth(item: unknown): number {
+  if (typeof item === 'object' && item !== null && 'width' in item) {
+    const width = (item as { width: unknown }).width
+    if (typeof width === 'number' && Number.isFinite(width) && width >= 0) return width
+  }
+  return NaN
+}
+
+/** Item baseline `transform[5]` as a finite number, else NaN. */
+function pdfItemY(item: unknown): number {
+  if (typeof item === 'object' && item !== null && 'transform' in item) {
+    const transform = (item as { transform: unknown }).transform
+    if (Array.isArray(transform)) {
+      const y = transform[5]
+      if (typeof y === 'number' && Number.isFinite(y)) return y
+    }
+  }
+  return NaN
+}
+
+function pdfItemHasEol(item: unknown): boolean | undefined {
+  return typeof item === 'object' && item !== null && 'hasEOL' in item
+    ? (item as { hasEOL: unknown }).hasEOL as boolean | undefined
+    : undefined
+}
+
+/**
+ * Resolve one item's emphasis. The item's own `fontName` wins; when it is
+ * style-free (notably pdfjs v5's opaque `docId_fontId` ids, which carry no
+ * style), the resolved font-resource map (`fontStyles`, from
+ * `pdfCollectFontStyles` over `page.commonObjs`) is tried next, and only then
+ * the page `styles` dict's `fontFamily` for that id — a generic family
+ * (`sans-serif`, …) classifies as regular, so real pdfjs output never gains
+ * phantom markers from this step. Direct matches keep all existing synthetic
+ * tests green (style-carrying names hit first); opaque real ids fall through
+ * to the map.
+ */
+function pdfSpanStyle(
+  fontName: string,
+  styles: Readonly<Record<string, PdfImportFontStyle>> | undefined,
+  fontStyles?: ReadonlyMap<string, PdfFontStyle> | undefined,
+): { bold: boolean; italic: boolean } {
+  const direct = pdfStyleOfFont(fontName)
+  if (direct.bold || direct.italic) return direct
+  try {
+    if (fontName !== '' && fontStyles !== undefined) {
+      const hit = fontStyles.get(fontName)
+      if (hit !== undefined && hit !== null && typeof hit === 'object') {
+        const rec = hit as { bold?: unknown; italic?: unknown }
+        return { bold: rec.bold === true, italic: rec.italic === true }
+      }
+    }
+  } catch {
+    /* untrusted map shape — fall through */
+  }
+  try {
+    const family = fontName !== '' ? styles?.[fontName]?.fontFamily : undefined
+    if (typeof family === 'string') return pdfStyleOfFont(family)
+  } catch {
+    /* untrusted shape — fall through to the direct result */
+  }
+  return direct
+}
+
+/**
+ * Group text items into raw lines, preserving the legacy `hasEOL` grouping
+ * (spans accumulate until an item with `hasEOL: true`, which closes the line)
+ * and the legacy no-`hasEOL` fallback (everything is one line). Items without
+ * a string `str` (pdfjs `TextMarkedContent` `{type,id}` shapes and any junk)
+ * are skipped entirely — never emitted and never injecting phantom spaces or
+ * line breaks.
+ */
+export function pdfItemsToRawLines(
+  items: readonly unknown[],
+  styles?: Readonly<Record<string, PdfImportFontStyle>>,
+  fontStyles?: ReadonlyMap<string, PdfFontStyle> | undefined,
+): PdfRawSpan[][] {
+  const eolMode = items.some((item) => typeof pdfItemHasEol(item) === 'boolean')
+  const lines: PdfRawSpan[][] = []
+  let cur: PdfRawSpan[] = []
+  for (const item of items) {
+    const text = pdfItemText(item)
+    if (text === null) continue
+    const span: PdfRawSpan = {
+      text,
+      ...pdfSpanStyle(pdfItemFontName(item), styles, fontStyles),
+      height: pdfItemHeight(item),
+      y: pdfItemY(item),
+    }
+    // Horizontal geometry for the vector-decoration pass (rules/highlights
+    // correlate against span boxes). Set only when finite — absent otherwise.
+    const x0 = pdfItemX(item)
+    const w = pdfItemWidth(item)
+    if (Number.isFinite(x0) && Number.isFinite(w) && w > 0) {
+      span.x0 = x0
+      span.x1 = x0 + w
+    }
+    cur.push(span)
+    if (eolMode && pdfItemHasEol(item) === true) {
+      lines.push(cur)
+      cur = []
+    }
+  }
+  if (!eolMode || cur.length > 0) lines.push(cur)
   return lines
-    .map((line) => line.replace(/\s+/g, ' ').trim())
-    .filter((line) => line.length > 0)
-    .join('\n')
+}
+
+/** Median of a numeric list (NaN when empty). Even counts average the middles. */
+function pdfMedian(values: readonly number[]): number {
+  if (values.length === 0) return NaN
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = sorted.length >> 1
+  if (sorted.length % 2 === 1) return sorted[mid] as number
+  return ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2
+}
+
+// A span is small (super/subscript CANDIDATE) at ≤85% of the line body height
+// and shifted at ≥15% of it — loose enough for any producer's script sizing
+// (e.g. 70% size at ±25-35% baseline) while ignoring rounding noise.
+const PDF_SUP_SUB_SIZE_RATIO = 0.85
+const PDF_SUP_SUB_SHIFT_RATIO = 0.15
+
+/**
+ * Flag super/subscript spans within one line. Reference metrics come from the
+ * line's own normal-size spans (median `height`/`y`), so the test is relative
+ * and producer-independent: a span is sup iff it is small AND raised, sub iff
+ * small AND lowered; small-but-unshifted spans stay plain. A line with no
+ * normal-size reference (empty, zero-height or uniformly tiny items) keeps
+ * every span plain, avoiding whole-line misfires.
+ */
+export function pdfFlagSupSub(line: readonly PdfRawSpan[]): PdfImportSpan[] {
+  const plain = (s: PdfRawSpan): PdfImportSpan => ({
+    text: s.text,
+    bold: s.bold,
+    italic: s.italic,
+    sup: false,
+    sub: false,
+  })
+  // Fake-space/degenerate items (height ≤ 0) carry no size information:
+  // pdfjs emits inter-word gaps as zero-height space items, and letting one
+  // into the pool drags medH onto script-sized spans — blinding detection
+  // (real-world case: `H^up^` measured medH 7.7 instead of 11, so the 7.7pt
+  // script failed its own candidacy gate). Exclude them up front.
+  const pool = line.filter((s) => s.text.length > 0 && Number.isFinite(s.height) && s.height > 0)
+  if (pool.length === 0) return line.map(plain)
+  const medH = pdfMedian(pool.map((s) => s.height))
+  if (!Number.isFinite(medH) || medH <= 0) return line.map(plain)
+  const normalSet = new Set(pool.filter((s) => s.height > PDF_SUP_SUB_SIZE_RATIO * medH))
+  if (normalSet.size === 0) return line.map(plain)
+  const normals = [...normalSet]
+  const baseH = pdfMedian(normals.map((s) => s.height))
+  const baseY = pdfMedian(normals.map((s) => s.y).filter((y) => Number.isFinite(y)))
+  if (!Number.isFinite(baseH) || baseH <= 0 || !Number.isFinite(baseY)) return line.map(plain)
+  return line.map((s) => {
+    const out = plain(s)
+    // Only non-normal spans with real (positive) size are script candidates:
+    // zero-height items (pdfjs inter-word fake spaces) carry no size
+    // information and must never classify — one once dragged its own shifted
+    // baseline into a superscript and split `^up^` into `^up ^`.
+    if (normalSet.has(s) || !Number.isFinite(s.y) || !(s.height > 0)) return out
+    if (s.height <= PDF_SUP_SUB_SIZE_RATIO * baseH && s.y - baseY >= PDF_SUP_SUB_SHIFT_RATIO * baseH) {
+      out.sup = true
+    } else if (s.height <= PDF_SUP_SUB_SIZE_RATIO * baseH && baseY - s.y >= PDF_SUP_SUB_SHIFT_RATIO * baseH) {
+      out.sub = true
+    }
+    return out
+  })
+}
+
+/**
+ * Page body-size reference: median `height` of normal (non-sup/sub) spans
+ * with text, across the page. Sup/sub candidates are excluded so a page heavy
+ * with scripts cannot drag the reference down and inflate plain lines into
+ * headers. NaN when the page has no measurable body text (no headers then).
+ */
+export function pdfPageBodyMedian(
+  rawLines: readonly (readonly PdfRawSpan[])[],
+  flaggedLines: readonly (readonly PdfImportSpan[])[],
+): number {
+  const heights: number[] = []
+  rawLines.forEach((line, i) => {
+    const flagged = flaggedLines[i]
+    line.forEach((s, j) => {
+      const f = flagged?.[j]
+      // Zero-height spans (pdfjs fake-space items) carry no size information
+      // and are numerous enough to drag the median down to ~half the body
+      // size — which would promote every body line to a header. Skip them.
+      if (f !== undefined && !f.sup && !f.sub && s.text.length > 0 && Number.isFinite(s.height) && s.height > 0) {
+        heights.push(s.height)
+      }
+    })
+  })
+  return pdfMedian(heights)
+}
+
+// Header bands are deliberately conservative: every judged span must clear
+// 1.15× the body, so mixed-size lines never promote.
+const PDF_HEADER_MIN_RATIO = 1.15
+const PDF_HEADER_H1_RATIO = 1.6
+const PDF_HEADER_H2_RATIO = 1.35
+
+/**
+ * Header level for one line from its normal-span heights (see rationale
+ * below). Returns 0 (body) when the line has no judged span or any judged
+ * span is body-sized.
+ *
+ * RATIONALE (generic, conservative): real PDFs signal headings with larger
+ * type, but absolute sizes vary by producer (10pt vs 12pt bodies, A4 vs
+ * Letter layouts), so the test is RELATIVE to the page's own body median
+ * instead of matching any fixed point size. Requiring EVERY normal span in
+ * the line to clear 1.15× the body keeps mixed-size body lines (e.g. a large
+ * drop-cap or inline logo text) from promoting; the level follows the
+ * largest span (≥1.6 → `#`, ≥1.35 → `##`, else `###`). A page with no
+ * measurable body (NaN/zero median) yields no headers rather than a guess.
+ */
+export function pdfHeaderLevel(
+  normalHeights: readonly number[],
+  bodyMedian: number,
+): 0 | 1 | 2 | 3 {
+  if (!Number.isFinite(bodyMedian) || bodyMedian <= 0 || normalHeights.length === 0) return 0
+  if (!normalHeights.every((h) => h >= PDF_HEADER_MIN_RATIO * bodyMedian)) return 0
+  const maxRatio = Math.max(...normalHeights) / bodyMedian
+  if (maxRatio >= PDF_HEADER_H1_RATIO) return 1
+  if (maxRatio >= PDF_HEADER_H2_RATIO) return 2
+  return 3
+}
+
+/**
+ * Wrap one merged span's text; '' when there is nothing (or only air) to mark.
+ *
+ * Marker precedence is fixed outer→inner: emphasis (`**`/`*`/`***`), then
+ * strikethrough (`~~`), underline (`__`), highlight (`==`), with the script
+ * marker (`^`/`~`) innermost so it stays adjacent to the text
+ * (`**^x^**`, `__==x==__`, …). Every layer nests through the Notedown export
+ * parser (verified: `**`, `__`, `~~`, `==` multi-char runs plus single-char
+ * `^`/`~`/`*` all recurse), so emission round-trips back through export.
+ */
+function pdfWrapImportSpan(g: PdfImportSpan): string {
+  if (g.text === '') return '' // never emit empty pairs (`****`, `^^^^`, …)
+  const markers: string[] = []
+  if (g.bold && g.italic) markers.push('***')
+  else if (g.bold) markers.push('**')
+  else if (g.italic) markers.push('*')
+  if (g.strike === true) markers.push('~~')
+  if (g.u === true) markers.push('__')
+  if (g.mark === true) markers.push('==')
+  if (g.sup) markers.push('^')
+  else if (g.sub) markers.push('~')
+  if (markers.length === 0) return g.text
+  if (/^\s*$/.test(g.text)) return g.text // whitespace-only → bare, never `** **`-style pairs
+  // Flanking whitespace stays OUTSIDE the markers (Turndown convention):
+  // pdfjs emits inter-word gaps as separate space items that inherit the
+  // neighboring font, so a bold word arrives as `bold`+` ` merged — wrapping
+  // the pair whole would leak the space inside (`**bold **`).
+  const lead = /^[\s]*/.exec(g.text)?.[0] ?? ''
+  const trail = /[\s]*$/.exec(g.text)?.[0] ?? ''
+  const core = g.text.slice(lead.length, g.text.length - trail.length)
+  if (core === '') return g.text
+  let out = core
+  for (let k = markers.length - 1; k >= 0; k--) out = `${markers[k]}${out}${markers[k]}`
+  return `${lead}${out}${trail}`
+}
+
+/**
+ * Render one flagged line: merge adjacent spans with identical
+ * (bold,italic,sup,sub), wrap each group (`**`/`*`/`***`, `^`/`~`), join
+ * normal spans with single spaces (legacy behavior) while super/subscript
+ * groups attach DIRECTLY to the previous span (one pending join space popped,
+ * none added around the marker), then collapse whitespace runs, trim, drop
+ * empties, and prefix any header level. Words stay verbatim — only markers
+ * are added.
+ */
+export function pdfRenderLine(spans: readonly PdfImportSpan[], headerLevel: 0 | 1 | 2 | 3): string {
+  const groups: PdfImportSpan[] = []
+  for (const s of spans) {
+    const g = groups[groups.length - 1]
+    if (
+      g !== undefined &&
+      g.bold === s.bold &&
+      g.italic === s.italic &&
+      g.sup === s.sup &&
+      g.sub === s.sub &&
+      (g.u ?? false) === (s.u ?? false) &&
+      (g.strike ?? false) === (s.strike ?? false) &&
+      (g.mark ?? false) === (s.mark ?? false)
+    ) {
+      g.text += s.text
+    } else {
+      groups.push({ ...s })
+    }
+  }
+  // Redundant full-line emphasis: a header whose EVERY word shares one
+  // emphasis style renders bold/italic by virtue of being a header (and our
+  // own exporter force-bolds all headings), so `# **Title**` carries nothing
+  // `# Title` lacks — drop it for clean round-trips. Partial emphasis
+  // (`# A **bold** word`) is meaningful and kept, as are scripts/decorations.
+  if (headerLevel > 0) {
+    const words = groups.filter((g) => g.text.trim() !== '')
+    if (
+      words.length > 0 &&
+      words.every((g) => g.bold === words[0]?.bold && g.italic === words[0]?.italic) &&
+      ((words[0]?.bold ?? false) || (words[0]?.italic ?? false))
+    ) {
+      for (const g of words) {
+        g.bold = false
+        g.italic = false
+      }
+    }
+  }
+  let out = ''
+  for (const g of groups) {
+    const styled = pdfWrapImportSpan(g)
+    if (styled === '') continue
+    if (g.sup || g.sub) {
+      out = out.replace(/ $/, '') + styled
+    } else {
+      out += (out === '' ? '' : ' ') + styled
+    }
+  }
+  const line = out.replace(/\s+/g, ' ').trim()
+  if (line === '') return ''
+  return headerLevel > 0 ? `${'#'.repeat(headerLevel)} ${line}` : line
+}
+
+/**
+ * Optional vector-layer decorations for {@link pdfPageToText}, produced by
+ * the orchestrator from `analyzePdfVectors` (src/app/pdfVector.ts, lazy).
+ * All geometry is PDF user space (pt, y-up) — the same space as text-item
+ * transforms (proven by the pdf-vector round-trip test). Every match is
+ * conservative: spans without finite geometry are skipped, and anything
+ * ambiguous falls back to plain text. `rules` without `classifyRule` are
+ * ignored (the classifier lives in pdfVector, which import.ts must not
+ * statically import — bundle discipline).
+ */
+export interface PdfPageDecorations {
+  /** Ruling grids → rebuilt Markdown tables (rejected grids flatten as before). */
+  tables?: readonly PdfTableGrid[]
+  /** Non-grid horizontal rules → underline/strike via `classifyRule`. */
+  rules?: readonly PdfRect[]
+  /** Standalone fills → `==highlight==` (table-cell fills never reach here). */
+  highlights?: readonly PdfRect[]
+  /** pdfVector.classifyHorizontalRule, passed in by the (async) caller. */
+  classifyRule?: (rule: PdfRect, baseY: number, size: number) => 'underline' | 'strike' | 'none'
+  /** Resolved per-font styles from `page.commonObjs` (bold/italic by font id). */
+  fontStyles?: ReadonlyMap<string, PdfFontStyle>
+}
+
+/** One word's char range plus its proportional x-range inside the span box. */
+interface PdfWordBox {
+  /** Char offsets into the span text ([w0, w1), non-space run). */
+  w0: number
+  w1: number
+  /** Proportional x-range (monospace assumption — containment slack absorbs drift). */
+  x0: number
+  x1: number
+}
+
+/**
+ * Split span text into word boxes. pdfjs merges same-font runs, so one span
+ * often holds a whole line (`ul and st`); per-word boxes let rules mark the
+ * decorated words instead of all-or-nothing whole-span marking.
+ */
+function pdfSpanWords(text: string, x0: number, x1: number): PdfWordBox[] {
+  const out: PdfWordBox[] = []
+  const n = text.length
+  if (n === 0 || !(x1 > x0)) return out
+  for (const m of text.matchAll(/\S+/g)) {
+    const w0 = m.index ?? 0
+    const w1 = w0 + m[0].length
+    out.push({ w0, w1, x0: x0 + (w0 / n) * (x1 - x0), x1: x0 + (w1 / n) * (x1 - x0) })
+  }
+  return out
+}
+
+// A rule marks a word when it covers the word's proportional x-range (±25%
+// of the word width slack for proportional-font drift). Whole-word rules —
+// the dominant case (per-word export rules, Word/LibreOffice runs) — match
+// exactly; partial-word rules conservatively mark nothing.
+const PDF_WORD_COVER_SLACK = 0.25
+
+/** True when a rule covers a word box (see slack rationale above). */
+function pdfRuleCoversWord(rule: PdfRect, word: PdfWordBox): boolean {
+  const slack = PDF_WORD_COVER_SLACK * (word.x1 - word.x0)
+  return rule.x0 <= word.x0 + slack && rule.x1 >= word.x1 - slack
+}
+
+/**
+ * Split one span into ordered pieces, marking words covered by vector
+ * decorations (pieces inherit every flag of the source span). Spaces and
+ * uncovered words stay plain; adjacent same-mark words merge downstream in
+ * {@link pdfRenderLine}. Returns [f] untouched when nothing applies, so
+ * single-word spans behave exactly like whole-span marking.
+ */
+
+/**
+ * A highlight covers a word when the word's proportional x-range sits inside
+ * the fill (± the same word slack) and the text baseline band crosses it
+ * (1pt tolerance). Center-band (not area-overlap) so per-word rects match
+ * while full-bleed shade bands are judged by the width guard at the call site.
+ */
+function pdfHighlightCoversWord(
+  hl: PdfRect,
+  word: PdfWordBox,
+  baseY: number,
+  size: number,
+): boolean {
+  const slack = PDF_WORD_COVER_SLACK * (word.x1 - word.x0)
+  if (!(hl.x0 <= word.x0 + slack && hl.x1 >= word.x1 - slack)) return false
+  const cy = baseY + 0.3 * size
+  return cy >= hl.y0 - 1 && cy <= hl.y1 + 1
+}
+
+/** Median y of a line's placed spans (NaN when the line has no geometry). */
+function pdfLineY(line: readonly PdfRawSpan[]): number {
+  const ys = line
+    .filter((s) => s.text.trim() !== '' && Number.isFinite(s.y))
+    .map((s) => s.y as number)
+    .sort((a, b) => a - b)
+  if (ys.length === 0) return NaN
+  const mid = ys.length >> 1
+  return ys.length % 2 === 1 ? (ys[mid] as number) : (((ys[mid - 1] as number) + (ys[mid] as number)) / 2)
+}
+
+/** Text extent (min x0 .. max x1) of a line's boxed spans, or null. */
+function pdfLineExtent(line: readonly PdfRawSpan[]): { x0: number; x1: number } | null {
+  let x0 = Infinity
+  let x1 = -Infinity
+  for (const s of line) {
+    if (s.text.trim() === '' || !Number.isFinite(s.x0) || !Number.isFinite(s.x1)) continue
+    const a = s.x0 as number
+    const b = s.x1 as number
+    if (!(b > a)) continue
+    if (a < x0) x0 = a
+    if (b > x1) x1 = b
+  }
+  return x1 > x0 ? { x0, x1 } : null
+}
+
+// Full-bleed shade bands (code-block backgrounds, paragraph shading, …) are
+// geometrically identical to highlights: a fill spanning ~the whole line.
+// Our highlight fills hug their runs, so a fill is only eligible when it is
+// no wider than the line's own text plus a small padding allowance.
+const PDF_HIGHLIGHT_LINE_PAD = 16
+
+/**
+ * Stamp vector marks onto flagged spans, splitting merged multi-word spans
+ * into marked/plain pieces (mutates `flaggedLines` in place — the arrays are
+ * freshly created per {@link pdfPageToText} call; table-member lines are
+ * skipped so grid borders can never misfire and index correspondence holds
+ * for the table path).
+ */
+function pdfApplyVectorMarks(
+  rawLines: readonly (readonly PdfRawSpan[])[],
+  flaggedLines: PdfImportSpan[][],
+  decorations: PdfPageDecorations,
+  memberLines: ReadonlySet<number>,
+): void {
+  const rules = decorations.rules ?? []
+  const highlights = decorations.highlights ?? []
+  const classifyRule = decorations.classifyRule
+  if (rules.length === 0 && highlights.length === 0) return
+  rawLines.forEach((line, i) => {
+    if (memberLines.has(i)) return
+    const extent = highlights.length > 0 ? pdfLineExtent(line) : null
+    const out: PdfImportSpan[] = []
+    line.forEach((s, j) => {
+      const f = flaggedLines[i]?.[j]
+      if (f === undefined) return
+      out.push(...pdfMarkSpanPieces(s, f, rules, highlights, classifyRule, extent))
+    })
+    flaggedLines[i] = out
+  })
+}
+
+/**
+ * Split one span around vector decorations. Each word fully covered by a
+ * rule becomes `__`/`~~` (via `classifyRule` against the span's own baseline
+ * — shifted baselines for sup/sub match the exporter's anchoring); each word
+ * inside a hugging fill becomes `==`. Uncovered text (including all spaces)
+ * stays plain. Pieces inherit every flag of `f`, so `__^x^__` and friends
+ * compose through the normal merge/wrap path. Returns `[f]` untouched when
+ * nothing applies.
+ */
+function pdfMarkSpanPieces(
+  s: PdfRawSpan,
+  f: PdfImportSpan,
+  rules: readonly PdfRect[],
+  highlights: readonly PdfRect[],
+  classifyRule: PdfPageDecorations['classifyRule'],
+  lineExtent: { x0: number; x1: number } | null,
+): PdfImportSpan[] {
+  if (s.text === '' || !Number.isFinite(s.y) || !Number.isFinite(s.height) || !(s.height > 0)) return [f]
+  if (!Number.isFinite(s.x0) || !Number.isFinite(s.x1)) return [f]
+  const x0 = s.x0 as number
+  const x1 = s.x1 as number
+  if (!(x1 > x0)) return [f]
+  const y = s.y as number
+  const h = s.height as number
+  const words = pdfSpanWords(s.text, x0, x1)
+  if (words.length === 0) return [f]
+  const kinds = words.map(() => ({ u: false, strike: false, mark: false }))
+  words.forEach((word, wi) => {
+    const kind = kinds[wi] as { u: boolean; strike: boolean; mark: boolean }
+    if (classifyRule !== undefined) {
+      for (const rule of rules) {
+        if (!pdfRuleCoversWord(rule, word)) continue
+        const cls = classifyRule(rule, y, h)
+        if (cls === 'underline') kind.u = true
+        else if (cls === 'strike') kind.strike = true
+      }
+    }
+    for (const hl of highlights) {
+      // Width guard: reject full-bleed shade bands (code-block backgrounds,
+      // paragraph shading) — genuine highlight fills hug their runs.
+      if (lineExtent !== null && hl.x1 - hl.x0 > lineExtent.x1 - lineExtent.x0 + PDF_HIGHLIGHT_LINE_PAD) continue
+      if (pdfHighlightCoversWord(hl, word, y, h)) {
+        kind.mark = true
+        break
+      }
+    }
+  })
+  if (kinds.every((k) => !k.u && !k.strike && !k.mark)) return [f]
+  // Cut pieces at kind boundaries: marked words exactly, plain runs (words +
+  // spaces) extended to the next marked word so gaps stay merge-friendly.
+  const owner = new Array<number>(s.text.length).fill(-1)
+  words.forEach((word, wi) => {
+    for (let k = word.w0; k < word.w1; k++) owner[k] = wi
+  })
+  const out: PdfImportSpan[] = []
+  const push = (text: string, kind: { u: boolean; strike: boolean; mark: boolean } | null): void => {
+    if (text === '') return
+    if (kind === null) out.push({ ...f, text })
+    else {
+      const piece: PdfImportSpan = { ...f, text }
+      if (kind.u) piece.u = true
+      if (kind.strike) piece.strike = true
+      if (kind.mark) piece.mark = true
+      out.push(piece)
+    }
+  }
+  let k = 0
+  while (k < s.text.length) {
+    const wi = owner[k] as number
+    if (wi < 0) {
+      let e = k + 1
+      while (e < s.text.length && (owner[e] as number) < 0) e++
+      push(s.text.slice(k, e), null)
+      k = e
+      continue
+    }
+    const kind = kinds[wi] as { u: boolean; strike: boolean; mark: boolean }
+    if (!kind.u && !kind.strike && !kind.mark) {
+      let e = (words[wi] as PdfWordBox).w1
+      while (e < s.text.length) {
+        const nwi = owner[e] as number
+        if (nwi < 0) {
+          e++
+          continue
+        }
+        const nk = kinds[nwi] as { u: boolean; strike: boolean; mark: boolean }
+        if (nk.u || nk.strike || nk.mark) break
+        e = (words[nwi] as PdfWordBox).w1
+      }
+      push(s.text.slice(k, e), null)
+      k = e
+      continue
+    }
+    const w = words[wi] as PdfWordBox
+    push(s.text.slice(w.w0, w.w1), kind)
+    k = w.w1
+  }
+  return out.length > 0 ? out : [f]
+}
+
+/** One accepted grid plus its member line indexes (stream order). */
+interface PdfDetectedTable {
+  grid: PdfTableGrid
+  members: number[]
+}
+
+/** Column index for a span center, or -1 when outside every column. */
+function pdfTableColumn(grid: PdfTableGrid, cx: number): number {
+  for (let k = 0; k < grid.cols; k++) {
+    const lo = grid.colEdges[k] as number
+    const hi = grid.colEdges[k + 1] as number
+    if (cx >= lo - 1 && cx <= hi + 1) return k
+  }
+  return -1
+}
+
+/** Escape pipes + collapse whitespace for a table cell (single-line). */
+function pdfTableCellText(text: string): string {
+  return text.replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim()
+}
+
+/** Render one cell's spans; header-row cells drop uniform full-cell emphasis.
+ *
+ * Same rationale as the header strip in {@link pdfRenderLine}: markdown table
+ * headers render bold regardless of markers, so uniform `**`/`*` across a
+ * whole header cell (notably our own exporter's force-bold header row) is
+ * noise — `| a |` round-trips cleaner than `| **a** |`. Partial emphasis
+ * (`| **key** | value |`) is meaningful and kept, as is every body cell.
+ */
+function pdfTableCellMarkdown(parts: readonly PdfImportSpan[], headerRow: boolean): string {
+  let list = parts
+  if (headerRow) {
+    const words = parts.filter((p) => p.text.trim() !== '')
+    if (
+      words.length > 0 &&
+      words.every((p) => p.bold === words[0]?.bold && p.italic === words[0]?.italic) &&
+      ((words[0]?.bold ?? false) || (words[0]?.italic ?? false))
+    ) {
+      list = parts.map((p) => ({ ...p, bold: false, italic: false }))
+    }
+  }
+  return list
+    .map((p) => pdfWrapImportSpan(p))
+    .filter((c) => c !== '')
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Row-band tolerance (pt, PDF user space, y-up): matches the ±2pt y-range
+// slack in pdfDetectTables, so a line claimed for a grid always lands in a
+// band and band edges agree with the claim window.
+const PDF_TABLE_BAND_TOL = 2
+
+/**
+ * Grid row band containing a line baseline, or -1 when outside every band.
+ *
+ * `grid.rowEdges` ascends y-up, so band r spans
+ * `[rowEdges[r], rowEdges[r+1]]`, widened by PDF_TABLE_BAND_TOL on each side.
+ * A y within tolerance of a shared edge matches two bands — the nearest band
+ * center wins, which keeps wrapped lines (well inside their grown row, far
+ * from any edge) deterministically in their own row. Non-finite y or a
+ * malformed edge list yields -1 (caller rejects the grid conservatively).
+ */
+function pdfTableRowBand(grid: PdfTableGrid, y: number): number {
+  if (!Number.isFinite(y)) return -1
+  const edges = grid.rowEdges
+  if (!Array.isArray(edges) || edges.length < 2) return -1
+  const count = Math.min(grid.rows, edges.length - 1)
+  if (!(count >= 1)) return -1
+  let best = -1
+  let bestDist = Infinity
+  for (let r = 0; r < count; r++) {
+    const lo = edges[r] as number
+    const hi = edges[r + 1] as number
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue
+    if (y < lo - PDF_TABLE_BAND_TOL || y > hi + PDF_TABLE_BAND_TOL) continue
+    const dist = Math.abs(y - (lo + hi) / 2)
+    if (dist < bestDist) {
+      bestDist = dist
+      best = r
+    }
+  }
+  return best
+}
+
+/**
+ * Render one grid's Markdown rows (top-down) from member lines, or null to
+ * reject the grid (caller falls back to normal line emission). Conservative:
+ * every non-blank span must sit inside a column, and at least two non-empty
+ * rows must survive — single-row "tables" and ragged leftovers flatten.
+ *
+ * ROW-BAND MERGE (why not 1-line-1-row): the exporter grows row heights for
+ * wrapped cells (pdfDrawTable multi-line cells), so one grid row can hold
+ * several visual lines — e.g. a narrow header cell wrapping as `Col` on one
+ * line and `1` on the next, each with hasEOL. Treating each rawLine as its own
+ * Markdown row would split that header into diagonal fragments (`| Col | |`,
+ * `| | **Col** |`, …) and strand the bold strip on the first fragment only.
+ * Instead, each member line is assigned to its grid row band (consecutive
+ * rowEdges, via pdfLineY) and all lines in one band merge into ONE Markdown
+ * row: per-column buckets accumulate top-down (highest y first) and
+ * pdfTableCellMarkdown joins them with a single space, so `Col` + `1` in the
+ * same column becomes `Col 1`. Single-line rows hold one line per band, which
+ * is exactly the old behavior (byte-identical output).
+ */
+function pdfRenderDetectedTable(
+  grid: PdfTableGrid,
+  members: Array<{ spans: readonly PdfImportSpan[]; raw: readonly PdfRawSpan[] }>,
+): string | null {
+  // Group member lines by row band first; emission below walks bands top-down
+  // (highest band index first — rowEdges ascend y-up).
+  const byBand = new Map<number, Array<{ spans: readonly PdfImportSpan[]; raw: readonly PdfRawSpan[] }>>()
+  for (const m of members) {
+    let hasText = false
+    for (const s of m.raw) {
+      if (s.text.trim() !== '') {
+        hasText = true
+        break
+      }
+    }
+    if (!hasText) continue // all-blank line: drop it, keep the table
+    const band = pdfTableRowBand(grid, pdfLineY(m.raw))
+    if (band < 0) return null // text outside every row band: reject the grid
+    const list = byBand.get(band)
+    if (list !== undefined) list.push(m)
+    else byBand.set(band, [m])
+  }
+  const bands = [...byBand.keys()].sort((a, b) => b - a)
+  const rows: string[][] = []
+  for (const band of bands) {
+    // Lines within one band merge top-down (highest baseline first); the
+    // sort is stable, so same-y lines keep stream order. The caller already
+    // passes members top-down, making this a no-op there — it pins the merge
+    // rule for any other caller.
+    const group = [...(byBand.get(band) ?? [])].sort((a, b) => {
+      const ya = pdfLineY(a.raw)
+      const yb = pdfLineY(b.raw)
+      if (Number.isFinite(ya) && Number.isFinite(yb) && ya !== yb) return (yb as number) - (ya as number)
+      return 0
+    })
+    const buckets: PdfImportSpan[][] = Array.from({ length: grid.cols }, () => [])
+    let placed = false
+    let ok = true
+    for (const m of group) {
+      m.raw.forEach((s, j) => {
+        if (!ok || s.text.trim() === '') return
+        if (!Number.isFinite(s.x0) || !Number.isFinite(s.x1)) {
+          ok = false
+          return
+        }
+        const k = pdfTableColumn(grid, (((s.x0 as number) + (s.x1 as number)) / 2))
+        if (k < 0) {
+          ok = false
+          return
+        }
+        const f = m.spans[j]
+        ;(buckets[k] as PdfImportSpan[]).push(
+          f === undefined
+            ? { text: s.text, bold: false, italic: false, sup: false, sub: false }
+            : { ...f },
+        )
+        placed = true
+      })
+      if (!ok) break
+    }
+    if (!ok) return null
+    if (!placed) continue // all-blank band: drop it, keep the table
+    // The first kept band is the header (uniform full-cell emphasis is
+    // redundant there — see pdfTableCellMarkdown).
+    const headerRow = rows.length === 0
+    rows.push(
+      buckets.map((parts) =>
+        pdfTableCellText(pdfTableCellMarkdown(parts, headerRow)),
+      ),
+    )
+  }
+  const nonEmpty = rows.filter((r) => r.some((c) => c !== ''))
+  if (nonEmpty.length < 2) return null
+  const out = nonEmpty.map((r) => `| ${r.join(' | ')} |`)
+  out.splice(1, 0, `| ${nonEmpty[0]?.map(() => '---').join(' | ') ?? '---'} |`)
+  return out.join('\n')
+}
+
+/**
+ * Match grids to member lines. A line joins a grid when its baseline sits
+ * inside the grid's y-range (±2pt) and every placed span sits inside the
+ * grid's x-range — anything straddling rejects the grid (conservative:
+ * multi-column prose has no rulings, so grids only ever come from real
+ * tables or bordered art). Each line is claimed by at most one grid.
+ */
+function pdfDetectTables(
+  rawLines: readonly (readonly PdfRawSpan[])[],
+  grids: readonly PdfTableGrid[],
+): PdfDetectedTable[] {
+  const out: PdfDetectedTable[] = []
+  const claimed = new Set<number>()
+  for (const grid of grids) {
+    if (!(grid.cols >= 2 && grid.rows >= 2)) continue
+    const members: number[] = []
+    let ok = true
+    rawLines.forEach((line, i) => {
+      if (!ok || claimed.has(i)) return
+      const y = pdfLineY(line)
+      if (!Number.isFinite(y) || y < grid.y0 - 2 || y > grid.y1 + 2) return
+      let hasText = false
+      for (const s of line) {
+        if (s.text.trim() === '') continue
+        hasText = true
+        if (!Number.isFinite(s.x0) || !Number.isFinite(s.x1)) {
+          ok = false
+          break
+        }
+        const cx = (((s.x0 as number) + (s.x1 as number)) / 2)
+        if (cx < grid.x0 - 2 || cx > grid.x1 + 2) {
+          ok = false
+          break
+        }
+      }
+      if (ok && hasText) members.push(i)
+    })
+    if (!ok || members.length === 0) continue
+    members.forEach((i) => claimed.add(i))
+    out.push({ grid, members })
+  }
+  return out
+}
+
+/**
+ * Reconstruct one page's Markdown from pdfjs text items (round-7 C4, Packet A
+ * text-layer styles, vector decorations + tables).
+ *
+ * Text layer: spans group into lines on `hasEOL`; emphasis from the font name
+ * (item, then the resolved `decorations.fontStyles` map, falling back to the
+ * page `styles` dict family); headings from
+ * relative type size; super/subscript from small size plus baseline shift.
+ * Vector layer (`decorations`, best-effort): non-grid horizontal rules
+ * overlapping a span's baseline band become `__underline__`/`~~strike~~`,
+ * standalone fills behind spans become `==highlight==`, and ruling grids
+ * with cleanly placeable rows become `| tables |` (rejected grids and
+ * grid-less layouts flatten exactly as before). Whitespace-only lines are
+ * dropped; whitespace runs collapse. Items without `hasEOL` (older shapes)
+ * fall back to the legacy single-line space-join so text still survives.
+ */
+export function pdfPageToText(
+  items: readonly unknown[],
+  styles?: Readonly<Record<string, PdfImportFontStyle>>,
+  decorations?: PdfPageDecorations,
+): string {
+  const rawLines = pdfItemsToRawLines(items, styles, decorations?.fontStyles)
+  const flaggedLines = rawLines.map(pdfFlagSupSub)
+  const grids = decorations?.tables ?? []
+  const detected = grids.length > 0 ? pdfDetectTables(rawLines, grids) : []
+  // Render tables top-down at their first member line; member lines vanish
+  // from the normal flow (their text lives in the table now).
+  const tableAt = new Map<number, string>()
+  const member = new Set<number>()
+  for (const d of detected) {
+    const ordered = [...d.members].sort((a, b) => {
+      const ya = pdfLineY(rawLines[a] ?? [])
+      const yb = pdfLineY(rawLines[b] ?? [])
+      if (Number.isFinite(ya) && Number.isFinite(yb) && ya !== yb) return (yb as number) - (ya as number)
+      return a - b
+    })
+    const md = pdfRenderDetectedTable(
+      d.grid,
+      ordered.map((i) => ({ spans: flaggedLines[i] ?? [], raw: rawLines[i] ?? [] })),
+    )
+    if (md === null) continue // rejected: lines emit normally below
+    ordered.forEach((i) => member.add(i))
+    tableAt.set(ordered[0] as number, md)
+  }
+  // Body-size reference: table-member text is excluded so a table-heavy
+  // page cannot inflate the median and suppress real headers — but when the
+  // prose sample is tiny (e.g. a lone title above a table), the median of
+  // almost nothing is worse than the median of everything, so fall back to
+  // the full sample below that floor.
+  const proseRaw = rawLines.filter((_, i) => !member.has(i))
+  const proseFlagged = flaggedLines.filter((_, i) => !member.has(i))
+  let bodyMedian = pdfPageBodyMedian(proseRaw, proseFlagged)
+  if (!Number.isFinite(bodyMedian) || pdfCountHeights(proseRaw, proseFlagged) < 3) {
+    bodyMedian = pdfPageBodyMedian(rawLines, flaggedLines)
+  }
+  // Header levels are judged pre-split (splitting changes flagged-array
+  // lengths, so judging must not index flagged lines past this point).
+  const levels = rawLines.map((raw, i) => {
+    if (member.has(i)) return 0 as const
+    const spans = flaggedLines[i] ?? []
+    const judged: number[] = []
+    raw.forEach((s, j) => {
+      const f = spans[j]
+      if (f !== undefined && !f.sup && !f.sub && s.text.length > 0 && Number.isFinite(s.height)) {
+        judged.push(s.height)
+      }
+    })
+    return pdfHeaderLevel(judged, bodyMedian)
+  })
+  if (decorations !== undefined) pdfApplyVectorMarks(rawLines, flaggedLines, decorations, member)
+  const out: string[] = []
+  flaggedLines.forEach((spans, i) => {
+    const table = tableAt.get(i)
+    if (table !== undefined) out.push(table)
+    if (member.has(i)) return
+    const line = pdfRenderLine(spans, levels[i] ?? 0)
+    if (line.length > 0) out.push(line)
+  })
+  return out.join('\n')
+}
+
+/** Count measurable body-height samples (median-sample floor, see above). */
+function pdfCountHeights(
+  rawLines: readonly (readonly PdfRawSpan[])[],
+  flaggedLines: readonly (readonly PdfImportSpan[])[],
+): number {
+  let n = 0
+  rawLines.forEach((line, i) => {
+    const flagged = flaggedLines[i]
+    line.forEach((s, j) => {
+      const f = flagged?.[j]
+      if (f !== undefined && !f.sup && !f.sub && s.text.length > 0 && Number.isFinite(s.height) && s.height > 0) {
+        n++
+      }
+    })
+  })
+  return n
 }
 
 // --- RTF (built-in minimal converter, zero-dep) ------------------------------

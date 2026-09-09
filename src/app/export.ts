@@ -2427,6 +2427,20 @@ export const PDF_TABLE_PAD_Y = 4
 export const PDF_TABLE_MIN_COL_W = 36
 
 /**
+ * Wrap slack for table cells (consumed in `pdfDrawTable`, file-local so the
+ * exported width contract of `pdfTableColumnWidths` is untouched). WHY: the
+ * wrap width is the column width minus padding, but a cell whose natural width
+ * EXACTLY fills its column — e.g. a bold `Col 1` header that set the column
+ * natural — can still split onto two lines: the +2*PAD_X/−2*PAD_X round-trip
+ * loses ~1ulp versus the summed token widths, and bold-vs-regular advances can
+ * differ by ~1pt, so greedy `pdfWrapItems` sees `curW + w > avail` by dust and
+ * breaks `Col 1` into `Col`/`1`. A 2pt tolerance keeps exact-fit headers on one
+ * line; it stays well inside the 5pt cell padding so text never touches the
+ * border, and genuinely long cells still wrap normally.
+ */
+const PDF_TABLE_WRAP_SLACK = 2
+
+/**
  * WinAnsi sanitize for pdf-lib standard fonts (Helvetica/Courier): every
  * drawn string passes through here so the renderer never throws. Chars above
  * U+00FF (emoji, CJK, ☐/☒ — tasks use ASCII so they never arrive) and C0/C1
@@ -2872,7 +2886,10 @@ export function pdfDrawTable(state: PdfState, rows: string[][]): void {
   for (let r = 0; r < norm.length; r++) {
     for (let c = 0; c < cols; c++) {
       const cell = (norm[r] as string[])[c] as string
-      const avail = Math.max(10, (colWs[c] as number) - 2 * PDF_TABLE_PAD_X)
+      // +WRAP_SLACK: exact-fit guard (see its comment) — without it a header
+      // like `Col 1` that exactly fills its column wraps to `Col`/`1`, while
+      // legitimate long cells are far past avail and still wrap normally.
+      const avail = Math.max(10, (colWs[c] as number) - 2 * PDF_TABLE_PAD_X + PDF_TABLE_WRAP_SLACK)
       const items = pdfFlowItems(parseExportInline(cell), state.fonts, PDF_BASE_SIZE, r === 0)
       ;(cellLines[r] as PdfDrawRun[][][])[c] = pdfWrapItems(items, avail, avail)
     }
