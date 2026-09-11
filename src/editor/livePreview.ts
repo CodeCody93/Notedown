@@ -33,6 +33,8 @@
  * - Tables: when no line of a `Table` node contains the caret, the whole node is
  *   replaced by a rendered div-grid `MarkdownTableWidget` (E13). Rendering the caret
  *   inside keeps the raw source.
+ * - Graphs: single-line `%% … %%` tags render as a block `MarkdownGraphWidget`
+ *   when the caret is elsewhere on the line; the raw tag stays while editing.
  * - Horizontal rules: `---` on an inactive line renders as a `.cm-hr-widget` rule (E14).
  * - Heading IDs: the trailing ` {#custom-id}` is hidden on inactive heading lines (E16).
  * - Sub/sup tags and `==highlight==`: on inactive lines the literal tags/delimiters are
@@ -82,6 +84,8 @@ import {
   checkUpdateAction,
 } from 'codemirror-live-markdown'
 import { renderInlineMarkdown, renderInlineOnlyMarkdown } from '../app/export'
+import DOMPurify from 'dompurify'
+import { parseGraphTag, graphToHtml, graphToErrorHtml } from '../app/graph'
 import hljs from 'highlight.js/lib/core'
 import markdownLang from 'highlight.js/lib/languages/markdown'
 import javascriptLang from 'highlight.js/lib/languages/javascript'
@@ -683,6 +687,106 @@ class HorizontalRuleWidget extends WidgetType {
 }
 
 /**
+ * Rendered `%% … %%` graph tag for inactive lines. Replaces the whole line
+ * with a `.cm-graph-widget` div (styled via editor.css); several tags on one
+ * line stack as `.cm-graph-item` divs inside a single widget. Each inner is
+ * parsed via `parseGraphTag` and rendered via `graphToHtml` (or
+ * `graphToErrorHtml` on parse errors), sanitized with DOMPurify before
+ * innerHTML — mirroring `src/app/export.ts`. With the caret on the line the
+ * raw source stays visible for editing (Typora-style reveal, decided per
+ * line in `buildBlockDecorations`). Clicks never enter edit mode
+ * (`ignoreEvent` swallows them); navigating back onto the line with the
+ * keyboard reveals the source.
+ */
+class MarkdownGraphWidget extends WidgetType {
+  constructor(
+    readonly from: number,
+    readonly to: number,
+    readonly inners: string[],
+  ) {
+    super()
+  }
+
+  eq(o: MarkdownGraphWidget): boolean {
+    return (
+      o.from === this.from &&
+      o.to === this.to &&
+      o.inners.length === this.inners.length &&
+      o.inners.every((inner, i) => inner === this.inners[i])
+    )
+  }
+
+  toDOM(): HTMLElement {
+    const container = document.createElement('div')
+    container.className = 'cm-graph-widget'
+    for (const inner of this.inners) {
+      const parsed = parseGraphTag(inner)
+      const unsafe = parsed.ok ? graphToHtml(parsed.spec) : graphToErrorHtml(parsed.error, `%%${inner}%%`)
+      const item = document.createElement('div')
+      item.className = 'cm-graph-item'
+      item.innerHTML = DOMPurify.sanitize(unsafe)
+      container.appendChild(item)
+    }
+    return container
+  }
+
+  ignoreEvent(): boolean {
+    return true
+  }
+}
+
+/**
+ * Find single-line `%% … %%` graph tags by scanning the document text
+ * (`%%` has no Lezer node, so the syntax tree cannot see it — same approach
+ * as the `>>>` dropdown scan). Returns one entry per tag match; callers group
+ * by line (a line with several tags renders as one stacked widget).
+ * Skips fenced-code regions (tracked from the document start, same fence
+ * tracker as the dropdown scan), indented-code lines and table-row-like
+ * lines so literal `%%` text is never hijacked. Empty inners are skipped.
+ */
+function findGraphRanges(state: EditorState): { from: number; to: number; inner: string; raw: string }[] {
+  const ranges: { from: number; to: number; inner: string; raw: string }[] = []
+  const codeFenceRe = /^ {0,3}(`{3,}|~{3,})/
+  let inCodeFence = false
+  let codeFenceChar = ''
+  let codeFenceLen = 0
+  for (let lineNum = 1; lineNum <= state.doc.lines; lineNum++) {
+    const line = state.doc.line(lineNum)
+    const text = line.text
+    const codeFence = codeFenceRe.exec(text)
+    if (codeFence !== null) {
+      const marker = codeFence[1]
+      if (inCodeFence) {
+        if (
+          marker[0] === codeFenceChar &&
+          marker.length >= codeFenceLen &&
+          /^ {0,3}[`~]+[ \t]*$/.test(text)
+        ) {
+          inCodeFence = false
+        }
+      } else {
+        inCodeFence = true
+        codeFenceChar = marker[0]
+        codeFenceLen = marker.length
+      }
+      continue
+    }
+    if (inCodeFence) continue
+    if (/^(?: {4}|\t)/.test(text)) continue
+    if (/^\s*\|/.test(text)) continue
+    const tagRe = /%%([^%]*?)%%/g
+    let m: RegExpExecArray | null
+    while ((m = tagRe.exec(text)) !== null) {
+      const inner = m[1]
+      if (inner.trim().length === 0) continue
+      const from = line.from + m.index
+      ranges.push({ from, to: from + m[0].length, inner, raw: m[0] })
+    }
+  }
+  return ranges
+}
+
+/**
  * Rendered fenced/indented code block for fully-inactive fences (H).
  * When no line of the fence contains the caret, the whole `FencedCode` /
  * `CodeBlock` node is replaced by a highlighted div (`MarkdownCodeWidget`).
@@ -854,8 +958,33 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
     }
   }
 
+  // Graph tags (`%% … %%`) are plain text to Lezer, so they are scanned
+  // directly (see `findGraphRanges`). Tag lines are excluded from every sweep
+  // below via `skipLines` (like tables); lines the block widget will replace
+  // additionally skip the tree walk so no inline decoration lands inside the
+  // replaced range.
+  const graphReplacedLines = new Set<number>()
+  {
+    const tagLines = new Set<number>()
+    for (const r of findGraphRanges(state)) tagLines.add(state.doc.lineAt(r.from).number)
+    for (const ln of tagLines) {
+      skipLines.add(ln)
+      if (!activeLines.has(ln) && !isDrag) graphReplacedLines.add(ln)
+    }
+  }
+
   syntaxTree(state).iterate({
     enter: (node) => {
+      // Graph lines replaced by the block widget: never decorate inside the
+      // replaced range (mirrors the Table branch below). Bare return keeps
+      // descending so multi-line ancestors stay precise — every node on the
+      // line re-checks this guard. Short-circuits when the doc has no tags.
+      if (
+        graphReplacedLines.size > 0 &&
+        node.name !== 'Document' &&
+        graphReplacedLines.has(state.doc.lineAt(node.from).number)
+      )
+        return
       // Images: on inactive lines replace the whole `![alt](src)` construct
       // with a rendered widget; while editing the line the raw markdown stays
       // visible (no decoration). The Image node spans the entire construct, so
@@ -1573,12 +1702,12 @@ const livePreviewPlugin = ViewPlugin.fromClass(
 )
 
 // ---------------------------------------------------------------------------
-// Block-level live preview (tables, horizontal rules).
+// Block-level live preview (tables, horizontal rules, graphs).
 // ---------------------------------------------------------------------------
 
 /**
  * Build block-replace decorations (tables on fully-inactive line ranges,
- * horizontal rules on inactive lines). Provided through a StateField because
+ * horizontal rules and `%%` graph tags on inactive lines). Provided through a StateField because
  * CM6 rejects block widgets / line-break-covering replaces from plugin
  * decoration functions (see the BLOCK-WIDGET NOTE at the top of this file).
  */
@@ -1715,6 +1844,36 @@ function buildBlockDecorations(state: EditorState): DecorationSet {
         }
         pendingFenceFrom = -1
         pendingFenceName = ''
+      }
+    }
+  }
+
+  // ---- %% graph tags (line-text scan, no Lezer node) -----------------------
+  // Single-line `%% … %%` tags render as one block widget per line (several
+  // tags on a line stack inside a single widget). Typora-style reveal: with
+  // the caret on the line (or while mouse-dragging) the raw source stays so
+  // the tag remains editable. Parse errors still replace — the error box is
+  // visible in live mode too.
+  {
+    const byLine = new Map<number, { from: number; to: number; inners: string[] }>()
+    for (const r of findGraphRanges(state)) {
+      const line = state.doc.lineAt(r.from)
+      const entry = byLine.get(line.number)
+      if (entry === undefined) {
+        byLine.set(line.number, { from: line.from, to: line.to, inners: [r.inner] })
+      } else {
+        entry.inners.push(r.inner)
+      }
+    }
+    for (const [lineNum, entry] of byLine) {
+      const hasActiveLine = isDrag || activeLines.has(lineNum)
+      if (!hasActiveLine) {
+        decorations.push(
+          Decoration.replace({
+            widget: new MarkdownGraphWidget(entry.from, entry.to, entry.inners),
+            block: true,
+          }).range(entry.from, entry.to),
+        )
       }
     }
   }

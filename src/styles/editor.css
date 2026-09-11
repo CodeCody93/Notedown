@@ -109,6 +109,164 @@
   background: var(--surface, #f8f8f6);
 }
 
+/* Rendered %%graph%% tag — block widget (MarkdownGraphWidget in
+   livePreview.ts). Mirrors the preview-pane .md-graph* styles, scoped to the
+   editor. Padding (not margin) on the root — CodeMirror 6 measures widget
+   height via getBoundingClientRect(), which excludes margin (see
+   .cm-hr-widget comment). */
+.cm-editor .cm-graph-widget {
+  display: block;
+  position: relative;
+  border: 1px solid var(--border, #e3e3df);
+  border-radius: 6px;
+  background: var(--surface, #f8f8f6);
+  padding: 10px 12px;
+  color: var(--text, #1f2328);
+}
+.cm-editor .cm-graph-item {
+  padding-bottom: 2px;
+}
+.cm-editor .cm-graph-item + .cm-graph-item {
+  border-top: 1px solid var(--border, #e3e3df);
+  padding-top: 10px;
+}
+.cm-editor .cm-graph-widget .md-graph {
+  display: block;
+}
+.cm-editor .cm-graph-widget .md-graph-title {
+  font-weight: 600;
+  padding-bottom: 6px;
+}
+/* Pie title runs almost as large as an h1. Scoped to the figcaption child —
+   the figure card itself carries .md-graph-pie too (see note in export.ts). */
+.cm-editor .cm-graph-widget figure.md-graph-pie > figcaption,
+.cm-editor .cm-graph-widget figure.md-graph-pie > .md-graph-title {
+  font-size: 1.75em;
+  font-weight: 600;
+  padding-bottom: 8px;
+}
+.cm-editor .cm-graph-widget .md-graph-chart:has(> .md-graph-pie) {
+  align-items: center;
+  min-height: 0;
+  flex-wrap: wrap;
+}
+/* NOTE: element selectors are scoped under .md-graph-chart — the <figure>
+   card itself carries .md-graph-{type}, so bare .md-graph-pie / .md-graph-bar
+   selectors would restyle the whole card (see export.ts). */
+.cm-editor .cm-graph-widget .md-graph-chart > .md-graph-pie {
+  flex: 1 1 0;
+  min-width: 220px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  padding: 0;
+}
+.cm-editor .cm-graph-widget .md-graph-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  min-height: 60px;
+  padding: 6px 0;
+  position: relative;
+}
+.cm-editor .cm-graph-widget .md-graph-chart > .md-graph-bar-wrap {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 12px;
+}
+.cm-editor .cm-graph-widget .md-graph-chart .md-graph-bar {
+  width: 100%;
+  height: calc(var(--v, 50) * 1px);
+  min-height: 4px;
+  background: var(--accent, #2563eb);
+  border-radius: 3px 3px 0 0;
+}
+.cm-editor .cm-graph-widget .md-graph-tick {
+  font-size: 0.75em;
+  color: var(--muted, #6b7280);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cm-editor .cm-graph-widget .md-graph-line-dots {
+  position: relative;
+  height: 80px;
+}
+.cm-editor .cm-graph-widget .md-graph-line-segs {
+  display: flex;
+  height: 80px;
+  padding: 6px 0;
+}
+.cm-editor .cm-graph-widget .md-graph-line-segs .md-graph-seg,
+.cm-editor .cm-graph-widget .md-graph-seg {
+  flex: 1 1 0;
+  background: var(--accent, #2563eb);
+  clip-path: polygon(0 calc(100% - var(--y1, 50%)), 100% calc(100% - var(--y2, 50%)), 100% calc(100% - var(--y2, 50%) + 3px), 0 calc(100% - var(--y1, 50%) + 3px));
+}
+.cm-editor .cm-graph-widget .md-graph-dot {
+  position: absolute;
+  left: var(--x, 50%);
+  bottom: var(--y, 50%);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent, #2563eb);
+  transform: translate(-50%, 50%);
+}
+.cm-editor .cm-graph-widget .md-graph-legend {
+  flex: none;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 0 auto;
+  padding: 0 0 0 12px;
+  list-style: none;
+  font-size: 1.5em;
+  color: var(--muted, #6b7280);
+}
+.cm-editor .cm-graph-widget .md-graph-legend > li {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cm-editor .cm-graph-widget .md-graph-swatch {
+  display: inline-block;
+  width: 0.65em;
+  height: 0.65em;
+  border-radius: 50%;
+  background: var(--c, var(--accent, #2563eb));
+  flex: none;
+}
+.cm-editor .cm-graph-widget .md-graph-data {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.cm-editor .cm-graph-widget .md-graph-error {
+  color: #b91c1c;
+  background: rgba(185, 28, 28, 0.08);
+  border: 1px solid rgba(185, 28, 28, 0.3);
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+.cm-editor .cm-graph-widget svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
 /* Horizontal rule (E14).
    Use padding instead of margin — CodeMirror 6 measures widget height via
    getBoundingClientRect(), which excludes margin. Margin creates a gap between

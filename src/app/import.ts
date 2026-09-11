@@ -21,6 +21,9 @@
  */
 
 import DOMPurify from 'dompurify'
+// Type-only: the graph spec shape for the md-graph Turndown rule (erased at
+// build — no runtime import, no cycle with graph.ts which imports nothing).
+import type { GraphSpec } from './graph'
 // Type-only: pdfVector is loaded lazily inside convertPdf (never statically —
 // the app shell must not gain a new eager chunk). Types erase at build.
 import type { PdfRect, PdfTableGrid } from './pdfVector'
@@ -76,6 +79,7 @@ export function lossSummaryFor(format: ImportFormat): string[] {
         'Images are dropped — no image files are created or linked.',
         'Embedded (data:) images are stripped — no image files are created.',
         'Exact fonts, colors and spacing are not preserved.',
+        'CSS-only graphs round-trip via data-graph; styling is not preserved.',
       ]
     case 'pdf':
       return [
@@ -190,6 +194,183 @@ function isFootnoteSup(node: HTMLElement): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Graph import helpers (graphs packet 4/4 — import round-trip).
+ *
+ * Export renders each graph as `<figure class="md-graph" data-graph="…">`
+ * (see `graphToHtml` in graph.ts): `data-graph` holds the escaped JSON spec,
+ * with an accessible `<table class="md-graph-data">` (two Label/Value columns
+ * plus a `<caption>`) and `<figcaption class="md-graph-title">` alongside.
+ * Import rebuilds the canonical `%% … %%` tag from that JSON so a graph
+ * survives export → import losslessly (modulo CSS styling — see the html loss
+ * note). The canonical tag mirrors `parseGraphTag`'s locked syntax, whose
+ * leading labels use the 1→title / 2→x,y / 3→title,x,y heuristic — so
+ * `specToTag` pads ambiguous shapes with `""` (e.g. an x-only spec emits two
+ * labels `[x, ""]`, which re-parses to xLabel=x, yLabel='').
+ */
+
+/** Quote a graph label for `%% … %%` source (mirrors the graph tokenizer). */
+function quoteGraphLabel(label: string): string {
+  // Bare words are runs of non-space, non-paren, non-comma, non-dquote chars
+  // — quote when the label would not survive as one (spaces, commas, parens,
+  // quotes), when it is empty, or when it would lex as a `min`/`max` header
+  // keyword (case-insensitive) and derail the header parse.
+  if (label === '' || /[\s,()"]/.test(label) || /^(min|max)$/i.test(label)) {
+    return `"${label.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  }
+  return label
+}
+
+/**
+ * Rebuild the canonical `%% type … %%` source for a spec (locked syntax in
+ * graph.ts). `min`/`max` emit only for bar/line with min < max (the parser
+ * drops pie ranges and rejects min >= max, so emitting those would break or
+ * destabilize the round-trip). Non-finite point values are skipped — they
+ * could never re-parse to a finite number.
+ */
+export function specToTag(spec: GraphSpec): string {
+  const type = spec.type === 'pie' || spec.type === 'bar' || spec.type === 'line' ? spec.type : 'bar'
+  const parts: string[] = [type]
+  const title = typeof spec.title === 'string' ? spec.title : ''
+  const xLabel = typeof spec.xLabel === 'string' ? spec.xLabel : ''
+  const yLabel = typeof spec.yLabel === 'string' ? spec.yLabel : ''
+  const haveT = title !== ''
+  const haveX = xLabel !== ''
+  const haveY = yLabel !== ''
+  if (haveT && !haveX && !haveY) {
+    parts.push(quoteGraphLabel(title))
+  } else if (!haveT && haveX && haveY) {
+    parts.push(quoteGraphLabel(xLabel), quoteGraphLabel(yLabel))
+  } else if (haveT || haveX || haveY) {
+    parts.push(
+      quoteGraphLabel(haveT ? title : ''),
+      quoteGraphLabel(haveX ? xLabel : ''),
+      quoteGraphLabel(haveY ? yLabel : ''),
+    )
+  }
+  if (type !== 'pie') {
+    const min = spec.min
+    const max = spec.max
+    if (
+      typeof min === 'number' &&
+      typeof max === 'number' &&
+      Number.isFinite(min) &&
+      Number.isFinite(max)
+    ) {
+      if (min < max) parts.push(`min ${String(min)}`, `max ${String(max)}`)
+      // else: omit both — the parser rejects min >= max.
+    } else {
+      if (typeof min === 'number' && Number.isFinite(min)) parts.push(`min ${String(min)}`)
+      if (typeof max === 'number' && Number.isFinite(max)) parts.push(`max ${String(max)}`)
+    }
+  }
+  const points = Array.isArray(spec.points) ? spec.points : []
+  for (const point of points) {
+    const rec = point as unknown as { label?: unknown; value?: unknown }
+    const rawLabel = rec.label
+    const label =
+      typeof rawLabel === 'string' ? rawLabel : typeof rawLabel === 'number' ? String(rawLabel) : ''
+    const rawValue = rec.value
+    const value = typeof rawValue === 'number' ? rawValue : Number(rawValue)
+    if (!Number.isFinite(value)) continue
+    parts.push(`(${quoteGraphLabel(label)}, ${String(value)})`)
+  }
+  return `%% ${parts.join(' ')} %%`
+}
+
+/**
+ * Validate a `data-graph` JSON payload into a GraphSpec (never throws —
+ * untrusted import input). Unknown types, missing/non-array points, or zero
+ * usable points yield null so the caller falls back to the data table.
+ */
+function parseGraphSpec(raw: string): GraphSpec | null {
+  try {
+    if (raw === '') return null
+    const obj = JSON.parse(raw) as unknown
+    if (typeof obj !== 'object' || obj === null) return null
+    const rec = obj as Record<string, unknown>
+    const rawType = typeof rec['type'] === 'string' ? rec['type'].toLowerCase() : ''
+    if (rawType !== 'pie' && rawType !== 'bar' && rawType !== 'line') return null
+    if (!Array.isArray(rec['points'])) return null
+    const points: { label: string; value: number }[] = []
+    for (const entry of rec['points']) {
+      if (typeof entry !== 'object' || entry === null) continue
+      const p = entry as Record<string, unknown>
+      const rawLabel = p['label']
+      const label =
+        typeof rawLabel === 'string'
+          ? rawLabel
+          : typeof rawLabel === 'number'
+            ? String(rawLabel)
+            : null
+      if (label === null) continue
+      const rawValue = p['value']
+      const value = typeof rawValue === 'number' ? rawValue : Number(rawValue)
+      if (!Number.isFinite(value)) continue
+      points.push({ label, value })
+    }
+    if (points.length === 0) return null
+    const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+    const spec: GraphSpec = {
+      type: rawType as GraphSpec['type'],
+      title: str(rec['title']),
+      xLabel: str(rec['xLabel']),
+      yLabel: str(rec['yLabel']),
+      points,
+    }
+    if (typeof rec['min'] === 'number' && Number.isFinite(rec['min'])) spec.min = rec['min']
+    if (typeof rec['max'] === 'number' && Number.isFinite(rec['max'])) spec.max = rec['max']
+    return spec
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Best-effort points from the accessible `<table class="md-graph-data">`
+ * (always two columns — Label/Value with a `<th>` header row — see
+ * `dataTableHtml` in graph.ts). Header (`<th>`) rows are skipped; every
+ * `<td>` row with a finite second cell becomes a point. Null when no usable
+ * rows exist (caller falls back to caption text).
+ */
+function graphPointsFromTable(table: Element): { label: string; value: number }[] | null {
+  try {
+    const rows = Array.from(table.querySelectorAll('tr'))
+    const points: { label: string; value: number }[] = []
+    for (const row of rows) {
+      if (row.querySelector('th') !== null) continue
+      const cells = Array.from(row.querySelectorAll('td'))
+      if (cells.length < 2) continue
+      const label = ((cells[0] as Element).textContent ?? '').trim()
+      const value = Number((((cells[1] as Element).textContent ?? '').trim()).replace(/,/g, ''))
+      if (!Number.isFinite(value)) continue
+      points.push({ label, value })
+    }
+    return points.length > 0 ? points : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Real title for a figure: the `<figcaption class="md-graph-title">` (only
+ * rendered when the title is non-empty), else the data-table `<caption>` —
+ * unless it is the `"<type> chart data"` placeholder `dataTableHtml` emits
+ * for title-less specs (that must not become a title on reimport).
+ */
+function graphCaptionTitle(figure: Element): string {
+  try {
+    const fig = (figure.querySelector?.('figcaption.md-graph-title')?.textContent ?? '').trim()
+    if (fig !== '') return fig
+    const table = figure.querySelector?.('table.md-graph-data') ?? null
+    const caption = (table?.querySelector?.('caption')?.textContent ?? '').trim()
+    if (caption !== '' && !/^(pie|bar|line) chart data$/.test(caption)) return caption
+  } catch {
+    /* fall through */
+  }
+  return ''
 }
 
 /**
@@ -362,6 +543,55 @@ function addNotedownRules(service: TurndownLike): void {
         .split('\n')
         .map((line) => (line.trim() === '' ? '' : `-# ${line.replace(/^\s+/, '')}`))
       return `\n\n${lines.join('\n')}\n\n`
+    },
+  })
+
+  // Graphs (graphs packet 4/4): <figure class="md-graph" data-graph="…"> →
+  // the canonical `%% … %%` tag via specToTag (lossless modulo CSS styling).
+  // Fallbacks, in order: the accessible table.md-graph-data (Label/Value rows
+  // → best-effort `%% bar … %%` with the real caption title when there is
+  // one), then caption text, else the word 'graph'. A standalone
+  // <div class="md-graph-error"> (unknown graph type on export) carries the
+  // original %% source in its inner <pre> — restore it verbatim so the source
+  // survives the round-trip. Nothing else matches these classes, so rule
+  // order against the footnote rules below does not matter.
+  service.addRule('md-graph', {
+    filter: (node) =>
+      (node.nodeName === 'FIGURE' && hasClass(node, 'md-graph')) ||
+      (node.nodeName === 'DIV' && hasClass(node, 'md-graph-error')),
+    replacement: (_content, node) => {
+      if (node.nodeName === 'DIV') {
+        let raw = ''
+        try {
+          raw = (node.querySelector?.('pre')?.textContent ?? '').trim()
+        } catch {
+          raw = ''
+        }
+        if (raw === '') {
+          try {
+            raw = (node.textContent ?? '').trim()
+          } catch {
+            raw = ''
+          }
+        }
+        return raw === '' ? '' : `\n\n${raw}\n\n`
+      }
+      const fromData = parseGraphSpec(nodeAttr(node, 'data-graph'))
+      if (fromData !== null) return `\n\n${specToTag(fromData)}\n\n`
+      let table: Element | null = null
+      try {
+        table = node.querySelector?.('table.md-graph-data') ?? null
+      } catch {
+        table = null
+      }
+      if (table !== null) {
+        const points = graphPointsFromTable(table)
+        if (points !== null) {
+          return `\n\n${specToTag({ type: 'bar', title: graphCaptionTitle(node), xLabel: '', yLabel: '', points })}\n\n`
+        }
+      }
+      const caption = graphCaptionTitle(node)
+      return `\n\n${caption !== '' ? caption : 'graph'}\n\n`
     },
   })
 

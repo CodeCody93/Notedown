@@ -41,6 +41,7 @@ import plaintextLang from 'highlight.js/lib/languages/plaintext'
 import DOMPurify from 'dompurify'
 import { HLJS_CSS_DARK, HLJS_CSS_LIGHT } from '../styles/hljs-themes'
 import { resolveAgainstDocDir } from './text'
+import { parseGraphTag, graphToHtml, graphToErrorHtml, graphToTextFallback } from './graph'
 
 // Re-exported for the preview pane (a separate module): the preview injects the
 // same stylesheets into its own <style> element so preview and export match.
@@ -321,6 +322,110 @@ md.core.ruler.before('block', 'md-dropdown', (state) => {
   state.src = lines.join('\n')
 })
 
+// ---------------------------------------------------------------------------
+// Graph core rule — single-line `%% ... %%` tags → pure-CSS graph figures.
+//
+// Same seam as the spoiler/dropdown rules above: string preprocessing before
+// block parsing (the tag must survive as a block-level <figure>, and an
+// inline rule would never fire mid-text). Registered AFTER the dropdown rule
+// so it runs after task-list-markers → spoiler-spans → md-dropdown
+// (same-anchor `before('block')` inserts run in registration order). No
+// interaction either way: graph HTML contains no `>>>` or `||`, and spoiler
+// output contains no `%%`.
+// Fenced code blocks (```/~~~, stripCR-tolerant) and backtick code spans are
+// protected, mirroring the spoiler rule; unclosed single `%%` stays literal.
+// ---------------------------------------------------------------------------
+
+/** Backtick code-span ranges on ONE line (same run-matching as spoilers). */
+function graphLineCodeRanges(line: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = []
+  let p = 0
+  while (p < line.length) {
+    if (line.charCodeAt(p) !== 0x60 /* ` */) {
+      p++
+      continue
+    }
+    let openLen = 0
+    while (p + openLen < line.length && line.charCodeAt(p + openLen) === 0x60) openLen++
+    let q = p + openLen
+    let closed = false
+    while (q < line.length) {
+      if (line.charCodeAt(q) === 0x60) {
+        let closeLen = 0
+        while (q + closeLen < line.length && line.charCodeAt(q + closeLen) === 0x60) closeLen++
+        if (closeLen === openLen) {
+          ranges.push([p, q + closeLen])
+          p = q + closeLen
+          closed = true
+          break
+        }
+        q += closeLen
+        continue
+      }
+      q++
+    }
+    if (!closed) p++
+  }
+  return ranges
+}
+
+/**
+ * Replace single-line `%% ... %%` tags on ONE line with graph HTML.
+ * Exported for tests (mirrors `applySpoilerSpansToLine`).
+ */
+export function applyGraphTagsToLine(line: string): string {
+  const ranges = graphLineCodeRanges(line)
+  return line.replace(/%%([\s\S]*?)%%/g, (full, innerRaw, offset) => {
+    // Inline-code protection: a tag fully inside a backtick span stays literal.
+    const start = offset as number
+    if (ranges.some(([s, e]) => start >= s && start + full.length <= e)) return full
+    const inner = (innerRaw as string).trim()
+    if (inner === '') return full
+    try {
+      const parsed = parseGraphTag(inner)
+      return parsed.ok ? graphToHtml(parsed.spec) : graphToErrorHtml(parsed.error, full)
+    } catch {
+      return full
+    }
+  })
+}
+
+/** Line-based graph transform with fenced-code protection. */
+function applyGraphTags(src: string): string {
+  const lines = src.split('\n')
+  let inFence = false
+  let fenceChar = ''
+  let fenceLen = 0
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line)
+    if (fence) {
+      const marker = fence[1]
+      if (inFence) {
+        if (
+          marker[0] === fenceChar &&
+          marker.length >= fenceLen &&
+          /^ {0,3}[`~]+[ \t]*$/.test(stripCR(line))
+        ) {
+          inFence = false
+        }
+      } else {
+        inFence = true
+        fenceChar = marker[0]
+        fenceLen = marker.length
+      }
+      continue
+    }
+    if (inFence) continue
+    lines[i] = applyGraphTagsToLine(line)
+  }
+  return lines.join('\n')
+}
+
+md.core.ruler.before('block', 'md-graph', (state) => {
+  state.src = applyGraphTags(state.src)
+})
+
 /**
  * Render a markdown string through the same md instance.
  * Used by livePreview.ts to render dropdown inner content.
@@ -476,6 +581,13 @@ md.core.ruler.push('md-subtext', (state) => {
  * SECURITY (PLAN §16): `html: true` is on, so raw HTML in the document would
  * reach the DOM untouched. EVERY render therefore passes through DOMPurify
  * before being injected into the preview pane or an export document.
+ *
+ * GRAPH SANITIZE DEPENDENCY: the `%%` graph figures rely on the DOMPurify
+ * DEFAULTS — keep the bare `DOMPurify.sanitize(html)` calls below (no
+ * tightening) unless graphs are re-verified. The figure HTML needs `style`
+ * (CSS vars `--v`/`--x`/`--y1`/`--y2` plus `conic-gradient` pie
+ * backgrounds), `data-*` + `class` attributes, and
+ * `figure`/`figcaption`/`table` elements — all preserved by default.
  */
 export function renderMarkdown(markdown: string): string {
   return DOMPurify.sanitize(md.render(markdown))
@@ -773,6 +885,172 @@ export const MARKDOWN_BODY_CSS: string = `
   width: calc(100% - 24px);
   margin: 8px 12px;
   box-sizing: border-box;
+}
+
+/* Graphs — %% pie|bar|line ... %% — pure-CSS figures, no JS. The md-graph
+   core rule above injects <figure class="md-graph"> HTML; all colors come
+   from the app theme tokens, so dark mode follows automatically (no extra
+   rules). Var contract with graph.ts: --v = unitless 0-100 bar height;
+   --x/--y = dot-position percentages; --y1/--y2 = line-seg endpoint
+   percentages; --c = legend swatch color. */
+.md-body .md-graph {
+  position: relative;
+  margin: 0.8em 0;
+  border: 1px solid var(--border, #e3e3df);
+  border-radius: 6px;
+  padding: 12px;
+  background: var(--surface, #f8f8f6);
+}
+.md-body .md-graph figcaption,
+.md-body .md-graph-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+/* Pie title runs almost as large as an h1 (h1 is 2em). Scoped to the
+   figcaption CHILD — the figure itself carries .md-graph-pie too, so a bare
+   .md-graph-pie descendant selector would also match the card. */
+.md-body figure.md-graph-pie > figcaption,
+.md-body figure.md-graph-pie > .md-graph-title {
+  font-size: 1.75em;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.md-body .md-graph-error {
+  border-color: #c00;
+}
+.md-body .md-graph-error pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0.4em 0 0;
+}
+/* Pie: side-by-side disc + legend column pinned to the right side. The
+   chart row is display:flex (for bars), so the disc needs flex sizing —
+   otherwise the row shrink-wraps it into a sliver. The disc grows to fill
+   all free space; margin-left:auto pushes the legend hard right. */
+.md-body .md-graph-chart:has(> .md-graph-pie) {
+  align-items: center;
+  min-height: 0;
+  flex-wrap: wrap;
+}
+/* NOTE: element selectors below are scoped under .md-graph-chart on purpose:
+   the <figure> card itself carries .md-graph-{type} too, so a bare
+   .md-graph-pie / .md-graph-bar selector would also match the card (a bare
+   .md-graph-pie rule forced the card's height to its width via aspect-ratio,
+   leaving a big empty band at the bottom). */
+.md-body .md-graph-chart > .md-graph-pie {
+  flex: 1 1 0;
+  min-width: 220px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  margin: 0;
+}
+.md-body .md-graph-chart > .md-graph-legend {
+  flex: none;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 0 auto;
+  padding: 0;
+  list-style: none;
+  font-size: 1.5em;
+}
+.md-body .md-graph-chart > .md-graph-legend > li {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.md-body .md-graph-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.md-body .md-graph-swatch,
+.md-body .md-graph-legend-swatch,
+.md-body .md-graph-legend-item > i {
+  display: inline-block;
+  width: 0.65em;
+  height: 0.65em;
+  border-radius: 50%;
+  background: var(--c, var(--accent, #2563eb));
+  flex: none;
+}
+/* Bar: flex row of column wraps; bar height scales with --v (0-100). */
+.md-body .md-graph-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  min-height: 160px;
+  position: relative;
+}
+.md-body .md-graph-chart > .md-graph-bar-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.md-body .md-graph-chart .md-graph-bar {
+  width: 100%;
+  height: calc(var(--v) * 1.6px);
+  min-height: 4px;
+  background: var(--accent, #2563eb);
+  border-radius: 4px 4px 0 0;
+}
+.md-body .md-graph-bar-label,
+.md-body .md-graph-tick,
+.md-body .md-graph-label,
+.md-body .md-graph-value,
+.md-body .md-graph-axis {
+  font-size: 0.75em;
+  color: var(--muted, #6b7280);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Line: dots sit absolute in a relative 160px container; segs are thin bands
+   clipped between the --y1/--y2 endpoint percentages (one flex seg per
+   x-slot). */
+.md-body .md-graph-line-dots {
+  position: relative;
+  height: 160px;
+}
+.md-body .md-graph-dot {
+  position: absolute;
+  left: var(--x);
+  bottom: var(--y);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent, #2563eb);
+  transform: translate(-50%, 50%);
+}
+.md-body .md-graph-line-segs {
+  display: flex;
+  height: 160px;
+}
+.md-body .md-graph-seg {
+  flex: 1;
+  background: var(--accent, #2563eb);
+  clip-path: polygon(0 calc(100% - var(--y1)), 100% calc(100% - var(--y2)), 100% calc(100% - var(--y2) + 3px), 0 calc(100% - var(--y1) + 3px));
+}
+/* Data table is an accessible + import fallback only — visually hidden but
+   kept in the DOM so screen readers announce it and the Turndown import
+   rule can still read it back into %% source. */
+.md-body .md-graph-data {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 `
 
@@ -1418,8 +1696,10 @@ export function renderStandaloneHtml(markdown: string, opts: StandaloneHtmlOptio
       '  details.md-dropdown { display: block !important; border-color: #ccc !important; overflow: visible !important; }\n' +
       '  .md-body *, .md-body *::before, .md-body *::after { filter: none !important; backdrop-filter: none !important; }\n' +
       '  .md-body .md-dropdown-summary { background: #f5f5f5 !important; color: #000 !important; }\n' +
-      '  .md-body .md-spoiler { background: none !important; color: inherit !important; }\n' +
-      '  .md-body .md-spoiler[data-revealed="false"] { background: none !important; color: inherit !important; }\n' +
+  '  .md-body .md-spoiler { background: none !important; color: inherit !important; }\n' +
+  '  .md-body .md-spoiler[data-revealed="false"] { background: none !important; color: inherit !important; }\n' +
+  '  .md-body .md-graph { break-inside: avoid; page-break-inside: avoid; }\n' +
+  '  .md-body .md-graph-pie { print-color-adjust: exact; -webkit-print-color-adjust: exact; }\n' +
       '  .md-body a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.85em; word-break: break-all; }\n' +
       '}\n' +
       '</style>',
@@ -1817,6 +2097,30 @@ function parseExportBlocks(src: string): ExportBlock[] {
       }
       blocks.push({ kind: 'quote', text: parts.join('\n') })
       continue
+    }
+    // Graph text fallback (pure-export path): a line that is exactly one
+    // `%% ... %%` tag degrades to its plain-text form so RTF/DOCX/PDF (which
+    // share this parser) never show raw `%%` source. Fenced code is consumed
+    // above (stays literal); multi-tag lines and `%%%%` stay literal (v1
+    // grace). Placed before table detection so a `|` inside a tag can never
+    // misparse as a table header. Never throws.
+    if (/^%%[\s\S]*?%%$/.test(trimmed)) {
+      let fallback: string | null = null
+      try {
+        const inner = trimmed.replace(/^%%([\s\S]*?)%%$/, '$1').trim()
+        if (inner !== '') {
+          const parsed = parseGraphTag(inner)
+          fallback = parsed.ok ? graphToTextFallback(parsed.spec) : `Graph error: ${parsed.error}`
+        }
+      } catch {
+        fallback = null
+      }
+      if (fallback !== null) {
+        flushPara()
+        blocks.push({ kind: 'para', text: fallback })
+        i++
+        continue
+      }
     }
     if (line.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) {
       flushPara()

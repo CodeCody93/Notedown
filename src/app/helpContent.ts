@@ -109,6 +109,7 @@ export const HELP_ENTRIES: HelpEntry[] = [
   { id: 'highlight', title: 'Highlight', example: 'Highlight text', syntax: '==text==', hotkeyId: 'highlight' },
   { id: 'spoiler', title: 'Spoiler', example: 'Hide spoiler text', syntax: '||text||', hotkeyId: 'spoiler' },
   { id: 'dropdown', title: 'Dropdown', example: 'Insert a collapsible block', syntax: '>>> Title', hotkeyId: 'dropdown' },
+  { id: 'graph', title: 'Graph', example: 'Insert a CSS-only chart (pie, bar or line)', syntax: '%% bar (Jan, 120) (Feb, 200) %%', hotkeyId: null },
   // --- file / app features (no markdown syntax — syntax stays '') ---
   { id: 'new', title: 'New', example: 'Start a new document', syntax: '', hotkeyId: 'new' },
   { id: 'open', title: 'Open', example: 'Open a Markdown file', syntax: '', hotkeyId: 'open' },
