@@ -18,7 +18,7 @@ Pie with a title:
 
 Bar with quoted labels (space, comma, parens) + min/max:
 
-%% bar "Sales 2024" Month Units min 0 max 500 ("New York", 120) ("San Francisco, CA", 200) ("Q1 (est)", 90) %%
+%% bar "Sales 2024" Units min 0 max 500 ("New York", 120) ("San Francisco, CA", 200) ("Q1 (est)", 90) %%
 
 
 

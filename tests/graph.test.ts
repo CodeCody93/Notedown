@@ -54,13 +54,77 @@ describe('graphs', () => {
     const pdf = await markdownToPdfBytes('%% line (Mon, 3) (Tue, 7) %%\n', 'g')
     expect(pdf[0]).toBe(0x25)
   })
-  it('graph CSS never targets the figure card with element selectors', () => {
-    // The <figure> card carries .md-graph-{type} too, so bare .md-graph-pie /
+  it('graph CSS never targets the figure card with element selectors', () => {    // The <figure> card carries .md-graph-{type} too, so bare .md-graph-pie /
     // .md-graph-bar selectors would restyle the whole card (aspect-ratio on
     // the card forced its height to its width, leaving an empty band).
     expect(MARKDOWN_BODY_CSS).toContain('.md-graph-chart > .md-graph-pie')
     expect(MARKDOWN_BODY_CSS).not.toMatch(/\.md-body \.md-graph-pie\s*\{/)
     expect(MARKDOWN_BODY_CSS).not.toMatch(/\.md-body \.md-graph-bar\s*\{/)
-    expect(MARKDOWN_BODY_CSS).toContain('figure.md-graph-pie > figcaption')
+    expect(MARKDOWN_BODY_CSS).toContain('.md-graph > figcaption')
+  })
+  it('bar heights scale with values (true grid percentages)', () => {
+    const html = renderMarkdown('%% bar (A, 10) (B, 20) %%')
+    // Auto range is [min(0,…), max(…)] = [0, 20], so A renders at 50%.
+    expect(html).toContain('--v:50.0%')
+    expect(html).toContain('--v:100.0%')
+    const explicit = renderMarkdown('%% bar min 0 max 500 (A, 120) %%')
+    expect(explicit).toContain('--v:24.0%')
+  })
+  it('bars carry distinct per-bar colors and a min/max scale', () => {
+    const html = renderMarkdown('%% bar (A, 10) (B, 20) (C, 30) %%')
+    const colors = [...html.matchAll(/--c:(hsl\([^)]*\))/g)].map((m) => m[1])
+    expect(colors.length).toBe(3)
+    expect(new Set(colors).size).toBe(3)
+    expect(html).toContain('data-min="0"')
+    expect(html).toContain('data-max="30"')
+  })
+  it('bar y-label sits inside the chart and bars take no x-label', () => {
+    const html = renderMarkdown('%% bar "T" Y (A, 1) (B, 2) %%')
+    const plot = html.indexOf('md-graph-plot')
+    expect(plot).toBeGreaterThan(-1)
+    expect(html.indexOf('>Y<')).toBeGreaterThan(-1)
+    expect(html.indexOf('>Y<')).toBeLessThan(plot)
+    expect(html).not.toContain('md-graph-x')
+  })
+  it('bar tags accept at most 2 leading labels (title, y-label)', () => {
+    const two = parseGraphTag('bar "Sales 2024" Units (A, 1)')
+    expect(two.ok).toBe(true)
+    if (two.ok) {
+      expect(two.spec.title).toBe('Sales 2024')
+      expect(two.spec.yLabel).toBe('Units')
+      expect(two.spec.xLabel).toBe('')
+    }
+    expect(parseGraphTag('bar "T" X Y (A, 1)').ok).toBe(false)
+    // Pie/line still take 3.
+    expect(parseGraphTag('line "T" X Y (A, 1) (B, 2)').ok).toBe(true)
+  })
+  it('bar specToTag round-trips title + y without an x parameter', async () => {
+    const { specToTag } = await import('../src/app/import')
+    const tag = specToTag({
+      type: 'bar',
+      title: 'Sales 2024',
+      xLabel: 'Dropped',
+      yLabel: 'Units',
+      points: [{ label: 'A', value: 1 }],
+    })
+    expect(tag).not.toContain('Dropped')
+    const inner = tag.replace(/^%%\s*/, '').replace(/\s*%%$/, '')
+    const back = parseGraphTag(inner)
+    expect(back.ok).toBe(true)
+    if (back.ok) {
+      expect(back.spec.title).toBe('Sales 2024')
+      expect(back.spec.yLabel).toBe('Units')
+    }
+    // y-only pads so it re-parses as y, not title.
+    const yOnly = specToTag({ type: 'bar', title: '', xLabel: '', yLabel: 'U', points: [] })
+    const yBack = parseGraphTag(yOnly.replace(/^%%\s*/, '').replace(/\s*%%$/, ''))
+    // No points → parse error is fine; labels must still map to y.
+    expect(yBack.ok).toBe(false)
+    const yOk = parseGraphTag(`${yOnly.replace(/^%%\s*/, '').replace(/\s*%%$/, '')} (A, 1)`)
+    expect(yOk.ok).toBe(true)
+    if (yOk.ok) {
+      expect(yOk.spec.title).toBe('')
+      expect(yOk.spec.yLabel).toBe('U')
+    }
   })
 })

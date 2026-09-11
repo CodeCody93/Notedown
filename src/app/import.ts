@@ -206,9 +206,11 @@ function isFootnoteSup(node: HTMLElement): boolean {
  * Import rebuilds the canonical `%% … %%` tag from that JSON so a graph
  * survives export → import losslessly (modulo CSS styling — see the html loss
  * note). The canonical tag mirrors `parseGraphTag`'s locked syntax, whose
- * leading labels use the 1→title / 2→x,y / 3→title,x,y heuristic — so
+ * leading labels use the 1→title / 2→x,y / 3→title,x,y heuristic (bars take
+ * at most 2: 1→title / 2→title,y — bars have no x-axis parameter), so
  * `specToTag` pads ambiguous shapes with `""` (e.g. an x-only spec emits two
- * labels `[x, ""]`, which re-parses to xLabel=x, yLabel='').
+ * labels `[x, ""]`, which re-parses to xLabel=x, yLabel=''; a y-only bar spec
+ * emits `["", y]`, which re-parses to title='', yLabel=y).
  */
 
 /** Quote a graph label for `%% … %%` source (mirrors the graph tokenizer). */
@@ -239,7 +241,15 @@ export function specToTag(spec: GraphSpec): string {
   const haveT = title !== ''
   const haveX = xLabel !== ''
   const haveY = yLabel !== ''
-  if (haveT && !haveX && !haveY) {
+  if (type === 'bar') {
+    // Bars have no x-axis parameter — xLabel is dropped (documented loss for
+    // hand-built specs). y-only pads with "" so it re-parses as y, not title.
+    if (haveY) {
+      parts.push(quoteGraphLabel(haveT ? title : ''), quoteGraphLabel(yLabel))
+    } else if (haveT) {
+      parts.push(quoteGraphLabel(title))
+    }
+  } else if (haveT && !haveX && !haveY) {
     parts.push(quoteGraphLabel(title))
   } else if (!haveT && haveX && haveY) {
     parts.push(quoteGraphLabel(xLabel), quoteGraphLabel(yLabel))

@@ -28,7 +28,9 @@
  * - `md-graph-axis`, `md-graph-x`, `md-graph-y` (axis label divs)
  * - `md-graph-chart` (chart div, always carries `style="--count:N"`)
  * - `md-graph-pie` (conic-gradient div), `md-graph-legend`, `md-graph-swatch`
- * - `md-graph-bar-wrap`, `md-graph-bar`, `md-graph-tick`
+  * - `md-graph-plot` (bar value grid: bars row over tick row, carries
+  *   `--count`, `data-min`/`data-max` for the CSS scale labels), `md-graph-bar`
+  *   (`--v` percent height, `--c` slice color), `md-graph-tick`
  * - `md-graph-line-dots`, `md-graph-dot`, `md-graph-line-segs`, `md-graph-seg`
  * - `md-graph-data` (accessible fallback <table>), `md-graph-error` (error div)
  */
@@ -144,6 +146,8 @@ function tokenize(src: string): { tokens: Token[]; error?: string } {
  * `min`/`max` (bare, case-insensitive, header position only — a quoted
  * `"min"` is a plain label) each consume one following number; a pie tag
  * with min/max parses fine and the range is dropped from the spec.
+ * Leading-label mapping: pie/line use 1→title / 2→x,y / 3→title,x,y, while
+ * bar takes at most 2 (1→title, 2→title+y — bars have no x-axis parameter).
  */
 export function parseGraphTag(inner: string): GraphParseResult {
   const fail = (error: string): GraphParseErr => ({ ok: false, error })
@@ -184,8 +188,15 @@ export function parseGraphTag(inner: string): GraphParseResult {
       continue
     }
     if (t.kind === 'quoted' || t.kind === 'word' || t.kind === 'number') {
-      if (labels.length >= 3) {
-        return fail('Too many labels before data points. Expected at most 3 (title, x-label, y-label).')
+      // Bar charts only take a title + y-axis label (no x-axis parameter),
+      // so they cap at 2 leading labels; pie/line take 3.
+      const maxLabels = type === 'bar' ? 2 : 3
+      if (labels.length >= maxLabels) {
+        return fail(
+          type === 'bar'
+            ? 'Too many labels before data points. Bar charts accept at most 2 (title, y-label).'
+            : 'Too many labels before data points. Expected at most 3 (title, x-label, y-label).'
+        )
       }
       labels.push(t.text)
       pos++
@@ -243,7 +254,14 @@ export function parseGraphTag(inner: string): GraphParseResult {
   let title = ''
   let xLabel = ''
   let yLabel = ''
-  if (labels.length === 1) title = labels[0]
+  if (type === 'bar') {
+    // No x-axis parameter on bars: 1 label is the title, 2 are title + y.
+    if (labels.length === 1) title = labels[0]
+    else if (labels.length === 2) {
+      title = labels[0]
+      yLabel = labels[1]
+    }
+  } else if (labels.length === 1) title = labels[0]
   else if (labels.length === 2) {
     xLabel = labels[0]
     yLabel = labels[1]
@@ -326,16 +344,28 @@ function pieChartHtml(spec: GraphSpec): string {
   return `<div class="md-graph-chart" style="--count:${n}"><div class="md-graph-pie" style="background: conic-gradient(${stops.join(', ')})"></div><ul class="md-graph-legend">${items.join('')}</ul></div>`
 }
 
-function barChartHtml(spec: GraphSpec): string {
+/** Compact number formatting for data-min/data-max attributes. */
+function fmtNum(v: number): string {
+  return String(Math.round(v * 100) / 100)
+}
+
+function barChartHtml(spec: GraphSpec, yHtml: string): string {
   const n = spec.points.length
   const { lo, hi } = rangeOf(spec)
-  const bars = spec.points.map((p) => {
+  // Flat grid children (bars then ticks): the plot is a 2-row grid
+  // (bars row over tick row), so heights are true percentages of the row.
+  // Each bar gets its own palette color (--c), like pie slices.
+  const bars = spec.points.map((p, i) => {
     const pct = normPct(p.value, lo, hi)
     const label = escapeGraphHtml(p.label)
     const val = escapeGraphHtml(String(p.value))
-    return `<div class="md-graph-bar-wrap"><div class="md-graph-bar" style="--v:${pct.toFixed(1)}%" data-label="${label}" data-value="${val}" title="${label}: ${val}"></div><span class="md-graph-tick">${label}</span></div>`
+    const color = pieColor(i, n)
+    return `<div class="md-graph-bar" style="--v:${pct.toFixed(1)}%;--c:${color}" data-label="${label}" data-value="${val}" title="${label}: ${val}"></div>`
   })
-  return `<div class="md-graph-chart" style="--count:${n}">${bars.join('')}</div>`
+  const ticks = spec.points.map(
+    (p) => `<span class="md-graph-tick">${escapeGraphHtml(p.label)}</span>`
+  )
+  return `<div class="md-graph-chart" style="--count:${n}">${yHtml}<div class="md-graph-plot" style="--count:${n}" data-min="${fmtNum(lo)}" data-max="${fmtNum(hi)}">${bars.join('')}${ticks.join('')}</div></div>`
 }
 
 function lineChartHtml(spec: GraphSpec): string {
@@ -400,10 +430,14 @@ export function graphToHtml(spec: GraphSpec): string {
   let chart: string
   if (n === 0) {
     chart = `<div class="md-graph-chart" style="--count:0"><div class="md-graph-error" role="note"><strong>Graph error:</strong> No data points.</div></div>`
+    return `${open}${titleHtml}${yHtml}${chart}${xHtml}${dataTableHtml(spec)}</figure>`
+  }
+  // Bar carries the y-axis label INSIDE the chart (vertical gutter), so only
+  // the title sits above it. Pie/line keep the label above the chart.
+  if (spec.type === 'bar') {
+    return `${open}${titleHtml}${barChartHtml(spec, yHtml)}${xHtml}${dataTableHtml(spec)}</figure>`
   } else if (spec.type === 'pie') {
     chart = pieChartHtml(spec)
-  } else if (spec.type === 'bar') {
-    chart = barChartHtml(spec)
   } else {
     chart = lineChartHtml(spec)
   }

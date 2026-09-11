@@ -906,11 +906,11 @@ export const MARKDOWN_BODY_CSS: string = `
   font-weight: 600;
   margin-bottom: 8px;
 }
-/* Pie title runs almost as large as an h1 (h1 is 2em). Scoped to the
-   figcaption CHILD — the figure itself carries .md-graph-pie too, so a bare
-   .md-graph-pie descendant selector would also match the card. */
-.md-body figure.md-graph-pie > figcaption,
-.md-body figure.md-graph-pie > .md-graph-title {
+/* Graph titles run almost as large as an h1 (h1 is 2em). Scoped to the
+   figcaption child — the figure card carries .md-graph-{type} too, so a bare
+   type selector would also match the card. */
+.md-body .md-graph > figcaption,
+.md-body .md-graph > .md-graph-title {
   font-size: 1.75em;
   font-weight: 600;
   margin-bottom: 12px;
@@ -977,7 +977,12 @@ export const MARKDOWN_BODY_CSS: string = `
   background: var(--c, var(--accent, #2563eb));
   flex: none;
 }
-/* Bar: flex row of column wraps; bar height scales with --v (0-100). */
+/* Bar: y-axis gutter + grid plot (bars row over a tick row). The plot is a
+   2-row grid, so each bar's --v percent is a TRUE fraction of the fixed bars
+   row (the old flex column + calc(% * px) was invalid CSS, which collapsed
+   every bar flat). Element selectors stay scoped under .md-graph-chart (the
+   figure card shares .md-graph-{type}). data-min/data-max feed the scale
+   labels via attr() — no extra elements needed. */
 .md-body .md-graph-chart {
   display: flex;
   align-items: flex-end;
@@ -985,29 +990,76 @@ export const MARKDOWN_BODY_CSS: string = `
   min-height: 160px;
   position: relative;
 }
-.md-body .md-graph-chart > .md-graph-bar-wrap {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
+.md-body .md-graph-chart:has(> .md-graph-plot) {
+  align-items: stretch;
+  min-height: 0;
 }
-.md-body .md-graph-chart .md-graph-bar {
-  width: 100%;
-  height: calc(var(--v) * 1.6px);
+.md-body .md-graph-chart > .md-graph-y {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  align-self: center;
+  max-height: 240px;
+  font-size: 0.85em;
+  color: var(--muted, #6b7280);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.md-body .md-graph-plot {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--count, 1), minmax(0, 1fr));
+  grid-template-rows: minmax(0, 220px) auto;
+  column-gap: 8px;
+  row-gap: 4px;
+  padding-left: 44px;
+}
+/* Y scale: max at the top of the bars row, min at its bottom. The min label
+   is offset by exactly the tick row (ticks are single-line at 1.5
+   line-height) plus the row gap, so it sits on the bars baseline. */
+.md-body .md-graph-plot::before {
+  content: attr(data-max);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 36px;
+  text-align: right;
+  font-size: 0.75em;
+  color: var(--muted, #6b7280);
+}
+.md-body .md-graph-plot::after {
+  content: attr(data-min);
+  position: absolute;
+  bottom: calc(1.6875em + 4px);
+  left: 0;
+  width: 36px;
+  text-align: right;
+  font-size: 0.75em;
+  color: var(--muted, #6b7280);
+}
+.md-body .md-graph-plot > .md-graph-bar {
+  align-self: end;
+  height: var(--v, 0%);
   min-height: 4px;
-  background: var(--accent, #2563eb);
+  background: var(--c, var(--accent, #2563eb));
   border-radius: 4px 4px 0 0;
 }
-.md-body .md-graph-bar-label,
-.md-body .md-graph-tick,
-.md-body .md-graph-label,
-.md-body .md-graph-value,
+.md-body .md-graph-plot > .md-graph-tick {
+  font-size: 1.125em;
+  line-height: 1.5;
+  color: var(--muted, #6b7280);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Axis labels outside the plot (line-chart x/y, bar-chart x). Bar y-labels
+   live in the chart gutter (rule above) and override this. */
 .md-body .md-graph-axis {
   font-size: 0.75em;
   color: var(--muted, #6b7280);
-  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
