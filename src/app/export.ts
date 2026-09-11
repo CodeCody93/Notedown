@@ -1064,31 +1064,74 @@ export const MARKDOWN_BODY_CSS: string = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Line: dots sit absolute in a relative 160px container; segs are thin bands
-   clipped between the --y1/--y2 endpoint percentages (one flex seg per
-   x-slot). */
-.md-body .md-graph-line-dots {
-  position: relative;
-  height: 160px;
+/* Line: one overlaid plot area — segment bands, dots and x labels all share
+   the md-graph-line-area div, so nothing collapses (the old side-by-side
+   dots/segs flex row gave both containers zero width, which is why no line
+   rendered). Each segment clips its own slanted band across the whole area;
+   dots sit on the joints; x labels anchor below with edge-aware alignment.
+   data-min/max reuse the bar scale labels; the min offset is re-anchored to
+   the area bottom (margin-bottom reserves the x-label row). */
+.md-body .md-graph-plot.md-graph-line-plot {
+  display: block;
+  padding-left: 44px;
 }
-.md-body .md-graph-dot {
+.md-body .md-graph-line-plot::after {
+  bottom: 1.8em;
+}
+.md-body .md-graph-line-area {
+  position: relative;
+  height: 220px;
+  margin-bottom: 1.8em;
+}
+.md-body .md-graph-line-area > .md-graph-seg {
+  position: absolute;
+  inset: 0;
+  background: var(--c, var(--accent, #2563eb));
+  clip-path: polygon(var(--x1) calc(100% - var(--y1)), var(--x2) calc(100% - var(--y2)), var(--x2) calc(100% - var(--y2) + 3px), var(--x1) calc(100% - var(--y1) + 3px));
+}
+.md-body .md-graph-line-area > .md-graph-dot {
   position: absolute;
   left: var(--x);
   bottom: var(--y);
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: var(--accent, #2563eb);
+  background: var(--c, var(--accent, #2563eb));
+  box-shadow: 0 0 0 2px var(--surface, #f8f8f6);
   transform: translate(-50%, 50%);
 }
-.md-body .md-graph-line-segs {
-  display: flex;
-  height: 160px;
+.md-body .md-graph-line-area > .md-graph-xlab {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: var(--x);
+  transform: translateX(calc(var(--edge, 0.5) * -100%));
+  font-size: 0.85em;
+  color: var(--muted, #6b7280);
+  white-space: nowrap;
 }
-.md-body .md-graph-seg {
-  flex: 1;
-  background: var(--accent, #2563eb);
-  clip-path: polygon(0 calc(100% - var(--y1)), 100% calc(100% - var(--y2)), 100% calc(100% - var(--y2) + 3px), 0 calc(100% - var(--y1) + 3px));
+/* Line x-axis name: centered directly under the day-name row (mirroring how
+   the y-axis name hugs its axis), with the series legend below it. Scoped to
+   the line figure's direct child so pie/bar axis labels are untouched. */
+.md-body .md-graph-line > .md-graph-x {
+  text-align: center;
+  margin: 4px 0 0;
+}
+/* Line legend: horizontal wrap below the chart (pie keeps its side column). */
+.md-body .md-graph-line-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  justify-content: center;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 1.125em;
+}
+.md-body .md-graph-line-legend > li {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 /* Data table is an accessible + import fallback only — visually hidden but
    kept in the DOM so screen readers announce it and the Turndown import

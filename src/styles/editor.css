@@ -238,30 +238,64 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cm-editor .cm-graph-widget .md-graph-line-dots {
+.cm-editor .cm-graph-widget .md-graph-plot.md-graph-line-plot {
+  display: block;
+  padding-left: 40px;
+}
+.cm-editor .cm-graph-widget .md-graph-line-plot::after {
+  bottom: 1.8em;
+}
+.cm-editor .cm-graph-widget .md-graph-line-area {
   position: relative;
-  height: 80px;
+  height: 180px;
+  margin-bottom: 1.8em;
 }
-.cm-editor .cm-graph-widget .md-graph-line-segs {
-  display: flex;
-  height: 80px;
-  padding: 6px 0;
+.cm-editor .cm-graph-widget .md-graph-line-area > .md-graph-seg {
+  position: absolute;
+  inset: 0;
+  background: var(--c, var(--accent, #2563eb));
+  clip-path: polygon(var(--x1) calc(100% - var(--y1)), var(--x2) calc(100% - var(--y2)), var(--x2) calc(100% - var(--y2) + 3px), var(--x1) calc(100% - var(--y1) + 3px));
 }
-.cm-editor .cm-graph-widget .md-graph-line-segs .md-graph-seg,
-.cm-editor .cm-graph-widget .md-graph-seg {
-  flex: 1 1 0;
-  background: var(--accent, #2563eb);
-  clip-path: polygon(0 calc(100% - var(--y1, 50%)), 100% calc(100% - var(--y2, 50%)), 100% calc(100% - var(--y2, 50%) + 3px), 0 calc(100% - var(--y1, 50%) + 3px));
-}
-.cm-editor .cm-graph-widget .md-graph-dot {
+.cm-editor .cm-graph-widget .md-graph-line-area > .md-graph-dot {
   position: absolute;
   left: var(--x, 50%);
   bottom: var(--y, 50%);
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: var(--accent, #2563eb);
+  background: var(--c, var(--accent, #2563eb));
+  box-shadow: 0 0 0 2px var(--surface, #f8f8f6);
   transform: translate(-50%, 50%);
+}
+.cm-editor .cm-graph-widget .md-graph-line-area > .md-graph-xlab {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: var(--x, 50%);
+  transform: translateX(calc(var(--edge, 0.5) * -100%));
+  font-size: 0.85em;
+  color: var(--muted, #6b7280);
+  white-space: nowrap;
+}
+.cm-editor .cm-graph-widget .md-graph-line > .md-graph-x {
+  text-align: center;
+  margin: 4px 0 0;
+}
+.cm-editor .cm-graph-widget .md-graph-line-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  justify-content: center;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 1.125em;
+  color: var(--muted, #6b7280);
+}
+.cm-editor .cm-graph-widget .md-graph-line-legend > li {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .cm-editor .cm-graph-widget .md-graph-legend {
   flex: none;

@@ -205,10 +205,11 @@ function isFootnoteSup(node: HTMLElement): boolean {
  * plus a `<caption>`) and `<figcaption class="md-graph-title">` alongside.
  * Import rebuilds the canonical `%% … %%` tag from that JSON so a graph
  * survives export → import losslessly (modulo CSS styling — see the html loss
- * note). The canonical tag mirrors `parseGraphTag`'s locked syntax, whose
+ * note). The canonical tag mirrors `parseGraphTag`'s locked syntax: pie/bar
  * leading labels use the 1→title / 2→x,y / 3→title,x,y heuristic (bars take
- * at most 2: 1→title / 2→title,y — bars have no x-axis parameter), so
- * `specToTag` pads ambiguous shapes with `""` (e.g. an x-only spec emits two
+ * at most 2: 1→title / 2→title,y — bars have no x-axis parameter), while line
+ * emits the group form (title, X group, Y group, series groups) — so
+ * `specToTag` pads ambiguous pie/bar shapes with `""` (e.g. an x-only spec emits two
  * labels `[x, ""]`, which re-parses to xLabel=x, yLabel=''; a y-only bar spec
  * emits `["", y]`, which re-parses to title='', yLabel=y).
  */
@@ -230,7 +231,10 @@ function quoteGraphLabel(label: string): string {
  * graph.ts). `min`/`max` emit only for bar/line with min < max (the parser
  * drops pie ranges and rejects min >= max, so emitting those would break or
  * destabilize the round-trip). Non-finite point values are skipped — they
- * could never re-parse to a finite number.
+ * could never re-parse to a finite number. Line specs emit the canonical
+ * group form (title, X group, Y group, one value group per series). Parsed
+ * specs are always full grids (the parser rejects ragged series), so this
+ * round-trips losslessly; hand-built gapped specs are best-effort.
  */
 export function specToTag(spec: GraphSpec): string {
   const type = spec.type === 'pie' || spec.type === 'bar' || spec.type === 'line' ? spec.type : 'bar'
@@ -241,26 +245,30 @@ export function specToTag(spec: GraphSpec): string {
   const haveT = title !== ''
   const haveX = xLabel !== ''
   const haveY = yLabel !== ''
-  if (type === 'bar') {
-    // Bars have no x-axis parameter — xLabel is dropped (documented loss for
-    // hand-built specs). y-only pads with "" so it re-parses as y, not title.
-    if (haveY) {
-      parts.push(quoteGraphLabel(haveT ? title : ''), quoteGraphLabel(yLabel))
-    } else if (haveT) {
+  // Line uses the group form (no bare header labels or min/max keywords —
+  // those are handled in the line branch below).
+  if (type !== 'line') {
+    if (type === 'bar') {
+      // Bars have no x-axis parameter — xLabel is dropped (documented loss for
+      // hand-built specs). y-only pads with "" so it re-parses as y, not title.
+      if (haveY) {
+        parts.push(quoteGraphLabel(haveT ? title : ''), quoteGraphLabel(yLabel))
+      } else if (haveT) {
+        parts.push(quoteGraphLabel(title))
+      }
+    } else if (haveT && !haveX && !haveY) {
       parts.push(quoteGraphLabel(title))
+    } else if (!haveT && haveX && haveY) {
+      parts.push(quoteGraphLabel(xLabel), quoteGraphLabel(yLabel))
+    } else if (haveT || haveX || haveY) {
+      parts.push(
+        quoteGraphLabel(haveT ? title : ''),
+        quoteGraphLabel(haveX ? xLabel : ''),
+        quoteGraphLabel(haveY ? yLabel : ''),
+      )
     }
-  } else if (haveT && !haveX && !haveY) {
-    parts.push(quoteGraphLabel(title))
-  } else if (!haveT && haveX && haveY) {
-    parts.push(quoteGraphLabel(xLabel), quoteGraphLabel(yLabel))
-  } else if (haveT || haveX || haveY) {
-    parts.push(
-      quoteGraphLabel(haveT ? title : ''),
-      quoteGraphLabel(haveX ? xLabel : ''),
-      quoteGraphLabel(haveY ? yLabel : ''),
-    )
   }
-  if (type !== 'pie') {
+  if (type !== 'pie' && type !== 'line') {
     const min = spec.min
     const max = spec.max
     if (
@@ -277,6 +285,50 @@ export function specToTag(spec: GraphSpec): string {
     }
   }
   const points = Array.isArray(spec.points) ? spec.points : []
+  if (type === 'line') {
+    // Canonical group form: title, (Xname, x…), (Yname[, min][, max]),
+    // (Series, values…) per series in first-seen order. X names come from
+    // the points' labels (auto "1..N" labels re-emit verbatim and re-parse
+    // identically). A lone bound emits as max, matching the parser.
+    const xs: string[] = []
+    const bySeries = new Map<string, { label: string; value: number }[]>()
+    const order: string[] = []
+    for (const point of points) {
+      const rec = point as unknown as { label?: unknown; value?: unknown; series?: unknown }
+      const rawLabel = rec.label
+      const label =
+        typeof rawLabel === 'string' ? rawLabel : typeof rawLabel === 'number' ? String(rawLabel) : ''
+      const rawValue = rec.value
+      const value = typeof rawValue === 'number' ? rawValue : Number(rawValue)
+      if (!Number.isFinite(value)) continue
+      const rawSeries = rec.series
+      const series =
+        typeof rawSeries === 'string' ? rawSeries : typeof rawSeries === 'number' ? String(rawSeries) : ''
+      if (!xs.includes(label)) xs.push(label)
+      let arr = bySeries.get(series)
+      if (arr === undefined) {
+        arr = []
+        bySeries.set(series, arr)
+        order.push(series)
+      }
+      arr.push({ label, value })
+    }
+    if (haveT) parts.push(quoteGraphLabel(title))
+    parts.push(`(${[quoteGraphLabel(xLabel), ...xs.map(quoteGraphLabel)].join(', ')})`)
+    const yParts = [quoteGraphLabel(yLabel)]
+    const min = spec.min
+    const max = spec.max
+    if (typeof max === 'number' && Number.isFinite(max)) {
+      if (typeof min === 'number' && Number.isFinite(min) && min < max) yParts.push(String(min))
+      yParts.push(String(max))
+    }
+    parts.push(`(${yParts.join(', ')})`)
+    for (const s of order) {
+      const vals = (bySeries.get(s) ?? []).map((p) => String(p.value))
+      parts.push(`(${[quoteGraphLabel(s), ...vals].join(', ')})`)
+    }
+    return `%% ${parts.join(' ')} %%`
+  }
   for (const point of points) {
     const rec = point as unknown as { label?: unknown; value?: unknown }
     const rawLabel = rec.label
@@ -304,7 +356,7 @@ function parseGraphSpec(raw: string): GraphSpec | null {
     const rawType = typeof rec['type'] === 'string' ? rec['type'].toLowerCase() : ''
     if (rawType !== 'pie' && rawType !== 'bar' && rawType !== 'line') return null
     if (!Array.isArray(rec['points'])) return null
-    const points: { label: string; value: number }[] = []
+    const points: { label: string; value: number; series?: string }[] = []
     for (const entry of rec['points']) {
       if (typeof entry !== 'object' || entry === null) continue
       const p = entry as Record<string, unknown>
@@ -319,7 +371,10 @@ function parseGraphSpec(raw: string): GraphSpec | null {
       const rawValue = p['value']
       const value = typeof rawValue === 'number' ? rawValue : Number(rawValue)
       if (!Number.isFinite(value)) continue
-      points.push({ label, value })
+      const rawSeries = p['series']
+      const series =
+        typeof rawSeries === 'string' ? rawSeries : typeof rawSeries === 'number' ? String(rawSeries) : ''
+      points.push(series !== '' ? { label, value, series } : { label, value })
     }
     if (points.length === 0) return null
     const str = (v: unknown): string => (typeof v === 'string' ? v : '')
