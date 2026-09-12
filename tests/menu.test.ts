@@ -184,9 +184,10 @@ describe('renderMenubar', () => {
 describe('formattingHotkeyMap', () => {
   it('returns a non-null extension covering SHORTCUTS ∩ FORMATTING ids', () => {
     // Expected final set: every SHORTCUTS id that also exists in
-    // FORMATTING_COMMANDS, in SHORTCUTS order. 'emoji' is intentionally absent
-    // (the emoji picker binds its own keymap), 'toggle-preview' was removed, and
-    // 'list-unordered'/'list-task' have no SHORTCUTS entry.
+    // FORMATTING_COMMANDS, in SHORTCUTS order. 'emoji' and 'graph' are
+    // intentionally absent: each binds its own app-level keymap (the emoji
+    // picker and the graph builder respectively). 'toggle-preview' was
+    // removed, and 'list-unordered'/'list-task' have no SHORTCUTS entry.
     const expected = [
       'bold',
       'italic',
@@ -218,7 +219,6 @@ describe('formattingHotkeyMap', () => {
       'highlight',
       'spoiler',
       'dropdown',
-      'graph',
     ]
     expect(expected.length).toBeGreaterThan(0)
     expect(formattingHotkeyIds()).toEqual(expected)

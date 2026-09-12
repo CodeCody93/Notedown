@@ -31,6 +31,7 @@ import { formattingHotkeyMap, openEmojiPicker, renderMenubar } from './menu'
 import { isSettingsOpen, openSettingsModal, wireSettingsModal } from './settingsUI'
 import { isAboutOpen, openAboutModal, wireAboutModal } from './about'
 import { isHelpOpen, openHelpModal, wireHelpModal } from './help'
+import { isGraphBuilderOpen, openGraphBuilder } from './graphDialog'
 import { SHORTCUTS, getPlatform, matches } from './shortcuts'
 
 const AUTOSAVE_DEBOUNCE_MS = 3000
@@ -625,7 +626,6 @@ const FORMATTING_ACTION_IDS = [
   'pie-graph',
   'bar-graph',
   'line-graph',
-  'graph',
 ]
 
 /**
@@ -713,6 +713,22 @@ function wireMenu(): void {
         const ed = getEditor()
         if (ed !== null) ed.replaceSelection(emoji)
       })
+    },
+    graph: () => {
+      // The Graph parent row (and the pinned-Extra Graph button) open the
+      // graph builder modal instead of dispatching text; the picked chart tag
+      // is inserted at the caret. Submenu children (pie/bar/line-graph) keep
+      // flowing through runFormatting untouched.
+      void (async () => {
+        const tag = await openGraphBuilder()
+        if (tag !== null) {
+          const ed = getEditor()
+          if (ed !== null) {
+            ed.replaceSelection(tag)
+            ed.focus()
+          }
+        }
+      })()
     },
   }
   for (const id of FORMATTING_ACTION_IDS) {
@@ -870,8 +886,8 @@ function wireStatusMode(): void {
 function wireWindowFocus(): void {
   window.addEventListener('focus', () => {
     if (editor === null) return
-    // Never steal focus while any modal dialog is open (settings/help/about/import/export).
-    if (isSettingsOpen() || isHelpOpen() || isAboutOpen() || isImportDialogOpen() || isExportDialogOpen()) return
+    // Never steal focus while any modal dialog is open (settings/help/about/import/export/graph builder).
+    if (isSettingsOpen() || isHelpOpen() || isAboutOpen() || isImportDialogOpen() || isExportDialogOpen() || isGraphBuilderOpen()) return
     const modalRoot = document.getElementById('settings-modal-root')
     if (modalRoot !== null && !modalRoot.hidden) return
     editor.focus()
@@ -902,6 +918,35 @@ function emojiHotkeyMap(): KeyBinding[] {
   ]
 }
 
+/**
+ * Graph-builder hotkey layer: mirrors emojiHotkeyMap — a single CM6 keybinding
+ * built from the 'graph' shortcut's chord looked up at RUNTIME from the
+ * shortcuts map (never hardcoded). Opens the graph builder modal instead of
+ * dispatching text; the picked chart tag is inserted at the caret.
+ */
+function graphHotkeyMap(): KeyBinding[] {
+  const chord = SHORTCUTS.find((s) => s.id === 'graph')?.keys[0]
+  if (chord === undefined) return []
+  return [
+    {
+      key: chord,
+      run: () => {
+        void (async () => {
+          const tag = await openGraphBuilder()
+          if (tag !== null) {
+            const ed = getEditor()
+            if (ed !== null) {
+              ed.replaceSelection(tag)
+              ed.focus()
+            }
+          }
+        })()
+        return true
+      },
+    },
+  ]
+}
+
 export async function initApp(): Promise<void> {
   // The editor module pulls in the ~518 KB cm-editor chunk (CM6 +
   // codemirror-live-markdown + its inlined hljs languages); kicking off the
@@ -924,7 +969,7 @@ export async function initApp(): Promise<void> {
     wrap: settings.lineWrapping,
     fontSize: settings.fontSize,
     lineHeight: settings.lineHeight,
-    extraKeymaps: [formattingHotkeyMap(), markdownListKeymap(), emojiHotkeyMap()],
+    extraKeymaps: [formattingHotkeyMap(), markdownListKeymap(), emojiHotkeyMap(), graphHotkeyMap()],
     onPasteImage: (event) => {
       const ed = editor
       const doc = appState.get().doc

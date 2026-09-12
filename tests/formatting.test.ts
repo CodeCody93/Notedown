@@ -629,12 +629,6 @@ describe('graph inserts', () => {
     const result = applyTo('content', 0, undefined, insertLineGraphSpec(stateOf('content', 0)))
     expect(result.doc).toContain('%% line "Title" (Week, Mon, Tue) (Hits, 0, 100) (SiteA, 120, 200) %%')
   })
-
-  it('graph alias inserts the bar starter', () => {
-    const viaAlias = applyTo('content', 0, undefined, FORMATTING_COMMANDS['graph'](stateOf('content', 0)))
-    const viaBar = applyTo('content', 0, undefined, insertBarGraphSpec(stateOf('content', 0)))
-    expect(viaAlias.doc).toBe(viaBar.doc)
-  })
 })
 
 describe('FORMATTING_COMMANDS', () => {
@@ -675,7 +669,6 @@ describe('FORMATTING_COMMANDS', () => {
       'pie-graph',
       'bar-graph',
       'line-graph',
-      'graph',
     ]
     for (const id of expected) {
       expect(typeof FORMATTING_COMMANDS[id]).toBe('function')

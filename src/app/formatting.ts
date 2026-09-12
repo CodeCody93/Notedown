@@ -1238,7 +1238,4 @@ export const FORMATTING_COMMANDS: Record<string, FormattingCommand> = {
   'pie-graph': insertPieGraphSpec,
   'bar-graph': insertBarGraphSpec,
   'line-graph': insertLineGraphSpec,
-  // Mod-Shift-G + the pinned-Extra Graph button: no submenu context there, so
-  // insert the bar starter (the most common shape).
-  graph: insertBarGraphSpec,
 }

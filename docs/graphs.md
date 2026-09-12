@@ -66,3 +66,21 @@ Single-line tags delimited by `%% ... %%`. Never render inside fenced code.
   `Traffic (line): SiteA: Mon=120, Tue=200; SiteB: Mon=150`.
 - HTML import restores the tag via the `data-graph` attribute on
   the figure (title, labels, bounds, points round-trip).
+
+## Builder
+
+Press Mod-Shift-G (Ctrl-Shift-G on Windows/Linux, Cmd-Shift-G on macOS) or
+choose the Graph menu to open the graph builder modal.
+
+- Tabs for Pie, Bar, and Line. Switching tabs resets that tab's grid to its
+  starter rows but keeps the shared title.
+- Grid editing: edit labels/values in place; add or remove rows (pie/bar),
+  X columns and series (line) with the Add/× buttons.
+- Validation: the Insert button stays disabled until every cell holds a
+  finite number, bounds satisfy min < max, and the generated tag re-parses.
+  Problems are listed above the preview and the offending cells are
+  highlighted; fixing them re-enables Insert.
+- A live preview (rendered figure plus the generated tag source) updates as
+  you type.
+- Insert closes the modal and inserts the generated `%% … %%` tag at the
+  caret. Cancel, Esc, or clicking the backdrop closes without inserting.

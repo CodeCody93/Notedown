@@ -109,7 +109,7 @@ export const HELP_ENTRIES: HelpEntry[] = [
   { id: 'highlight', title: 'Highlight', example: 'Highlight text', syntax: '==text==', hotkeyId: 'highlight' },
   { id: 'spoiler', title: 'Spoiler', example: 'Hide spoiler text', syntax: '||text||', hotkeyId: 'spoiler' },
   { id: 'dropdown', title: 'Dropdown', example: 'Insert a collapsible block', syntax: '>>> Title', hotkeyId: 'dropdown' },
-  { id: 'graph', title: 'Graph', example: 'Insert a CSS-only chart (pie, bar or multi-series line)', syntax: '%% pie "Title" (Apples, 30) (Bananas, 45) %% / %% bar "Title" Units (Jan, 120) (Feb, 200) %% / %% line "Title" (Week, Mon, Tue) (Hits, 0, 100) (SiteA, 120, 200) %%', hotkeyId: 'graph' },
+  { id: 'graph', title: 'Graph', example: 'Open the graph builder (or insert a chart tag)', syntax: '%% pie "Title" (Apples, 30) (Bananas, 45) %% / %% bar "Title" Units (Jan, 120) (Feb, 200) %% / %% line "Title" (Week, Mon, Tue) (Hits, 0, 100) (SiteA, 120, 200) %%', hotkeyId: 'graph' },
   { id: 'pie-graph', title: 'Pie chart', example: 'Insert a pie chart', syntax: '%% pie "Title" (Apples, 30) (Bananas, 45) %%', hotkeyId: null },
   { id: 'bar-graph', title: 'Bar chart', example: 'Insert a bar chart', syntax: '%% bar "Title" Units (Jan, 120) (Feb, 200) %%', hotkeyId: null },
   { id: 'line-graph', title: 'Line chart', example: 'Insert a multi-series line chart', syntax: '%% line "Title" (Week, Mon, Tue) (Hits, 0, 100) (SiteA, 120, 200) %%', hotkeyId: null },
