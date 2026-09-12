@@ -628,11 +628,12 @@ describe('EXPORT_FORMATS + exportLossSummaryFor (round-9 unified export)', () =>
     expect(exportLossSummaryFor('txt')).toEqual([])
   })
 
-  it('html lists 1-2 image-embedding bullets', () => {
+  it('html lists image-embedding bullets plus the graph note', () => {
     const bullets = exportLossSummaryFor('html')
     expect(bullets.length).toBeGreaterThan(0)
-    expect(bullets.length).toBeLessThanOrEqual(2)
+    expect(bullets.length).toBeLessThanOrEqual(3)
     expect(bullets.join(' ')).toMatch(/image/i)
+    expect(bullets.join(' ')).toMatch(/graph/i)
   })
 
   it('pdf notes direct TEXT (re-importable) output, not print', () => {

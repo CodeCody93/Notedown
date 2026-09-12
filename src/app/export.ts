@@ -927,7 +927,7 @@ export const MARKDOWN_BODY_CSS: string = `
    chart row is display:flex (for bars), so the disc needs flex sizing —
    otherwise the row shrink-wraps it into a sliver. The disc grows to fill
    all free space; margin-left:auto pushes the legend hard right. */
-.md-body .md-graph-chart:has(> .md-graph-pie) {
+.md-body .md-graph-chart.md-graph-chart-pie {
   align-items: center;
   min-height: 0;
   flex-wrap: wrap;
@@ -990,7 +990,7 @@ export const MARKDOWN_BODY_CSS: string = `
   min-height: 160px;
   position: relative;
 }
-.md-body .md-graph-chart:has(> .md-graph-plot) {
+.md-body .md-graph-chart.md-graph-chart-plot {
   align-items: stretch;
   min-height: 0;
 }
@@ -1794,7 +1794,11 @@ export function renderStandaloneHtml(markdown: string, opts: StandaloneHtmlOptio
   '  .md-body .md-spoiler { background: none !important; color: inherit !important; }\n' +
   '  .md-body .md-spoiler[data-revealed="false"] { background: none !important; color: inherit !important; }\n' +
   '  .md-body .md-graph { break-inside: avoid; page-break-inside: avoid; }\n' +
-  '  .md-body .md-graph-pie { print-color-adjust: exact; -webkit-print-color-adjust: exact; }\n' +
+  '  .md-body .md-graph-pie,\n' +
+  '  .md-body .md-graph-bar,\n' +
+  '  .md-body .md-graph-seg,\n' +
+  '  .md-body .md-graph-dot,\n' +
+  '  .md-body .md-graph-swatch { print-color-adjust: exact; -webkit-print-color-adjust: exact; }\n' +
       '  .md-body a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.85em; word-break: break-all; }\n' +
       '}\n' +
       '</style>',
@@ -1842,13 +1846,14 @@ export function exportLossSummaryFor(format: ExportFormat): string[] {
       return [
         'Remote (http/https) and absolute-path images are not embedded — they stay linked and need network access to display.',
         'Local images that cannot be read are left as-is and listed in the export skip alert.',
+        'Graphs are fully preserved as styled figures (same rendering as the on-screen preview).',
       ]
     case 'pdf':
       return [
         'Output is a selectable TEXT pdf, re-importable via Import — never an image scan.',
         'Tables render as bordered grids with shaded headers that repeat across pages; very wide tables shrink columns to fit, and images inside cells embed after the table.',
         'Local PNG/JPG images are embedded; SVG, remote, or unreadable images fall back to alt text and are listed in the skip alert.',
-        'Tasks render as ASCII "- [ ]" / "- [x]" so they round-trip through Import.',
+        'Tasks render as ASCII "- [ ]" / "- [x]" and graphs flatten to "Label=Value" text lines (bar/line scales and pie slices do not survive as graphics) so they round-trip through Import.',
         'Fonts are Helvetica/Courier (WinAnsi) only — emoji and CJK degrade to "?" (documented loss).',
         'Layout and pagination are minimal and differ from the on-screen preview.',
       ]
@@ -1859,6 +1864,7 @@ export function exportLossSummaryFor(format: ExportFormat): string[] {
         'Exact fonts, colors, spacing and page layout are lost (minimal Normal + Heading1-3 styles).',
         'Underline stays underlined but re-imports as plain text; spoilers export revealed as plain text.',
         'Dropdowns expand statically (title + body); tasks become \u2610/\u2612 literals; footnotes, subtext and definition lists flatten to text.',
+        'Graphs flatten to "Label=Value" text lines (bar/line scales and pie slices do not survive as graphics).',
       ]
     case 'rtf':
       return [
@@ -1867,6 +1873,7 @@ export function exportLossSummaryFor(format: ExportFormat): string[] {
         'Exact fonts, colors, spacing and layout are lost (Calibri/Consolas only).',
         'Underline stays underlined but re-imports as plain text; spoilers export revealed as plain text.',
         'Dropdowns expand statically (title + body); tasks become \u2610/\u2612 literals; footnotes, subtext and definition lists flatten to text.',
+        'Graphs flatten to "Label=Value" text lines (bar/line scales and pie slices do not survive as graphics).',
       ]
   }
 }

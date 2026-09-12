@@ -622,6 +622,10 @@ const FORMATTING_ACTION_IDS = [
   'highlight',
   'spoiler',
   'dropdown',
+  'pie-graph',
+  'bar-graph',
+  'line-graph',
+  'graph',
 ]
 
 /**

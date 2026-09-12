@@ -110,6 +110,17 @@ export const PRINT_CSS: string = `@media print {
   .md-body img {
     max-width: 100% !important;
   }
+  .md-body .md-graph {
+    break-inside: avoid;
+  }
+  .md-body .md-graph-pie,
+  .md-body .md-graph-bar,
+  .md-body .md-graph-seg,
+  .md-body .md-graph-dot,
+  .md-body .md-graph-swatch {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
   details.md-dropdown {
     display: block !important;
     border-color: #ccc !important;

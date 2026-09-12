@@ -31,7 +31,12 @@
  * - `md-graph`, `md-graph-pie` | `md-graph-bar` | `md-graph-line` (on <figure>)
  * - `md-graph-title` (<figcaption>, only when title non-empty)
  * - `md-graph-axis`, `md-graph-x`, `md-graph-y` (axis label divs)
- * - `md-graph-chart` (chart div, always carries `style="--count:N"`)
+ * - `md-graph-chart` (chart div, always carries `style="--count:N"`);
+ *   success chart divs add a modifier alongside it: `md-graph-chart-pie`
+ *   (pie) or `md-graph-chart-plot` (bar/line — line keeps its existing
+ *   `md-graph-plot md-graph-line-plot` inner div untouched). Error/empty
+ *   chart divs (`--count:0`, pie zero-total) carry the bare `md-graph-chart`
+ *   with no modifier.
  * - `md-graph-pie` (conic-gradient div), `md-graph-legend`, `md-graph-swatch`
   * - `md-graph-plot` (bar value grid: bars row over tick row, carries
   *   `--count`, `data-min`/`data-max` for the CSS scale labels), `md-graph-bar`
@@ -506,7 +511,7 @@ function pieChartHtml(spec: GraphSpec): string {
       `<li data-label="${label}" data-value="${val}" style="--c:${color};--p:${pct.toFixed(1)}%"><span class="md-graph-swatch"></span>${label} — ${val} (${pct.toFixed(1)}%)</li>`
     )
   })
-  return `<div class="md-graph-chart" style="--count:${n}"><div class="md-graph-pie" style="background: conic-gradient(${stops.join(', ')})"></div><ul class="md-graph-legend">${items.join('')}</ul></div>`
+  return `<div class="md-graph-chart md-graph-chart-pie" style="--count:${n}"><div class="md-graph-pie" style="background: conic-gradient(${stops.join(', ')})"></div><ul class="md-graph-legend">${items.join('')}</ul></div>`
 }
 
 /** Compact number formatting for data-min/data-max attributes. */
@@ -530,7 +535,7 @@ function barChartHtml(spec: GraphSpec, yHtml: string): string {
   const ticks = spec.points.map(
     (p) => `<span class="md-graph-tick">${escapeGraphHtml(p.label)}</span>`
   )
-  return `<div class="md-graph-chart" style="--count:${n}">${yHtml}<div class="md-graph-plot" style="--count:${n}" data-min="${fmtNum(lo)}" data-max="${fmtNum(hi)}">${bars.join('')}${ticks.join('')}</div></div>`
+  return `<div class="md-graph-chart md-graph-chart-plot" style="--count:${n}">${yHtml}<div class="md-graph-plot" style="--count:${n}" data-min="${fmtNum(lo)}" data-max="${fmtNum(hi)}">${bars.join('')}${ticks.join('')}</div></div>`
 }
 
 function lineChartHtml(spec: GraphSpec, yHtml: string, xHtml: string): string {
@@ -601,7 +606,7 @@ function lineChartHtml(spec: GraphSpec, yHtml: string, xHtml: string): string {
   })
   // X-axis name sits directly under the day-name row (centered, like the
   // y-axis name hugs its axis) with the series legend below it.
-  return `<div class="md-graph-chart" style="--count:${n}">${yHtml}<div class="md-graph-plot md-graph-line-plot" style="--count:${n}" data-min="${fmtNum(lo)}" data-max="${fmtNum(hi)}"><div class="md-graph-line-area">${segs.join('')}${dots.join('')}${xlabs.join('')}</div></div></div>${xHtml}<ul class="md-graph-legend md-graph-line-legend">${legend.join('')}</ul>`
+  return `<div class="md-graph-chart md-graph-chart-plot" style="--count:${n}">${yHtml}<div class="md-graph-plot md-graph-line-plot" style="--count:${n}" data-min="${fmtNum(lo)}" data-max="${fmtNum(hi)}"><div class="md-graph-line-area">${segs.join('')}${dots.join('')}${xlabs.join('')}</div></div></div>${xHtml}<ul class="md-graph-legend md-graph-line-legend">${legend.join('')}</ul>`
 }
 
 /** Accessible data-table fallback (caption = title, else `<type> chart data`). */

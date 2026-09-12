@@ -1019,6 +1019,48 @@ export function insertDropdownSpec(state: EditorState): TransactionSpec {
 }
 
 // ---------------------------------------------------------------------------
+// Graphs (pie / bar / line)
+// ---------------------------------------------------------------------------
+
+/**
+ * Insert a pie-chart starter `%% pie "Title" (Apples, 30) (Bananas, 45) %%`
+ * with the title selected (like insertDropdownSpec selects its title).
+ * Like insertTableSpec, any ranged selection is ignored — the template is
+ * inserted at the caret as a single undo step.
+ */
+export function insertPieGraphSpec(state: EditorState): TransactionSpec {
+  const pos = state.selection.main.head
+  const insert = '%% pie "Title" (Apples, 30) (Bananas, 45) %%'
+  const title = pos + '%% pie "'.length
+  return { changes: { from: pos, to: pos, insert }, selection: { anchor: title, head: title + 5 } }
+}
+
+/**
+ * Insert a bar-chart starter `%% bar "Title" Units (Jan, 120) (Feb, 200) %%`
+ * with the title selected. Ranged selections are ignored (insertTableSpec
+ * approach) — the template is inserted at the caret as a single undo step.
+ */
+export function insertBarGraphSpec(state: EditorState): TransactionSpec {
+  const pos = state.selection.main.head
+  const insert = '%% bar "Title" Units (Jan, 120) (Feb, 200) %%'
+  const title = pos + '%% bar "'.length
+  return { changes: { from: pos, to: pos, insert }, selection: { anchor: title, head: title + 5 } }
+}
+
+/**
+ * Insert a multi-series line-chart starter
+ * `%% line "Title" (Week, Mon, Tue) (Hits, 0, 100) (SiteA, 120, 200) %%`
+ * with the title selected. Ranged selections are ignored (insertTableSpec
+ * approach) — the template is inserted at the caret as a single undo step.
+ */
+export function insertLineGraphSpec(state: EditorState): TransactionSpec {
+  const pos = state.selection.main.head
+  const insert = '%% line "Title" (Week, Mon, Tue) (Hits, 0, 100) (SiteA, 120, 200) %%'
+  const title = pos + '%% line "'.length
+  return { changes: { from: pos, to: pos, insert }, selection: { anchor: title, head: title + 5 } }
+}
+
+// ---------------------------------------------------------------------------
 // Generic text insert + Enter-in-list continuation
 // ---------------------------------------------------------------------------
 
@@ -1193,4 +1235,10 @@ export const FORMATTING_COMMANDS: Record<string, FormattingCommand> = {
   highlight: toggleHighlightSpec,
   spoiler: toggleSpoilerSpec,
   dropdown: insertDropdownSpec,
+  'pie-graph': insertPieGraphSpec,
+  'bar-graph': insertBarGraphSpec,
+  'line-graph': insertLineGraphSpec,
+  // Mod-Shift-G + the pinned-Extra Graph button: no submenu context there, so
+  // insert the bar starter (the most common shape).
+  graph: insertBarGraphSpec,
 }

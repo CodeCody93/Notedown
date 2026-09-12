@@ -95,6 +95,7 @@ const ICON = {
   highlight: `<path d="M5 12l3.5 3.5L11 13 7.5 9.5 5 12z" /><path d="M9.5 7.5L13 11l-2 2-3.5-3.5 2-2z" /><path d="M12.5 4.5l1-1 1 1-1 1z" />`,
   spoiler: `<path d="M3 8s2.5-4 5-4 5 4 5 4-2.5 4-5 4-5-4-5-4z" /><circle cx="8" cy="8" r="1.5" />`,
   dropdown: `<path d="M3 4h10M3 8h10M3 12h10" /><path d="M11 2l2 2-2 2" />`,
+  graph: `<path d="M2.5 13.5h11" /><path d="M5 13V9M8 13V5.5M11 13V7.5" />`,
 } as const
 
 // ---------------------------------------------------------------------------
@@ -154,6 +155,17 @@ export const EXTRA_MENU: MenuEntry[] = [
   { id: 'highlight', label: 'Highlight', hotkey: 'highlight', icon: ICON.highlight },
   { id: 'spoiler', label: 'Spoiler', hotkey: 'spoiler', icon: ICON.spoiler },
   { id: 'dropdown', label: 'Dropdown', hotkey: 'dropdown', icon: ICON.dropdown },
+  {
+    id: 'graph',
+    label: 'Graph',
+    hotkey: 'graph',
+    icon: ICON.graph,
+    children: [
+      { id: 'pie-graph', label: 'Pie chart' },
+      { id: 'bar-graph', label: 'Bar chart' },
+      { id: 'line-graph', label: 'Line chart' },
+    ],
+  },
 ]
 
 /** Toolbar groups: history/clipboard, inline, blocks (+ header/list), Extra dropdown. */

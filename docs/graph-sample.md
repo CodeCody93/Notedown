@@ -31,3 +31,13 @@ Code-fence counter-example (stays literal text, never a chart):
 ```md
 %% bar (Jan, 120) (Feb, 200) %%
 ```
+
+Title-less line (axis-only X auto-labels slots 1..N, bare Y auto-scales):
+
+%% line (Weekday) (Hits) (SiteA, 50, 120) %%
+
+Line with lone-max Y (the single Y bound is the max):
+
+%% line "Capped" (X, A, B) (Y, 100) (S, 10, 20) %%
+
+%% bar "Title" Units (Jan, 120) (Feb, 200) %%

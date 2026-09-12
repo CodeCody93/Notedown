@@ -145,7 +145,7 @@
   font-weight: 600;
   padding-bottom: 8px;
 }
-.cm-editor .cm-graph-widget .md-graph-chart:has(> .md-graph-pie) {
+.cm-editor .cm-graph-widget .md-graph-chart.md-graph-chart-pie {
   align-items: center;
   min-height: 0;
   flex-wrap: wrap;
@@ -168,7 +168,7 @@
   padding: 6px 0;
   position: relative;
 }
-.cm-editor .cm-graph-widget .md-graph-chart:has(> .md-graph-plot) {
+.cm-editor .cm-graph-widget .md-graph-chart.md-graph-chart-plot {
   align-items: stretch;
   min-height: 0;
 }

@@ -54,6 +54,7 @@ const ALL_IDS = [
   'highlight',
   'spoiler',
   'dropdown',
+  'graph',
   'toggle-mode',
 ]
 

@@ -234,4 +234,21 @@ describe('graphs', () => {
     expect(gapped).toContain('>A<')
     expect(gapped).toContain('>B<')
   })
+  it('chart divs carry type modifier classes; errors carry none', () => {
+    const pie = renderMarkdown('%% pie "T" (A, 30) (B, 70) %%')
+    expect(pie).toContain('class="md-graph-chart md-graph-chart-pie"')
+    const bar = renderMarkdown('%% bar (Jan, 120) (Feb, 200) %%')
+    expect(bar).toContain('class="md-graph-chart md-graph-chart-plot"')
+    const line = renderMarkdown('%% line "T" (X, Mon, Tue) (Y, 0, 10) (S, 3, 7) %%')
+    expect(line).toContain('class="md-graph-chart md-graph-chart-plot"')
+    // Line keeps its inner plot div untouched.
+    expect(line).toContain('md-graph-plot md-graph-line-plot')
+    // Error output (unknown type) and pie zero-total carry no modifier.
+    const err = renderMarkdown('%% scatter (A, 1) %%')
+    expect(err).not.toContain('md-graph-chart-pie')
+    expect(err).not.toContain('md-graph-chart-plot')
+    const zero = renderMarkdown('%% pie "T" (A, 0) (B, 0) %%')
+    expect(zero).not.toContain('md-graph-chart-pie')
+    expect(zero).not.toContain('md-graph-chart-plot')
+  })
 })

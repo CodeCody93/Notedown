@@ -16,10 +16,13 @@ import {
   insertDefListSpec,
   insertDropdownSpec,
   insertFootnoteSpec,
+  insertBarGraphSpec,
   insertHeadingIdSpec,
   insertHrSpec,
   insertImageSpec,
+  insertLineGraphSpec,
   insertLinkSpec,
+  insertPieGraphSpec,
   insertTableSpec,
   insertTextSpec,
   markdownListKeymap,
@@ -611,6 +614,29 @@ describe('dropdown', () => {
   })
 })
 
+describe('graph inserts', () => {
+  it('inserts a pie starter with the title selected', () => {
+    const result = applyTo('content', 0, undefined, insertPieGraphSpec(stateOf('content', 0)))
+    expect(result.doc).toContain('%% pie "Title" (Apples, 30) (Bananas, 45) %%')
+  })
+
+  it('inserts a bar starter with the title selected', () => {
+    const result = applyTo('content', 0, undefined, insertBarGraphSpec(stateOf('content', 0)))
+    expect(result.doc).toContain('%% bar "Title" Units (Jan, 120) (Feb, 200) %%')
+  })
+
+  it('inserts a line starter with the title selected', () => {
+    const result = applyTo('content', 0, undefined, insertLineGraphSpec(stateOf('content', 0)))
+    expect(result.doc).toContain('%% line "Title" (Week, Mon, Tue) (Hits, 0, 100) (SiteA, 120, 200) %%')
+  })
+
+  it('graph alias inserts the bar starter', () => {
+    const viaAlias = applyTo('content', 0, undefined, FORMATTING_COMMANDS['graph'](stateOf('content', 0)))
+    const viaBar = applyTo('content', 0, undefined, insertBarGraphSpec(stateOf('content', 0)))
+    expect(viaAlias.doc).toBe(viaBar.doc)
+  })
+})
+
 describe('FORMATTING_COMMANDS', () => {
   it('exposes every locked action id', () => {
     const expected = [
@@ -646,6 +672,10 @@ describe('FORMATTING_COMMANDS', () => {
       'highlight',
       'spoiler',
       'dropdown',
+      'pie-graph',
+      'bar-graph',
+      'line-graph',
+      'graph',
     ]
     for (const id of expected) {
       expect(typeof FORMATTING_COMMANDS[id]).toBe('function')
