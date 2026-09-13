@@ -32,6 +32,12 @@ import { isSettingsOpen, openSettingsModal, wireSettingsModal } from './settings
 import { isAboutOpen, openAboutModal, wireAboutModal } from './about'
 import { isHelpOpen, openHelpModal, wireHelpModal } from './help'
 import { isGraphBuilderOpen, openGraphBuilder } from './graphDialog'
+import { isTableBuilderOpen, openTableBuilder } from './tableDialog'
+import type { TableBuilderResult } from './tableDialog'
+import { findBalancedTableSpans, parseHtmlTable, serializeHtmlTable } from './tableDialog'
+import type { TableModel } from './tableDialog'
+import { clearSelectedHtmlTableCell, findHtmlTableRangesInText, peekSelectedHtmlTableCell } from '../editor/livePreview'
+import type { HtmlCellStep } from '../editor/livePreview'
 import { SHORTCUTS, getPlatform, matches } from './shortcuts'
 
 const AUTOSAVE_DEBOUNCE_MS = 3000
@@ -612,7 +618,6 @@ const FORMATTING_ACTION_IDS = [
   'code-block',
   'link',
   'image',
-  'table',
   'hr',
   'footnote',
   'task-list',
@@ -656,7 +661,264 @@ function runFormatting(id: string): void {
   }
 }
 
+/**
+ * Apply a table-builder result to the editor: a line-range result replaces
+ * those lines (single undo step, caret at end), otherwise the text is
+ * inserted at the caret. Cancel (null) restores focus with no change.
+ */
+function applyTableBuilderResult(result: TableBuilderResult | null): void {
+  const ed = getEditor()
+  if (ed === null) return
+  if (result === null) {
+    ed.focus()
+    return
+  }
+  if (result.startLine !== null && result.endLine !== null) {
+    const startLine = result.startLine
+    const endLine = result.endLine
+    const text = result.text
+    ed.runFormatting((state) => {
+      const from = state.doc.line(startLine).from
+      const to = state.doc.line(endLine).to
+      return { changes: { from, to, insert: text }, selection: { anchor: from + text.length } }
+    })
+  } else {
+    ed.replaceSelection(result.text)
+  }
+  ed.focus()
+}
+
+/**
+ * Open the table builder for the current doc and apply its result.
+ * Nested flow first: when a live-preview HTML table cell is selected, the
+ * builder opens FRESH (a brand-new nested table) and its result lands in
+ * that cell like any text — following `path` down through nested levels.
+ * Otherwise the normal flow runs unchanged: the builder receives the full
+ * doc text + caret line so it can detect and edit the table under the caret.
+ */
+
+/**
+ * Walk a parsed outer model down `path` (one {row,col} per nesting level,
+ * outermost first) and apply `leaf` to the target cell source. Intermediate
+ * levels descend through the FIRST balanced table span of each host cell
+ * (the generator invariant: one table per cell); the leaf receives the raw
+ * target cell source and returns its replacement (null = failure).
+ * Re-serializes bottom-up. The model is mutated in place. False when the
+ * path is out of bounds or a level fails to parse.
+ */
+function updateCellAtPath(
+  model: TableModel,
+  path: HtmlCellStep[],
+  leaf: (cellSrc: string) => string | null,
+): boolean {
+  if (path.length === 0) return false
+  const step = path[0]
+  if (step.row < 0 || step.col < 0 || step.row >= model.rows.length) return false
+  const targetRow = model.rows[step.row]
+  while (targetRow.length <= step.col) targetRow.push('')
+  if (path.length === 1) {
+    const next = leaf(targetRow[step.col])
+    if (next === null) return false
+    targetRow[step.col] = next
+    return true
+  }
+  const cell = targetRow[step.col]
+  const spans = findBalancedTableSpans(cell)
+  if (spans.length === 0) return false
+  const span = spans[0]
+  const inner = parseHtmlTable(cell.slice(span.start, span.end))
+  if (inner === null) return false
+  if (!updateCellAtPath(inner, path.slice(1), leaf)) return false
+  targetRow[step.col] = cell.slice(0, span.start) + serializeHtmlTable(inner) + cell.slice(span.end)
+  return true
+}
+
+/** Replace the table span in a cell source at the tableIndex-th balanced span. */
+function replaceTableSpanAt(cellSrc: string, tableIndex: number, replacement: string): string | null {
+  const spans = findBalancedTableSpans(cellSrc)
+  if (tableIndex < 0 || tableIndex >= spans.length) return null
+  const span = spans[tableIndex]
+  return cellSrc.slice(0, span.start) + replacement + cellSrc.slice(span.end)
+}
+
+/** Single-undo-step replace of a doc-offset table range with new HTML. */
+function replaceOuterTableRange(from: number, to: number, html: string): void {
+  const ed = getEditor()
+  if (ed === null) return
+  const docText = ed.getContent()
+  const startLine = docText.slice(0, from).split('\n').length
+  const endLine = docText.slice(0, to).split('\n').length
+  ed.runFormatting((state) => {
+    const rFrom = state.doc.line(startLine).from
+    const rTo = state.doc.line(endLine).to
+    return { changes: { from: rFrom, to: rTo, insert: html }, selection: { anchor: rFrom + html.length } }
+  })
+  ed.focus()
+}
+
+/** Read-only check that `path` resolves through parsed nested levels. */
+function cellPathResolves(model: TableModel, path: HtmlCellStep[]): boolean {
+  let cur: TableModel | null = model
+  for (let i = 0; i < path.length; i++) {
+    if (cur === null) return false
+    const step = path[i]
+    if (step.row < 0 || step.col < 0 || step.row >= cur.rows.length) return false
+    if (i === path.length - 1) return true
+    const cell = cur.rows[step.row][step.col] ?? ''
+    const spans = findBalancedTableSpans(cell)
+    if (spans.length === 0) return false
+    cur = parseHtmlTable(cell.slice(spans[0].start, spans[0].end))
+  }
+  return false
+}
+
+async function openTableBuilderAndApply(): Promise<void> {
+  const ed = getEditor()
+  if (ed === null) return
+  const sel = peekSelectedHtmlTableCell()
+  if (sel !== null) {
+    const docText = ed.getContent()
+    const ranges = findHtmlTableRangesInText(docText)
+    const hit = ranges.find((r) => sel.tableFrom >= r.from && sel.tableFrom < r.to)
+    const model = hit === undefined ? null : parseHtmlTable(docText.slice(hit.from, hit.to))
+    if (hit === undefined || model === null || !cellPathResolves(model, sel.path)) {
+      clearSelectedHtmlTableCell()
+    } else {
+      const nested = await openTableBuilder()
+      if (nested === null) {
+        ed.focus()
+        return
+      }
+      const nestedText = nested.text.replace(/\r?\n/g, '')
+      const ok = updateCellAtPath(model, sel.path, (cell) =>
+        cell === '' ? nestedText : cell + ' ' + nestedText,
+      )
+      if (!ok) {
+        clearSelectedHtmlTableCell()
+      } else {
+        replaceOuterTableRange(hit.from, hit.to, serializeHtmlTable(model))
+        clearSelectedHtmlTableCell()
+        return
+      }
+    }
+    // Stale selection was cleared above — fall through to the normal flow.
+  }
+  const result = await openTableBuilder({ docText: ed.getContent(), caretLine: ed.getCursor().line })
+  applyTableBuilderResult(result)
+}
+
+// Single window listener for the HTML-table widget Edit button
+// ('notedown:edit-html-table', dispatched from livePreview.ts with
+// detail {from,to}). Computes the caret line from detail.from via content
+// slicing (offset→line), opens the table builder for that line (the dialog
+// detects the HTML block there), and applies the result with the SAME
+// line-range replace logic as openTableBuilderAndApply (single undo step via
+// runFormatting, caret at end, focus restore). Registered once; the existing
+// 'table' menu action / openTableBuilderAndApply pipe-table behavior is
+// untouched.
+let htmlTableEditWired = false
+
+async function handleHtmlTableEdit(
+  ev: CustomEvent<{ from: number; to: number; path?: HtmlCellStep[]; tableIndex?: number }>,
+): Promise<void> {
+  const ed = getEditor()
+  if (ed === null) return
+  const from = typeof ev.detail?.from === 'number' ? ev.detail.from : 0
+  const docText = ed.getContent()
+  const path = ev.detail?.path
+  const tableIndex = ev.detail?.tableIndex
+  // Inner-table edit: resolve the nested model along the cell path and edit
+  // it directly (model preload); the result is spliced back along the path.
+  // Any resolution failure falls through to the outer-table flow below.
+  if (path !== undefined && path.length > 0 && typeof tableIndex === 'number') {
+    const ranges = findHtmlTableRangesInText(docText)
+    const hit =
+      ranges.find((r) => r.from === from) ?? ranges.find((r) => from >= r.from && from < r.to)
+    const outer = hit === undefined ? null : parseHtmlTable(docText.slice(hit.from, hit.to))
+    if (hit !== undefined && outer !== null) {
+      // Walk to the host cell source (first spans at intermediate levels —
+      // the same walk updateCellAtPath uses, so the splice below agrees).
+      let cur: TableModel | null = outer
+      let hostCell: string | null = null
+      for (let i = 0; i < path.length && cur !== null; i++) {
+        const step = path[i]
+        if (step.row < 0 || step.col < 0 || step.row >= cur.rows.length) {
+          cur = null
+          break
+        }
+        const cell: string = cur.rows[step.row]?.[step.col] ?? ''
+        if (i === path.length - 1) {
+          hostCell = cell
+        } else {
+          const spans = findBalancedTableSpans(cell)
+          cur = spans.length === 0 ? null : parseHtmlTable(cell.slice(spans[0].start, spans[0].end))
+        }
+      }
+      const innerSrc =
+        hostCell === null || tableIndex < 0 ? null : (findBalancedTableSpans(hostCell)[tableIndex] ?? null)
+      if (hostCell !== null && innerSrc !== null) {
+        const innerModel = parseHtmlTable(hostCell.slice(innerSrc.start, innerSrc.end))
+        if (innerModel !== null) {
+          const result = await openTableBuilder({ model: innerModel })
+          if (result === null) {
+            ed.focus()
+            return
+          }
+          const newInner = result.text.replace(/\r?\n/g, '')
+          const ok = updateCellAtPath(outer, path, (cell) => replaceTableSpanAt(cell, tableIndex, newInner))
+          if (ok) {
+            replaceOuterTableRange(hit.from, hit.to, serializeHtmlTable(outer))
+            clearSelectedHtmlTableCell()
+            return
+          }
+        }
+      }
+    }
+    // Resolution failed — fall through to the outer-table flow.
+  }
+  const clamped = Math.max(0, Math.min(from, docText.length))
+  const caretLine = docText.slice(0, clamped).split('\n').length
+  const result = await openTableBuilder({ docText, caretLine })
+  if (result === null) {
+    ed.focus()
+    return
+  }
+  if (result.startLine !== null && result.endLine !== null) {
+    const startLine = result.startLine
+    const endLine = result.endLine
+    const text = result.text
+    ed.runFormatting((state) => {
+      const rFrom = state.doc.line(startLine).from
+      const rTo = state.doc.line(endLine).to
+      return { changes: { from: rFrom, to: rTo, insert: text }, selection: { anchor: rFrom + text.length } }
+    })
+  } else {
+    ed.replaceSelection(result.text)
+  }
+  ed.focus()
+}
+
+function wireHtmlTableEditListener(): void {
+  if (htmlTableEditWired) return
+  htmlTableEditWired = true
+  window.addEventListener('notedown:edit-html-table', (e) => {
+    void handleHtmlTableEdit(
+      e as CustomEvent<{ from: number; to: number; path?: HtmlCellStep[]; tableIndex?: number }>,
+    )
+  })
+  // Table hotkey pressed while focus is inside an HTML-table widget cell
+  // (dispatched from livePreview.ts — CM6 ignores widget events so the
+  // tableHotkeyMap binding can't fire there). The widget commits any
+  // in-progress cell edit before dispatching, and the cell click recorded
+  // the selection, so this runs the same nested-insert flow as the Table
+  // toolbar button. Registered once under the same guard.
+  window.addEventListener('notedown:insert-nested-table', () => {
+    void openTableBuilderAndApply()
+  })
+}
+
 function wireMenu(): void {
+  wireHtmlTableEditListener()
   const actions: Record<string, (ev: MouseEvent) => void> = {
     new: () => {
       void newDoc()
@@ -733,6 +995,12 @@ function wireMenu(): void {
   }
   for (const id of FORMATTING_ACTION_IDS) {
     actions[id] = () => runFormatting(id)
+  }
+  // The Table menu/toolbar entry opens the table builder modal instead of the
+  // FORMATTING_COMMANDS['table'] template. Defined AFTER the loop so it always
+  // wins even if 'table' is ever re-added to FORMATTING_ACTION_IDS.
+  actions['table'] = () => {
+    void openTableBuilderAndApply()
   }
   document.querySelectorAll<HTMLElement>('[data-action]').forEach((el) => {
     const action = el.dataset.action
@@ -886,8 +1154,8 @@ function wireStatusMode(): void {
 function wireWindowFocus(): void {
   window.addEventListener('focus', () => {
     if (editor === null) return
-    // Never steal focus while any modal dialog is open (settings/help/about/import/export/graph builder).
-    if (isSettingsOpen() || isHelpOpen() || isAboutOpen() || isImportDialogOpen() || isExportDialogOpen() || isGraphBuilderOpen()) return
+    // Never steal focus while any modal dialog is open (settings/help/about/import/export/graph/table builder).
+    if (isSettingsOpen() || isHelpOpen() || isAboutOpen() || isImportDialogOpen() || isExportDialogOpen() || isGraphBuilderOpen() || isTableBuilderOpen()) return
     const modalRoot = document.getElementById('settings-modal-root')
     if (modalRoot !== null && !modalRoot.hidden) return
     editor.focus()
@@ -947,6 +1215,28 @@ function graphHotkeyMap(): KeyBinding[] {
   ]
 }
 
+/**
+ * Table-builder hotkey layer: mirrors graphHotkeyMap — a single CM6 keybinding
+ * built from the 'table' shortcut's chord looked up at RUNTIME from the
+ * shortcuts map (never hardcoded). Opens the table builder modal with the
+ * current doc + caret line; applies the result via openTableBuilderAndApply
+ * (line-range replace when the builder detected a table, caret insert
+ * otherwise).
+ */
+function tableHotkeyMap(): KeyBinding[] {
+  const chord = SHORTCUTS.find((s) => s.id === 'table')?.keys[0]
+  if (chord === undefined) return []
+  return [
+    {
+      key: chord,
+      run: () => {
+        void openTableBuilderAndApply()
+        return true
+      },
+    },
+  ]
+}
+
 export async function initApp(): Promise<void> {
   // The editor module pulls in the ~518 KB cm-editor chunk (CM6 +
   // codemirror-live-markdown + its inlined hljs languages); kicking off the
@@ -969,7 +1259,7 @@ export async function initApp(): Promise<void> {
     wrap: settings.lineWrapping,
     fontSize: settings.fontSize,
     lineHeight: settings.lineHeight,
-    extraKeymaps: [formattingHotkeyMap(), markdownListKeymap(), emojiHotkeyMap(), graphHotkeyMap()],
+    extraKeymaps: [formattingHotkeyMap(), markdownListKeymap(), emojiHotkeyMap(), graphHotkeyMap(), tableHotkeyMap()],
     onPasteImage: (event) => {
       const ed = editor
       const doc = appState.get().doc

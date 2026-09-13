@@ -443,7 +443,9 @@ function graphCaptionTitle(figure: Element): string {
  * C2a/C2b). Called AFTER `service.use(gfm)` — Turndown checks the most
  * recently added rule first, so these win on overlap while GFM keeps owning
  * tables/strikethrough/task-lists. Every replacement returns pure Markdown —
- * never raw HTML.
+ * never raw HTML — with one deliberate Packet-D exception: the nestedTable
+ * rule below preserves nested tables as raw HTML (GFM cannot represent
+ * nesting; raw HTML re-renders losslessly through our html:true pipeline).
  */
 function addNotedownRules(service: TurndownLike): void {
   // Footnote numbering shared by refs and definitions: explicit digits in the
@@ -728,6 +730,44 @@ function addNotedownRules(service: TurndownLike): void {
   service.addRule('notedownFootnoteSep', {
     filter: (node) => node.nodeName === 'HR' && hasClass(node, 'footnotes-sep'),
     replacement: () => '',
+  })
+
+  // Nested tables (Packet D) — a <table> whose td/th contains another <table>
+  // cannot survive GFM: the inner grid's pipes/newlines would corrupt the
+  // outer `|…|` rows. Preserve the OUTER table as a raw HTML block
+  // (node.outerHTML, no data loss) instead of GFM. The filter is scoped to
+  // nested tables only, so GFM keeps owning normal tables; this rule is added
+  // AFTER gfm use because Turndown checks the most-recently-added rule first,
+  // so it wins over GFM's table rule exactly on the nested overlap (plain
+  // tables never match the filter and fall through to GFM untouched).
+  // Inner-table-only fragments need no rule: HTML import always sees full
+  // tables, so outer-preservation covers every nested case in v1.
+  service.addRule('nestedTable', {
+    filter: (node) => {
+      if (node.nodeName !== 'TABLE') return false
+      try {
+        const cells = node.querySelectorAll('td, th')
+        for (const cell of Array.from(cells)) {
+          try {
+            if (cell.querySelector('table') !== null) return true
+          } catch {
+            /* ignore a single unreadable cell */
+          }
+        }
+      } catch {
+        return false
+      }
+      return false
+    },
+    replacement: (_content, node) => {
+      let html = ''
+      try {
+        html = (node.outerHTML ?? '').trim()
+      } catch {
+        html = ''
+      }
+      return html === '' ? '' : `\n\n${html}\n\n`
+    },
   })
 }
 

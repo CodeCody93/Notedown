@@ -741,6 +741,22 @@ export const MARKDOWN_BODY_CSS: string = `
   font-weight: 600;
 }
 
+/* Nested tables (Packet D) — a single-line inline table element inside a
+   GFM cell renders as a real sub-grid. Full width of the host cell, tighter
+   margins/padding and slightly smaller type so the nesting reads clearly.
+   The dropdown-table carve-outs below are untouched (they target only direct
+   child tables). */
+.md-body table table {
+  width: 100%;
+  margin: 0.3em 0;
+  font-size: 0.9em;
+}
+
+.md-body table table th,
+.md-body table table td {
+  padding: 0.25em 0.5em;
+}
+
 .md-body img {
   max-width: 100%;
   height: auto;
@@ -2101,21 +2117,102 @@ type ExportBlock =
 
 /** A `|---|---|` separator row (cells of optional colons + dashes). */
 function isTableSep(line: string): boolean {
-  const t = line.trim().replace(/^\||\|$/g, '')
-  if (!t.includes('-')) return false
-  const cells = t.split('|')
-  return cells.length > 0 && cells.every((cell) => /^\s*:?-{1,}:?\s*$/.test(cell))
+  if (!line.includes('-')) return false
+  // Aware split (Packet D): a `|` inside a `<tag>` span or code span can never
+  // start a separator cell, so route through splitTableRow (which also trims).
+  const cells = splitTableRow(line)
+  return cells.length > 0 && cells.every((cell) => /^:?-{1,}:?$/.test(cell))
 }
 
 const TABLE_CELL_ESC = String.fromCharCode(0)
 
-/** Split a table row into cells (handles `\|` escapes and edge pipes). */
+// PACKET-D INTENTIONAL DUPLICATE: this pipe-aware splitter is duplicated
+// verbatim in src/editor/livePreview.ts (parseTableRow). Packet A creates
+// src/app/table.ts concurrently — neither copy may import from it; dedupe
+// both copies into that module once it lands.
+
+/**
+ * Split a table row into cells (Packet D: pipe-aware). Strips ONE
+ * leading/trailing edge pipe, then splits on `|` EXCEPT when the pipe is
+ * (a) an escaped `\|` (via the NUL placeholder trick), (b) inside a `<...>`
+ * tag span (e.g. `<a href="a|b">`), or (c) inside a backtick code span (any
+ * run length, matched open/close; unclosed runs are literal). Cells are
+ * trimmed. Delimiter acceptance lives in isTableSep (/^:?-{1,}:?$/).
+ */
 function splitTableRow(line: string): string[] {
   const tmp = line.replace(/\\\|/g, TABLE_CELL_ESC)
   let t = tmp.trim()
   if (t.startsWith('|')) t = t.slice(1)
   if (t.endsWith('|')) t = t.slice(0, -1)
-  return t.split('|').map((cell) => cell.trim().split(TABLE_CELL_ESC).join('|'))
+  const cells: string[] = []
+  let cur = ''
+  let i = 0
+  while (i < t.length) {
+    const ch = t[i]
+    // Backtick code span: an opener run of N closes only at a run of exactly
+    // N (same rule as the spoiler code-span guard); unclosed runs are literal.
+    if (ch === '`') {
+      let n = 0
+      while (t[i + n] === '`') n++
+      const run = '`'.repeat(n)
+      const end = t.indexOf(run, i + n)
+      if (end === -1) {
+        cur += run
+        i += n
+      } else {
+        cur += t.slice(i, end + n)
+        i = end + n
+      }
+      continue
+    }
+    // Tag span: `<...>` (e.g. `<a href="a|b">`) protects pipes in attributes.
+    if (ch === '<') {
+      const end = t.indexOf('>', i + 1)
+      if (end === -1) {
+        cur += ch
+        i++
+      } else {
+        cur += t.slice(i, end + 1)
+        i = end + 1
+      }
+      continue
+    }
+    if (ch === '|') {
+      cells.push(cur.trim().split(TABLE_CELL_ESC).join('|'))
+      cur = ''
+      i++
+      continue
+    }
+    cur += ch
+    i++
+  }
+  cells.push(cur.trim().split(TABLE_CELL_ESC).join('|'))
+  return cells
+}
+
+/**
+ * Packet D — flatten nested-table HTML in a table cell to plain text for the
+ * TXT-grid converters (RTF/DOCX/PDF share parseExportBlocks+parseExportInline).
+ * `<br>` → space, `</tr>`/`</td>`/`</th>` → ` / `, all other tags → space,
+ * then whitespace is collapsed, `/`-only runs merge, and edge separators are
+ * trimmed (a legit leading `/usr`-style slash has no space after it, so the
+ * edge trim requires one and leaves it alone). Fast gate: cells without
+ * `<tag>` pass through byte-identical.
+ *
+ * v1 KNOWN LIMIT (documented): no real nested grids — RTF/DOCX get no nested
+ * w:tbl, PDF gets no sub-grid; nested content degrades to `a / b`-style text
+ * so no data is lost. TXT export stays verbatim (raw source, untouched).
+ * Exported for tests.
+ */
+export function stripNestedTableHtml(cell: string): string {
+  if (!/<[a-zA-Z/!][^>]*>/.test(cell)) return cell
+  let out = cell.replace(/<br\s*\/?>/gi, ' ')
+  out = out.replace(/<\/(tr|td|th)\s*>/gi, ' / ')
+  out = out.replace(/<[^>]*>/g, ' ')
+  out = out.replace(/\s+/g, ' ')
+  out = out.replace(/\/(\s+\/)+/g, '/')
+  out = out.replace(/^\s*\/\s+|\s+\/\s*$/g, '')
+  return out.trim()
 }
 
 /** Classify + join plain lines into blocks (CRLF normalized first). */
@@ -2466,8 +2563,11 @@ function exportBlocksToRtfParas(blocks: ExportBlock[]): string[] {
         // WHY literal separator (round-10, bug 7): static expansion stays (no
         // real RTF tables), but a `--- | ---` line after the header keeps the
         // header/body structure visible instead of N identical text lines.
+        // Packet D: stripNestedTableHtml flattens single-line nested-table
+        // HTML to `a / b`-style text (no nested RTF tables in v1 — see its
+        // comment); non-HTML cells pass through byte-identical.
         b.rows.forEach((row, idx) => {
-          paras.push(`{\\f0\\fs24 ${row.map((cell) => inline(cell)).join(' | ')}}`)
+          paras.push(`{\\f0\\fs24 ${row.map((cell) => inline(stripNestedTableHtml(cell))).join(' | ')}}`)
           if (idx === 0) paras.push(`{\\f0\\fs24 ${row.map(() => '---').join(' | ')}}`)
         })
         break
@@ -2722,11 +2822,12 @@ function exportBlocksToDocxParas(blocks: ExportBlock[]): string[] {
         break
       case 'table': {
         // WHY literal separator (round-10, bug 7 — RTF twin): see above.
+        // Packet D: same nested-table flatten as RTF (no nested w:tbl in v1).
         b.rows.forEach((row, ridx) => {
           const joined: ExportSeg[] = []
           row.forEach((cell, cidx) => {
             if (cidx > 0) joined.push(plainSeg(' | '))
-            joined.push(...parseExportInline(cell))
+            joined.push(...parseExportInline(stripNestedTableHtml(cell)))
           })
           paras.push(p('', exportSegsToDocxRuns(joined)))
           if (ridx === 0) {
@@ -3223,7 +3324,9 @@ export function pdfTableColumnWidths(rows: string[][], fonts: PdfFonts): number[
   for (let c = 0; c < cols; c++) {
     let best = 0
     for (let r = 0; r < rows.length; r++) {
-      const cell = (rows[r] as string[])[c] ?? ''
+      // Packet D: measure the flattened text (same strip pdfDrawTable draws)
+      // so nested-table cells size to their `a / b` fallback, not raw HTML.
+      const cell = stripNestedTableHtml((rows[r] as string[])[c] ?? '')
       const items = pdfFlowItems(parseExportInline(cell), fonts, PDF_BASE_SIZE, r === 0)
       let w = 0
       for (const it of items) {
@@ -3291,7 +3394,10 @@ export function pdfDrawTable(state: PdfState, rows: string[][]): void {
   const cellLines = norm.map((row) => row.map(() => [] as PdfDrawRun[][]))
   for (let r = 0; r < norm.length; r++) {
     for (let c = 0; c < cols; c++) {
-      const cell = (norm[r] as string[])[c] as string
+      // Packet D: no nested sub-grids in v1 — flatten nested-table HTML to
+      // `a / b`-style text (see stripNestedTableHtml); widths above measured
+      // the same fallback so layout stays consistent.
+      const cell = stripNestedTableHtml((norm[r] as string[])[c] as string)
       // +WRAP_SLACK: exact-fit guard (see its comment) — without it a header
       // like `Col 1` that exactly fills its column wraps to `Col`/`1`, while
       // legitimate long cells are far past avail and still wrap normally.

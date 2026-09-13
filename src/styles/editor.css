@@ -108,6 +108,139 @@
   font-weight: 600;
   background: var(--surface, #f8f8f6);
 }
+/* Nested tables (Packet D) — single-line inline `<table>…</table>` inside a
+   widget cell renders as a real sub-grid. Scoped to the widget/cell so
+   nothing leaks globally; the dropdown-table rules below are untouched. */
+.cm-editor .cm-table-widget table,
+.cm-editor .cm-table-cell table {
+  width: 100%;
+  box-sizing: border-box;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin: 0.3em 0;
+  font-size: 0.9em;
+}
+.cm-editor .cm-table-widget th,
+.cm-editor .cm-table-widget td,
+.cm-editor .cm-table-cell th,
+.cm-editor .cm-table-cell td {
+  border: 1px solid var(--border, #e3e3df);
+  padding: 0.25em 0.5em;
+}
+.cm-editor .cm-table-widget th,
+.cm-editor .cm-table-cell th {
+  background: var(--surface, #f8f8f6);
+  font-weight: 600;
+}
+
+/* Rendered HTML <table> (table-dialog full-HTML output) — real table widget
+   with top-right Edit button + inline cell editing. Pipe-table widget rules
+   above are untouched. Padding (not margin) on the root — CodeMirror 6
+   measures widget height via getBoundingClientRect(), which excludes margin
+   (see .cm-hr-widget comment). */
+.cm-editor .cm-html-table-widget {
+  display: block;
+  position: relative;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  overflow-x: auto;
+  background: transparent;
+  color: var(--text, #1f2328);
+}
+.cm-editor .cm-html-table-widget table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  margin: 0;
+}
+.cm-editor .cm-html-table-widget th,
+.cm-editor .cm-html-table-widget td {
+  border: 1px solid var(--border, #e3e3df);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.cm-editor .cm-html-table-widget th {
+  background: var(--surface, #f8f8f6);
+  font-weight: 600;
+}
+.cm-editor .cm-html-table-widget th[contenteditable="true"],
+.cm-editor .cm-html-table-widget td[contenteditable="true"] {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: -2px;
+  background: var(--bg, #ffffff);
+  cursor: text;
+}
+.cm-editor .cm-html-table-widget td:empty::after,
+.cm-editor .cm-html-table-widget th:empty::after {
+  content: '\00a0';
+}
+/* Cells hosting a nested table render flush: no cell padding, so the inner
+   grid meets the cell walls. (Applied from the widget when a cell contains
+   a table; presentation-only.) */
+.cm-editor .cm-html-table-widget th.cm-has-table,
+.cm-editor .cm-html-table-widget td.cm-has-table {
+  padding: 0;
+  vertical-align: top;
+}
+/* Nested-table wrapper: positioning host for the inner Edit button. Adds no
+   layout space of its own (button is absolute). */
+.cm-editor .cm-inner-table-wrap {
+  position: relative;
+}
+.cm-editor .cm-inner-table-wrap > table {
+  margin: 0;
+}
+/* Edit button mirrors .cm-code-copy placement/behavior (text button). */
+.cm-editor .cm-html-table-edit {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  border-radius: 4px;
+  background: var(--surface-2, #ececea);
+  color: var(--muted, #6b7280);
+  border: 1px solid var(--border, #e3e3df);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  z-index: 1;
+}
+.cm-editor .cm-html-table-widget:hover .cm-html-table-edit,
+.cm-editor .cm-html-table-widget:focus-within .cm-html-table-edit {
+  opacity: 1;
+}
+/* Nested-table Edit button: smaller variant riding the wrapper's top-right.
+   Shows on wrapper hover/focus (the outer rule above also matches, since the
+   wrapper is inside the widget — this keeps it visible while hovering the
+   inner table itself). */
+.cm-editor .cm-inner-table-edit {
+  top: 4px;
+  right: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+.cm-editor .cm-inner-table-wrap:hover .cm-inner-table-edit,
+.cm-editor .cm-inner-table-wrap:focus-within .cm-inner-table-edit {
+  opacity: 1;
+}
+.cm-editor .cm-html-table-edit:hover {
+  color: var(--text, #1f2328);
+  border-color: var(--accent, #2563eb);
+}
+.cm-editor .cm-html-table-edit:active {
+  transform: scale(0.95);
+}
+@media (pointer: coarse) {
+  .cm-editor .cm-html-table-edit {
+    opacity: 1;
+  }
+}
 
 /* Rendered %%graph%% tag — block widget (MarkdownGraphWidget in
    livePreview.ts). Mirrors the preview-pane .md-graph* styles, scoped to the

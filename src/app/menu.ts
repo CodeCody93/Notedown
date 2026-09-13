@@ -745,9 +745,9 @@ export function openEmojiPicker(anchor: HTMLElement, onPick: (emoji: string) => 
 // CM6 formatting hotkey layer
 // ---------------------------------------------------------------------------
 
-/** Ids of SHORTCUTS that also exist in FORMATTING_COMMANDS (the hotkey-bound set). */
+/** Ids of SHORTCUTS that also exist in FORMATTING_COMMANDS (the hotkey-bound set). 'table' is excluded — it opens the table builder via tableHotkeyMap instead of the legacy template insert. */
 export function formattingHotkeyIds(): string[] {
-  return SHORTCUTS.filter((s) => s.id in FORMATTING_COMMANDS).map((s) => s.id)
+  return SHORTCUTS.filter((s) => s.id in FORMATTING_COMMANDS && s.id !== 'table').map((s) => s.id)
 }
 
 /**
@@ -755,10 +755,11 @@ export function formattingHotkeyIds(): string[] {
  * that command against the view (a single undo step). Used as the editor's
  * formatting hotkey layer; the editor wraps the returned array with keymap.of
  * (the wrapper lives in src/editor/editor.ts so the app shell has no CM6 value
- * imports).
+ * imports). 'table' is excluded — it opens the table builder via
+ * tableHotkeyMap (app.ts) instead of the legacy template insert.
  */
 export function formattingHotkeyMap(): KeyBinding[] {
-  return SHORTCUTS.filter((s) => s.id in FORMATTING_COMMANDS).map((s) => {
+  return SHORTCUTS.filter((s) => s.id in FORMATTING_COMMANDS && s.id !== 'table').map((s) => {
     const chord = getPlatform() === 'mac' ? (s.macKeys?.[0] ?? s.keys[0]) : s.keys[0]
     return {
       key: chord,

@@ -85,7 +85,7 @@ export const HELP_ENTRIES: HelpEntry[] = [
   },
   { id: 'link', title: 'Link', example: 'Insert a link', syntax: '[text](url)', hotkeyId: 'link' },
   { id: 'image', title: 'Image', example: 'Insert an image', syntax: '![alt](image.png)', hotkeyId: 'image' },
-  { id: 'table', title: 'Table', example: 'Insert a table', syntax: '| Col 1 | Col 2 |', hotkeyId: 'table' },
+  { id: 'table', title: 'Table', example: 'Open the table builder (HTML tables with per-row headers)', syntax: '| Col 1 | Col 2 |\n| --- | :---: |', hotkeyId: 'table' },
   { id: 'hr', title: 'Horizontal rule', example: 'Insert a divider', syntax: '---', hotkeyId: 'hr' },
   { id: 'footnote', title: 'Footnote', example: 'Insert a footnote', syntax: '[^1]', hotkeyId: 'footnote' },
   { id: 'task-list', title: 'Task list', example: 'Toggle a task list', syntax: '- [ ] item', hotkeyId: 'task-list' },

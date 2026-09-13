@@ -186,7 +186,9 @@ describe('formattingHotkeyMap', () => {
     // Expected final set: every SHORTCUTS id that also exists in
     // FORMATTING_COMMANDS, in SHORTCUTS order. 'emoji' and 'graph' are
     // intentionally absent: each binds its own app-level keymap (the emoji
-    // picker and the graph builder respectively). 'toggle-preview' was
+    // picker and the graph builder respectively). 'table' is likewise
+    // absent: Mod-t opens the table builder via its own tableHotkeyMap
+    // instead of the legacy template insert. 'toggle-preview' was
     // removed, and 'list-unordered'/'list-task' have no SHORTCUTS entry.
     const expected = [
       'bold',
@@ -208,7 +210,6 @@ describe('formattingHotkeyMap', () => {
       'code-block',
       'link',
       'image',
-      'table',
       'hr',
       'footnote',
       'task-list',

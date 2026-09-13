@@ -23,6 +23,8 @@ import type { EditorState, Line, Transaction, TransactionSpec } from '@codemirro
 import type { Command, KeyBinding } from '@codemirror/view'
 import { syntaxTree } from '@codemirror/language'
 import type { SyntaxNode } from '@lezer/common'
+import type { TableModel } from './table'
+import { serializeGfm } from './table'
 
 /** Builds a transaction spec from the current state. Commands produce a SINGLE undo step. */
 export type FormattingCommand = (state: EditorState) => TransactionSpec
@@ -849,6 +851,50 @@ export function insertTableSpec(state: EditorState, rows = 3, cols = 3): Transac
   const pos = state.selection.main.head
   const caret = pos + '\n'.length + header.length + '\n'.length + sep.length + '\n'.length + '| '.length
   return { changes: { from: pos, to: pos, insert }, selection: { anchor: caret } }
+}
+
+/**
+ * Insert a GFM table serialized from an explicit `TableModel` (see
+ * `src/app/table.ts`) on its own block, surrounded by blank lines. Caret
+ * lands in the first body cell, using the same offset math as
+ * `insertTableSpec` (header + separator row lengths plus the `| ` prefix).
+ * When the model has no body rows the caret clamps to the end of the insert.
+ */
+export function insertTableWithModelSpec(state: EditorState, model: TableModel): TransactionSpec {
+  const insert = serializeGfm(model)
+  const pos = state.selection.main.head
+  const inner = insert.slice(1, -1).split('\n')
+  const headerLen = inner.length > 0 ? inner[0].length : 0
+  const sepLen = inner.length > 1 ? inner[1].length : 0
+  let caret = pos + '\n'.length + headerLen + '\n'.length + sepLen + '\n'.length + '| '.length
+  if (caret > pos + insert.length) caret = pos + insert.length
+  return { changes: { from: pos, to: pos, insert }, selection: { anchor: caret } }
+}
+
+/**
+ * Replace whole lines `[startLine1Based, endLine1BasedInclusive]` (1-based,
+ * inclusive) with `text`. Line numbers clamp into the document; a reversed
+ * range is swapped. Caret lands at the end of the inserted text.
+ */
+export function replaceLinesSpec(
+  state: EditorState,
+  startLine1Based: number,
+  endLine1BasedInclusive: number,
+  text: string,
+): TransactionSpec {
+  const total = state.doc.lines
+  const clampLine = (n: number, fallback: number): number =>
+    Number.isFinite(n) ? Math.max(1, Math.min(total, Math.floor(n))) : fallback
+  let s = clampLine(startLine1Based, 1)
+  let e = clampLine(endLine1BasedInclusive, total)
+  if (s > e) {
+    const tmp = s
+    s = e
+    e = tmp
+  }
+  const from = state.doc.line(s).from
+  const to = state.doc.line(e).to
+  return { changes: { from, to, insert: text }, selection: { anchor: from + text.length } }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,316 @@
+/* Table builder modal: HTML-only size + per-row header toggles + cell grid with
+   live preview and collapsed <details> source.
+   Clones the graph-dialog.css class structure with the table-* prefix (centered
+   dialog on desktop, bottom sheet on narrow screens). Backdrop z-index sits
+   above menubar dropdowns (.dropdown-panel z 100) and the emoji picker
+   (z 200), matching help/about/settings/import/export/graph at z 300. */
+
+.table-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.table-backdrop[hidden] {
+  display: none;
+}
+
+[data-theme="dark"] .table-backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.table-dialog {
+  width: 100%;
+  max-width: 680px;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--menu-radius);
+  box-shadow: var(--shadow);
+  color: var(--text);
+}
+
+.table-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.table-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+
+.table-size {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  align-items: end;
+}
+
+.table-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.table-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.table-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.table-group-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.table-input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.table-num {
+  width: 100%;
+}
+
+.table-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.table-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* Per-row header side toggle: compact checkbox pinned to the row's leading
+   edge. Visible control with an aria-label (no hidden content). */
+.table-row-head {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.table-row-head-label {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Marked header rows get a shaded track + bold cell text. */
+.table-row.is-header,
+.table-row.table-header-row {
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+
+.table-row.is-header .table-input,
+.table-row.table-header-row .table-input {
+  font-weight: 600;
+}
+
+.table-cell {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.table-cell .table-input {
+  flex: 1 1 auto;
+}
+
+.table-grid-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.table-add {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.table-add:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.table-cell-error {
+  border-color: #c00;
+  outline: 1px solid #c00;
+}
+
+.table-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 12px;
+}
+
+.table-error {
+  font-size: 13px;
+  color: #c00;
+}
+
+.table-note {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.table-section-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+
+.table-preview {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  margin: 0 0 12px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--surface);
+}
+
+.table-tag {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.table-tag code {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+/* Collapsed HTML source: bordered <details> box wrapping the .table-tag pre. */
+.table-source {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 0 0 12px;
+  background: var(--surface);
+}
+
+.table-source > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  list-style: none;
+}
+
+.table-source > summary::-webkit-details-marker {
+  display: none;
+}
+
+.table-source > summary:hover {
+  color: var(--text);
+}
+
+.table-source .table-tag {
+  margin: 8px 0 0;
+}
+
+.table-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.table-confirm,
+.table-cancel {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.table-confirm {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+}
+
+.table-confirm:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.table-cancel {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+/* Bottom sheet on narrow screens: flush to the bottom edge, rounded top. */
+@media (max-width: 640px) {
+  .table-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .table-dialog {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-width: 100%;
+    max-height: 85vh;
+    overflow-y: auto;
+    border-radius: 12px 12px 0 0;
+    border-bottom: 0;
+  }
+
+  .table-size {
+    grid-template-columns: 1fr;
+  }
+}

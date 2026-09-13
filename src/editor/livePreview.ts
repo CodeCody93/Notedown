@@ -63,7 +63,7 @@
  * exactly this reason, and so does `blockRenderField` below (it stays inside this
  * module, wired through `livePreviewExtensions`, so the swap-point contract holds).
  */
-import { StateField, type EditorState, type Extension, type Range } from '@codemirror/state'
+import { Prec, StateField, type EditorState, type Extension, type Range } from '@codemirror/state'
 import { syntaxTree } from '@codemirror/language'
 import type { SyntaxNode } from '@lezer/common'
 import {
@@ -71,6 +71,7 @@ import {
   type DecorationSet,
   EditorView,
   ViewPlugin,
+  keymap,
   type ViewUpdate,
   WidgetType,
 } from '@codemirror/view'
@@ -86,6 +87,11 @@ import {
 import { renderInlineMarkdown, renderInlineOnlyMarkdown } from '../app/export'
 import DOMPurify from 'dompurify'
 import { parseGraphTag, graphToHtml, graphToErrorHtml } from '../app/graph'
+// Single-source table chord (never hardcoded): the widget swallows all CM6
+// handling (ignoreEvent), so the tableHotkeyMap binding never fires here —
+// the keydown handler below matches via this pure, dependency-free module
+// (no import cycle: shortcuts.ts imports nothing).
+import { matches as matchesShortcut } from '../app/shortcuts'
 import hljs from 'highlight.js/lib/core'
 import markdownLang from 'highlight.js/lib/languages/markdown'
 import javascriptLang from 'highlight.js/lib/languages/javascript'
@@ -623,6 +629,10 @@ function tableCell(text: string): HTMLElement {
   const cell = document.createElement('span')
   cell.className = 'cm-table-cell'
   if (text.trim().length > 0) {
+    // Packet D: renderInlineOnlyMarkdown uses the bare DOMPurify.sanitize
+    // (defaults keep table/tr/td/th), so a single-line inline
+    // `<table>…</table>` inside a GFM cell survives as a real sub-grid — no
+    // extra allow-list, no extra sink (this innerHTML predates the packet).
     cell.innerHTML = renderInlineOnlyMarkdown(text)
   } else {
     cell.textContent = text
@@ -640,7 +650,10 @@ function parseMarkdownTable(text: string): { headers: string[]; rows: string[][]
   const headers = parseTableRow(lines[0])
   const separator = parseTableRow(lines[1])
   if (headers.length === 0 || separator.length !== headers.length) return null
-  if (!separator.every((cell) => /^:?-{3,}:?$/.test(cell))) return null
+  // Packet D: delimiter relaxed to `-{1,}` to match export.ts isTableSep
+  // (`| - | - |` is a table in preview AND in RTF/DOCX/PDF export). The old
+  // widget tests use `---` separators, which still match.
+  if (!separator.every((cell) => /^:?-{1,}:?$/.test(cell))) return null
   const rows: string[][] = []
   for (let i = 2; i < lines.length; i++) {
     const line = lines[i]
@@ -651,11 +664,647 @@ function parseMarkdownTable(text: string): { headers: string[]; rows: string[][]
   return { headers, rows }
 }
 
+// PACKET-D INTENTIONAL DUPLICATE: this pipe-aware splitter is duplicated
+// verbatim in src/app/export.ts (splitTableRow). Packet A creates
+// src/app/table.ts concurrently — neither copy may import from it; dedupe
+// both copies into that module once it lands.
+const TABLE_CELL_ESC = String.fromCharCode(0)
+
+/**
+ * Split a table row into cells (Packet D: pipe-aware). Strips ONE
+ * leading/trailing edge pipe, then splits on `|` EXCEPT when the pipe is
+ * (a) an escaped `\|` (via the NUL placeholder trick), (b) inside a `<...>`
+ * tag span (e.g. `<a href="a|b">`), or (c) inside a backtick code span (any
+ * run length, matched open/close; unclosed runs are literal). Cells are
+ * trimmed.
+ */
 function parseTableRow(line: string): string[] {
-  const trimmed = line.trim()
-  const inner = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed
-  const withoutEnd = inner.endsWith('|') ? inner.slice(0, -1) : inner
-  return withoutEnd.split('|').map((cell) => cell.trim())
+  const tmp = line.replace(/\\\|/g, TABLE_CELL_ESC)
+  let t = tmp.trim()
+  if (t.startsWith('|')) t = t.slice(1)
+  if (t.endsWith('|')) t = t.slice(0, -1)
+  const cells: string[] = []
+  let cur = ''
+  let i = 0
+  while (i < t.length) {
+    const ch = t[i]
+    // Backtick code span: an opener run of N closes only at a run of exactly
+    // N (same rule as the spoiler code-span guard); unclosed runs are literal.
+    if (ch === '`') {
+      let n = 0
+      while (t[i + n] === '`') n++
+      const run = '`'.repeat(n)
+      const end = t.indexOf(run, i + n)
+      if (end === -1) {
+        cur += run
+        i += n
+      } else {
+        cur += t.slice(i, end + n)
+        i = end + n
+      }
+      continue
+    }
+    // Tag span: `<...>` (e.g. `<a href="a|b">`) protects pipes in attributes.
+    if (ch === '<') {
+      const end = t.indexOf('>', i + 1)
+      if (end === -1) {
+        cur += ch
+        i++
+      } else {
+        cur += t.slice(i, end + 1)
+        i = end + 1
+      }
+      continue
+    }
+    if (ch === '|') {
+      cells.push(cur.trim().split(TABLE_CELL_ESC).join('|'))
+      cur = ''
+      i++
+      continue
+    }
+    cur += ch
+    i++
+  }
+  cells.push(cur.trim().split(TABLE_CELL_ESC).join('|'))
+  return cells
+}
+
+/**
+ * Escape plain cell text for safe re-injection into the rebuilt single-line
+ * `<table>` HTML (HTML-widget commit path). Everything read back from the
+ * live DOM is treated as text, never as HTML — mirroring the export policy.
+ */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+/**
+ * Read a live `<th>/<td>` cell with nested tables preserved for the commit
+ * path. Walks the cell's direct child nodes IN ORDER:
+ * - TEXT → raw text
+ * - BR → `\n` (round-trips via `\n`→`<br>` on serialize)
+ * - TABLE → its single-line outerHTML (nested kept, newlines stripped)
+ * - any other ELEMENT → its textContent (flattened, never HTML)
+ * Non-table text is escaped (`&<>"'`, `\n`→`<br>`) and preserved table spans
+ * are spliced back in unescaped, so user-inserted nested tables survive a
+ * cell commit while everything else stays XSS-safe (re-sanitized on render).
+ */
+function serializeHtmlCell(cell: HTMLElement): string {
+  type Part = { type: 'text'; text: string } | { type: 'table'; html: string }
+  const parts: Part[] = []
+  let buf = ''
+  const flush = (): void => {
+    if (buf.length > 0) {
+      parts.push({ type: 'text', text: buf })
+      buf = ''
+    }
+  }
+  for (const node of Array.from(cell.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      buf += node.textContent ?? ''
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      const el = node as HTMLElement
+      if (el.tagName === 'BR') {
+        buf += '\n'
+      } else if (el.tagName === 'BUTTON') {
+        // Widget chrome (inner-table Edit buttons) is never cell content.
+        continue
+      } else if (el.tagName === 'TABLE') {
+        flush()
+        parts.push({ type: 'table', html: (el.outerHTML as string).replace(/\r?\n/g, '') })
+      } else if (el.classList.contains('cm-inner-table-wrap')) {
+        // Inner-table wrapper (positioning host for the nested Edit button):
+        // recurse into its children so the wrapped table survives as a table
+        // span and the button is skipped.
+        for (const sub of Array.from(el.childNodes)) {
+          if (sub.nodeType === Node.TEXT_NODE) {
+            buf += sub.textContent ?? ''
+          } else if (sub.nodeType === Node.ELEMENT_NODE) {
+            const subEl = sub as HTMLElement
+            if (subEl.tagName === 'BUTTON') continue
+            if (subEl.tagName === 'BR') buf += '\n'
+            else if (subEl.tagName === 'TABLE') {
+              flush()
+              parts.push({ type: 'table', html: (subEl.outerHTML as string).replace(/\r?\n/g, '') })
+            } else {
+              buf += subEl.textContent ?? ''
+            }
+          }
+        }
+      } else {
+        buf += el.textContent ?? ''
+      }
+    }
+  }
+  flush()
+  return parts
+    .map((p) => (p.type === 'table' ? p.html : escapeHtml(p.text).replace(/\n/g, '<br>')))
+    .join('')
+}
+
+/**
+ * Cell selection tracking for the toolbar nested-table insert flow
+ * (consumed by app.ts). `path` walks from the OUTERMOST table down to the
+ * clicked cell (one {row,col} per nesting level; row = all own-trs in
+ * document order, col = th/td order) — so inserts land inside nested cells
+ * instead of their outer host. Set on every cell click; NOT cleared on
+ * focusout/commit (the toolbar flow needs it after commit — replace starts
+ * at the same `from`, so `tableFrom` stays valid). Cleared on click-outside
+ * via the mousedown domEventHandler. No visual highlight (removed per user
+ * feedback); the contenteditable focus ring marks the editing cell.
+ */
+export interface HtmlCellStep {
+  row: number
+  col: number
+}
+export interface SelectedHtmlCell {
+  tableFrom: number
+  path: HtmlCellStep[]
+}
+export let selectedHtmlCell: SelectedHtmlCell | null = null
+
+/** Peek the selected HTML-table cell without clearing it. */
+export function peekSelectedHtmlTableCell(): SelectedHtmlCell | null {
+  return selectedHtmlCell
+}
+
+/** Clear the selected HTML-table cell (click-outside). */
+export function clearSelectedHtmlTableCell(): void {
+  selectedHtmlCell = null
+}
+
+/**
+ * Pure scan for raw HTML `<table>...</table>` blocks in plain text.
+ * Depth-paired (NOT non-greedy): `<table>` increments, `</table>` decrements,
+ * and a range closes only when depth returns to 0 — so a nested table can
+ * never truncate its outer range (a non-greedy match ends at the INNER
+ * `</table>`, leaving the outer tail to render as raw text). Tags inside
+ * fenced-code regions are skipped before pairing so literal examples can't
+ * corrupt the depth count; ranges overlapping fences or starting on
+ * indented-code lines are dropped so literal `<table>` text is never
+ * hijacked. Returns offsets into `src`.
+ */
+export function findHtmlTableRangesInText(src: string): Array<{ from: number; to: number }> {
+  const lines = src.split('\n')
+  const lineStarts: number[] = new Array(lines.length)
+  let off = 0
+  for (let i = 0; i < lines.length; i++) {
+    lineStarts[i] = off
+    off += lines[i].length + 1
+  }
+  const lineCount = lines.length
+  const lineFrom = (ln1: number): number => lineStarts[ln1 - 1]
+  const lineTo = (ln1: number): number =>
+    ln1 < lineCount ? lineStarts[ln1] - 1 : src.length
+  const lineAtText = (pos: number): string => {
+    let lo = 0
+    let hi = lineCount - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (lineStarts[mid] <= pos) lo = mid
+      else hi = mid - 1
+    }
+    return lines[lo]
+  }
+  const fenceRanges: { from: number; to: number }[] = []
+  const codeFenceRe = /^ {0,3}(`{3,}|~{3,})/
+  let inFence = false
+  let fenceChar = ''
+  let fenceLen = 0
+  let fenceStart = -1
+  for (let ln = 1; ln <= lineCount; ln++) {
+    const t = lines[ln - 1]
+    const m = codeFenceRe.exec(t)
+    if (m !== null) {
+      const marker = m[1]
+      if (inFence) {
+        if (marker[0] === fenceChar && marker.length >= fenceLen && /^ {0,3}[`~]+[ \t]*$/.test(t)) {
+          fenceRanges.push({ from: lineFrom(fenceStart), to: lineTo(ln) })
+          inFence = false
+          fenceStart = -1
+        }
+      } else {
+        inFence = true
+        fenceChar = marker[0]
+        fenceLen = marker.length
+        fenceStart = ln
+      }
+    }
+  }
+  if (inFence && fenceStart !== -1) {
+    fenceRanges.push({ from: lineFrom(fenceStart), to: src.length })
+  }
+  const isPosInFence = (pos: number): boolean => {
+    for (const fr of fenceRanges) {
+      if (pos >= fr.from && pos < fr.to) return true
+    }
+    return false
+  }
+  // Depth-paired tag scan (mirrors tableDialog.ts TABLE_TAG_RE): a range
+  // starts at an outermost `<table>` and ends at the `</table>` that returns
+  // depth to 0. Stray closers are ignored; unclosed opens are dropped.
+  const out: { from: number; to: number }[] = []
+  const TAG_RE = /<table(?=[\s>])[^<>]*>|<\/table\s*>/gi
+  TAG_RE.lastIndex = 0
+  let depth = 0
+  let rangeStart = -1
+  let mm: RegExpExecArray | null
+  while ((mm = TAG_RE.exec(src)) !== null) {
+    if (mm[0].length === 0) {
+      TAG_RE.lastIndex++
+      continue
+    }
+    if (isPosInFence(mm.index)) continue
+    const isClose = mm[0][1] === '/'
+    if (!isClose) {
+      if (depth === 0) rangeStart = mm.index
+      depth++
+    } else if (depth > 0) {
+      depth--
+      if (depth === 0 && rangeStart !== -1) {
+        const from = rangeStart
+        const to = mm.index + mm[0].length
+        rangeStart = -1
+        if (!/^(?: {4}|\t)/.test(lineAtText(from))) out.push({ from, to })
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * Find raw HTML `<table>...</table>` blocks by scanning the document text.
+ * Thin wrapper over `findHtmlTableRangesInText`. Exported for tests.
+ */
+export function findHtmlTableRanges(state: EditorState): { from: number; to: number }[] {
+  return findHtmlTableRangesInText(state.doc.toString())
+}
+
+/**
+ * Rendered raw-HTML `<table>...</table>` block (SPLIT behavior: pipe tables
+ * keep `MarkdownTableWidget` untouched; HTML blocks get this widget).
+ *
+ * Structure: `div.cm-html-table-widget > button.cm-html-table-edit`
+ * ("Edit table") + `div.cm-html-table-body` holding the sanitized table.
+ *
+ * - No caret-inside-html (7.1): the widget ALWAYS renders in live mode — the
+ *   table is a single atomic character, so the CM caret can never enter the
+ *   source HTML (raw visible only in source mode where no widgets exist).
+ *   Every container mousedown is swallowed except inside a cell already in
+ *   editing mode (contenteditable="true"), where native selection must work.
+ *   Clicking a cell records selection + edits inline (contenteditable on
+ *   demand) and writes back to source on commit. Clicking elsewhere leaves
+ *   the atomic block widget selected.
+ * - Edit button (7.2): dispatches `notedown:edit-html-table` for app.ts to
+ *   open the table builder dialog for this range.
+ * - Backspace (7.3): whole-table deletion is handled by the Prec.highest
+ *   Backspace/Delete keymap in livePreviewExtensions (caret at/across the
+ *   range boundary removes from..to). This container never traps Backspace:
+ *   the only keydown preventDefaults are Enter-commit / Escape-cancel while
+ *   a cell is being edited (where Backspace must edit cell text, which it
+ *   does via the native contenteditable behavior since ignoreEvent() lets
+ *   the DOM handle it).
+ */
+class MarkdownHtmlTableWidget extends WidgetType {
+  constructor(
+    readonly from: number,
+    readonly to: number,
+    readonly html: string,
+  ) {
+    super()
+  }
+
+  eq(o: MarkdownHtmlTableWidget): boolean {
+    return o.from === this.from && o.to === this.to && o.html === this.html
+  }
+
+  toDOM(): HTMLElement {
+    const container = document.createElement('div')
+    container.className = 'cm-html-table-widget'
+
+    const editBtn = document.createElement('button')
+    editBtn.className = 'cm-html-table-edit'
+    editBtn.type = 'button'
+    editBtn.textContent = 'Edit table'
+    editBtn.setAttribute('aria-label', 'Edit table')
+    editBtn.title = 'Edit table'
+    editBtn.addEventListener('mousedown', (e: MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+    })
+    editBtn.addEventListener('click', (e: MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      // Commit any in-progress cell edit first (synchronous dispatch), so
+      // the builder preloads the current source instead of stale text.
+      // (Closed over `let` bindings declared below — safe: clicks run long
+      // after toDOM returns.)
+      if (editingCell !== null) commitEdit()
+      window.dispatchEvent(new CustomEvent('notedown:edit-html-table', { detail: { from: this.from, to: this.to } }))
+    })
+    container.appendChild(editBtn)
+
+    const body = document.createElement('div')
+    body.className = 'cm-html-table-body'
+    // ONLY innerHTML sink in this widget: DOMPurify.sanitize strips scripts /
+    // event handlers before injection, so the real <table> element(s) render
+    // without XSS (same policy as export.ts, which runs markdown-it html:true).
+    body.innerHTML = DOMPurify.sanitize(this.html)
+    container.appendChild(body)
+
+    const cells = Array.from(body.querySelectorAll('th,td')) as HTMLElement[]
+    for (const cell of cells) {
+      cell.setAttribute('contenteditable', 'false')
+      cell.style.cursor = 'pointer'
+    }
+
+    const outerTable = body.querySelector('table')
+
+    // Nested tables each get their own Edit button: wrap every non-outermost
+    // table in a positioning host. (A <button> cannot be a direct child of
+    // <table> — the HTML parser would eject it — so the wrapper div inside
+    // the host <td> carries it.) Wrappers are transparent to the chain-walk
+    // below (closest('table')/closest('th,td') skip divs) and to
+    // serializeHtmlCell (which unwraps them and skips buttons).
+    if (outerTable !== null) {
+      const nestedTables = Array.from(outerTable.querySelectorAll('table'))
+      for (const nested of nestedTables) {
+        const wrap = document.createElement('div')
+        wrap.className = 'cm-inner-table-wrap'
+        nested.replaceWith(wrap)
+        wrap.appendChild(nested)
+        const innerBtn = document.createElement('button')
+        innerBtn.type = 'button'
+        innerBtn.className = 'cm-html-table-edit cm-inner-table-edit'
+        innerBtn.textContent = 'Edit table'
+        innerBtn.setAttribute('aria-label', 'Edit nested table')
+        innerBtn.title = 'Edit nested table'
+        innerBtn.addEventListener('mousedown', (e: MouseEvent) => {
+          e.preventDefault()
+          e.stopPropagation()
+        })
+        innerBtn.addEventListener('click', (e: MouseEvent) => {
+          e.preventDefault()
+          e.stopPropagation()
+          if (editingCell !== null) commitEdit()
+          const loc = locateNestedTable(nested)
+          if (loc === null) {
+            window.dispatchEvent(
+              new CustomEvent('notedown:edit-html-table', { detail: { from: this.from, to: this.to } }),
+            )
+          } else {
+            window.dispatchEvent(
+              new CustomEvent('notedown:edit-html-table', {
+                detail: { from: this.from, to: this.to, path: loc.path, tableIndex: loc.tableIndex },
+              }),
+            )
+          }
+        })
+        wrap.insertBefore(innerBtn, nested)
+      }
+    }
+
+    // Cells hosting a nested table render flush (no cell padding), so the
+    // inner grid meets the cell walls. Recomputed every build; the class is
+    // presentation-only (serializeHtmlCell reads childNodes, not classes).
+    for (const cell of Array.from(body.querySelectorAll('th,td')) as HTMLElement[]) {
+      if (cell.querySelector('table') !== null) cell.classList.add('cm-has-table')
+    }
+
+    /**
+     * Chain-walk from a clicked cell up to the outermost table, returning
+     * the cell path (one {row,col} per nesting level, outermost first).
+     * Row = index among the level's own <tr>s in document order; col =
+     * index among the row's th/td children. Null when the cell is outside
+     * the widget body (shouldn't happen — callers check contains()).
+     */
+    const cellPathInBody = (cell: HTMLElement): HtmlCellStep[] | null => {
+      if (outerTable === null || !body.contains(cell)) return null
+      const chain: HtmlCellStep[] = []
+      let cur: HTMLElement | null = cell
+      while (cur !== null) {
+        const tbl = cur.closest('table')
+        if (tbl === null || !body.contains(tbl)) return null
+        const rowEl = cur.closest('tr')
+        if (rowEl === null || rowEl.closest('table') !== tbl) return null
+        const ownRows = Array.from(tbl.querySelectorAll('tr')).filter((tr) => tr.closest('table') === tbl)
+        const row = ownRows.indexOf(rowEl as HTMLTableRowElement)
+        const rowCells = Array.from(rowEl.children).filter(
+          (el) => el.tagName === 'TH' || el.tagName === 'TD',
+        ) as HTMLElement[]
+        const col = rowCells.indexOf(cur)
+        if (row < 0 || col < 0) return null
+        chain.unshift({ row, col })
+        if (tbl === outerTable) return chain
+        cur = tbl.closest('th,td') as HTMLElement | null
+      }
+      return null
+    }
+
+    /**
+     * Locate a nested <table> element for inner editing: the path of its
+     * host cell plus the table's index among that cell's own tables
+     * (nearest-cell filter, document order — generator cells hold one).
+     */
+    const locateNestedTable = (nested: HTMLTableElement): { path: HtmlCellStep[]; tableIndex: number } | null => {
+      const host = nested.closest('th,td') as HTMLElement | null
+      if (host === null || !body.contains(host)) return null
+      const path = cellPathInBody(host)
+      if (path === null) return null
+      const own = Array.from(host.querySelectorAll('table')).filter((t) => t.closest('th,td') === host)
+      const tableIndex = own.indexOf(nested)
+      if (tableIndex < 0) return null
+      return { path, tableIndex }
+    }
+
+    const recordCellSelection = (cell: HTMLElement): void => {
+      const path = cellPathInBody(cell)
+      if (path === null) return
+      selectedHtmlCell = { tableFrom: this.from, path }
+    }
+
+    let editingCell: HTMLElement | null = null
+    let originalText = ''
+    let originalHtml = ''
+
+    const commitEdit = (): void => {
+      if (editingCell === null) return
+      const cell = editingCell
+      const newText = serializeHtmlCell(cell)
+      if (newText === originalText) {
+        cell.setAttribute('contenteditable', 'false')
+        editingCell = null
+        return
+      }
+      const table = body.querySelector('table')
+      if (table === null) {
+        cell.setAttribute('contenteditable', 'false')
+        editingCell = null
+        return
+      }
+      const rows = Array.from(table.querySelectorAll('tr')).filter((tr) => tr.closest('table') === table)
+      const rowsHtml = rows
+        .map((tr) => {
+          const inHead = tr.closest('thead') !== null
+          const rowCells = Array.from(tr.children).filter(
+            (el) => el.tagName === 'TH' || el.tagName === 'TD',
+          ) as HTMLElement[]
+          const cellsHtml = rowCells
+            .map((c) => {
+              // Header serialization: th when the ORIGINAL cell was TH or the
+              // row lives in <thead>, else td. Nested tables survive via
+              // serializeHtmlCell (already escaped + single-line outerHTML);
+              // do NOT re-escape here. Selection is intentionally left
+              // untouched on commit (same `from`, stays valid for toolbar).
+              const tag = c.tagName === 'TH' || inHead ? 'th' : 'td'
+              const txt = c === cell ? newText : serializeHtmlCell(c)
+              return `<${tag}>${txt}</${tag}>`
+            })
+            .join('')
+          return `<tr>${cellsHtml}</tr>`
+        })
+        .join('')
+      const newHtml = `<table>${rowsHtml}</table>`
+      cell.setAttribute('contenteditable', 'false')
+      editingCell = null
+      try {
+        cell.blur()
+      } catch {
+        // Blur is best-effort; the widget rebuilds on dispatch regardless.
+      }
+      const view = EditorView.findFromDOM(container)
+      if (view === null) return
+      let cur = ''
+      try {
+        cur = view.state.doc.sliceString(this.from, this.to)
+      } catch {
+        cur = this.html
+      }
+      if (cur === newHtml) return
+      view.dispatch({ changes: { from: this.from, to: this.to, insert: newHtml } })
+    }
+
+    const cancelEdit = (): void => {
+      if (editingCell === null) return
+      const cell = editingCell
+      // originalHtml came from the DOMPurify-sanitized body above, so
+      // restoring it verbatim is safe (no new sink).
+      cell.innerHTML = originalHtml
+      cell.setAttribute('contenteditable', 'false')
+      editingCell = null
+      cell.blur()
+    }
+
+    const startEdit = (cell: HTMLElement): void => {
+      if (editingCell === cell) return
+      if (editingCell !== null) commitEdit()
+      if (!body.contains(cell)) return
+      editingCell = cell
+      originalText = serializeHtmlCell(cell)
+      originalHtml = cell.innerHTML
+      cell.setAttribute('contenteditable', 'true')
+      cell.focus()
+      try {
+        const range = document.createRange()
+        range.selectNodeContents(cell)
+        const sel = window.getSelection()
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+      } catch {
+        // Selection is a nicety; editing still works without it.
+      }
+    }
+
+    // Atomic table: the caret can never enter table source in live mode (the
+    // widget ALWAYS renders, even with the caret adjacent — raw HTML is only
+    // visible in source mode where no widgets exist). Swallow EVERY mousedown
+    // so CM6 never moves the caret into the range, EXCEPT when the target is
+    // inside a cell already in editing mode (contenteditable="true"), where
+    // native text selection/caret must work.
+    container.addEventListener('mousedown', (e: MouseEvent) => {
+      const t = e.target as HTMLElement
+      if (typeof t.closest !== 'function') {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+      if (t.closest('[contenteditable="true"]') !== null) return
+      e.preventDefault()
+      e.stopPropagation()
+    })
+
+    container.addEventListener('click', (e: MouseEvent) => {
+      const t = e.target as HTMLElement
+      if (typeof t.closest !== 'function') return
+      if (t.closest('.cm-html-table-edit') !== null) return
+      const cell = t.closest('th,td') as HTMLElement | null
+      if (cell === null || !body.contains(cell)) return
+      e.preventDefault()
+      e.stopPropagation()
+      recordCellSelection(cell)
+      startEdit(cell)
+    })
+
+    container.addEventListener('focusout', (e: FocusEvent) => {
+      if (editingCell === null) return
+      const next = e.relatedTarget as unknown as Node | null
+      // Moving focus between cells of the SAME widget is handled by the click
+      // path (commit-previous-then-start-next); only commit here when focus
+      // truly leaves the editing cell to elsewhere.
+      if (next !== null && container.contains(next)) {
+        const nextEl = next as unknown as HTMLElement
+        const nextCell = typeof nextEl.closest === 'function' ? nextEl.closest('th,td') : null
+        if (nextCell !== null && nextCell !== editingCell) return
+        if (nextCell === editingCell) return
+      }
+      commitEdit()
+    })
+
+    container.addEventListener('keydown', (e: KeyboardEvent) => {
+      // Table hotkey (Ctrl/Cmd+T) inside the widget: CM6 never sees widget
+      // events (ignoreEvent), so tableHotkeyMap can't fire while a cell has
+      // focus. Commit any in-progress edit first (synchronous dispatch, so
+      // the doc is current), then route through the same nested-insert flow
+      // as the toolbar button. preventDefault also suppresses the browser
+      // new-tab accelerator where the page receives the event.
+      if (matchesShortcut('table', e)) {
+        e.preventDefault()
+        e.stopPropagation()
+        if (editingCell !== null) commitEdit()
+        window.dispatchEvent(new CustomEvent('notedown:insert-nested-table'))
+        return
+      }
+      if (editingCell === null) return
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        e.stopPropagation()
+        commitEdit()
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        cancelEdit()
+      }
+      // All other keys (notably Backspace/Delete) are intentionally left
+      // alone so contenteditable edits cell text natively.
+    })
+
+    return container
+  }
+
+  /**
+   * Always true: CM6 never handles events inside this widget — the edit
+   * button + cell editing listeners attached in toDOM run regardless, and
+   * Backspace/Delete on the selected (non-editing) widget still removes the
+   * whole range via CM6's native atomic-block handling at the editor level.
+   */
+  ignoreEvent(): boolean {
+    return true
+  }
 }
 
 /**
@@ -973,6 +1622,22 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
     }
   }
 
+  // Raw HTML <table> blocks: every line of every HTML range joins skipLines
+  // (sweeps stay raw); ALL ranges join htmlReplacedLines whenever NOT
+  // dragging so the widget ALWAYS renders in live mode (atomic table — raw
+  // visible only in source mode where no widgets exist). Drag-selection stays
+  // raw like pipes (isDrag skip). Pipe Table logic below is untouched.
+  const htmlRanges = findHtmlTableRanges(state)
+  const htmlReplacedLines = new Set<number>()
+  for (const r of htmlRanges) {
+    const s = state.doc.lineAt(r.from).number
+    const e = state.doc.lineAt(Math.max(r.from, r.to - 1)).number
+    for (let l = s; l <= e; l++) skipLines.add(l)
+    if (!isDrag) {
+      for (let l = s; l <= e; l++) htmlReplacedLines.add(l)
+    }
+  }
+
   syntaxTree(state).iterate({
     enter: (node) => {
       // Graph lines replaced by the block widget: never decorate inside the
@@ -983,6 +1648,14 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
         graphReplacedLines.size > 0 &&
         node.name !== 'Document' &&
         graphReplacedLines.has(state.doc.lineAt(node.from).number)
+      )
+        return
+      // Raw HTML tables replaced by the block widget: never decorate inside
+      // the replaced range (mirrors the Table/graph guards above).
+      if (
+        htmlReplacedLines.size > 0 &&
+        node.name !== 'Document' &&
+        htmlReplacedLines.has(state.doc.lineAt(node.from).number)
       )
         return
       // Images: on inactive lines replace the whole `![alt](src)` construct
@@ -1878,6 +2551,21 @@ function buildBlockDecorations(state: EditorState): DecorationSet {
     }
   }
 
+  // ---- Raw HTML <table> blocks (doc-text scan, no Lezer dependency) --------
+  // Pipe tables keep MarkdownTableWidget untouched above; HTML blocks render
+  // via MarkdownHtmlTableWidget with inline cell editing + Edit-button dialog
+  // affordance. ALWAYS replaced in live mode (atomic table: caret adjacent
+  // never flashes raw); only drag-selection keeps raw source (isDrag skip,
+  // like pipes). Block replace widgets are atomic in CM6 — see the Backspace/
+  // Delete keymap in livePreviewExtensions for whole-table deletion.
+  for (const r of findHtmlTableRanges(state)) {
+    if (isDrag) continue
+    const html = state.doc.sliceString(r.from, r.to)
+    decorations.push(
+      Decoration.replace({ widget: new MarkdownHtmlTableWidget(r.from, r.to, html), block: true }).range(r.from, r.to),
+    )
+  }
+
   return Decoration.set(decorations.sort((a, b) => a.from - b.from), true)
 }
 
@@ -1925,6 +2613,72 @@ export function livePreviewExtensions(opts?: LivePreviewOptions): Extension[] {
   const extensions: Extension[] = [collapseOnSelectionFacet.of(collapse), mouseSelectingField]
   if (collapse) {
     extensions.push(livePreviewPlugin.of({ imageResolver: opts?.imageResolver, onLinkClick: opts?.onLinkClick }), blockRenderField)
+    // Click-outside clears the toolbar insert target (selection survives
+    // focusout/commit so the toolbar flow works after editing).
+    extensions.push(
+      EditorView.domEventHandlers({
+        mousedown: (event) => {
+          const t = event.target as HTMLElement
+          if (typeof t.closest !== 'function' || t.closest('.cm-html-table-widget') === null) {
+            clearSelectedHtmlTableCell()
+          }
+          return false
+        },
+      }),
+    )
+    // Whole-table Backspace/Delete: the atomic HTML widget must delete as one
+    // unit. Collapsed selections only — non-collapsed fall through (default
+    // text deletion already removes widget text). First match wins.
+    extensions.push(
+      Prec.highest(
+        keymap.of([
+          {
+            key: 'Backspace',
+            run: (view) => {
+              const sel = view.state.selection.main
+              if (!sel.empty) return false
+              const h = sel.head
+              const ranges = findHtmlTableRanges(view.state)
+              for (const r of ranges) {
+                if (h === r.to + 1 && view.state.doc.sliceString(r.to, r.to + 1) === '\n') {
+                  view.dispatch({ changes: { from: r.from, to: h }, scrollIntoView: true })
+                  return true
+                }
+              }
+              for (const r of ranges) {
+                if (h === r.to) {
+                  view.dispatch({ changes: { from: r.from, to: r.to }, scrollIntoView: true })
+                  return true
+                }
+              }
+              return false
+            },
+          },
+          {
+            key: 'Delete',
+            run: (view) => {
+              const sel = view.state.selection.main
+              if (!sel.empty) return false
+              const h = sel.head
+              const ranges = findHtmlTableRanges(view.state)
+              for (const r of ranges) {
+                if (h === r.from - 1 && view.state.doc.sliceString(h, h + 1) === '\n') {
+                  view.dispatch({ changes: { from: h, to: r.to }, scrollIntoView: true })
+                  return true
+                }
+              }
+              for (const r of ranges) {
+                if (h === r.from) {
+                  view.dispatch({ changes: { from: r.from, to: r.to }, scrollIntoView: true })
+                  return true
+                }
+              }
+              return false
+            },
+          },
+        ]),
+      ),
+    )
   }
   extensions.push(markdownStylePlugin, editorTheme)
   return extensions
