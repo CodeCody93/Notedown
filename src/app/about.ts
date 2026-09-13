@@ -13,7 +13,7 @@
  */
 
 /** Keep in sync with package.json + Cargo.toml. */
-export const APP_VERSION = '0.2.0'
+export const APP_VERSION = '0.5.0'
 
 /** PLACEHOLDER — user replaces with Ko-fi/GitHub Sponsors URL. */
 export const SUPPORT_URL = 'https://example.com/support-notedown-TODO'
