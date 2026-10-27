@@ -34,6 +34,7 @@ import {
   toggleInlineCodeSpec,
   toggleItalicSpec,
   toggleListSpec,
+  toggleOrderedListSpec,
   toggleSpoilerSpec,
   toggleStrikethroughSpec,
   toggleSubscriptSpec,
@@ -260,6 +261,61 @@ describe('toggleList', () => {
     expect(applyTo('a\nb', 3, undefined, toggleListSpec(stateOf('a\nb', 3), 'unordered'))).toEqual({
       doc: 'a\n- b',
       head: 5,
+    })
+  })
+})
+
+describe('toggleOrderedList (list indicator styles)', () => {
+  it('creates alphabetical markers with sequential letters', () => {
+    expect(applyTo('a\nb\nc', 0, 5, toggleOrderedListSpec(stateOf('a\nb\nc', 0, 5), 'alpha'))).toEqual({
+      doc: 'a. a\nb. b\nc. c',
+      head: 14,
+    })
+  })
+
+  it('creates Roman markers with sequential numerals', () => {
+    expect(applyTo('a\nb\nc\nd', 0, 7, toggleOrderedListSpec(stateOf('a\nb\nc\nd', 0, 7), 'roman'))).toEqual({
+      doc: 'i. a\nii. b\niii. c\niv. d',
+      head: 23,
+    })
+  })
+
+  it('keeps decimal as the default style', () => {
+    expect(applyTo('a\nb', 0, 3, toggleOrderedListSpec(stateOf('a\nb', 0, 3)))).toEqual({
+      doc: '1. a\n2. b',
+      head: 9,
+    })
+  })
+
+  it('toggles off when every line already uses the requested style', () => {
+    expect(applyTo('a. one\nb. two', 0, 12, toggleOrderedListSpec(stateOf('a. one\nb. two', 0, 12), 'alpha'))).toEqual({
+      doc: 'one\ntwo',
+      head: 6,
+    })
+  })
+
+  it('converts existing ordered markers of another style', () => {
+    expect(applyTo('1. one\n2. two', 0, 12, toggleOrderedListSpec(stateOf('1. one\n2. two', 0, 12), 'alpha'))).toEqual({
+      doc: 'a. one\nb. two',
+      head: 12,
+    })
+    expect(applyTo('a. one\nb. two', 0, 12, toggleOrderedListSpec(stateOf('a. one\nb. two', 0, 12), 'decimal'))).toEqual({
+      doc: '1. one\n2. two',
+      head: 12,
+    })
+  })
+
+  it('empty selection places the caret after the inserted marker', () => {
+    expect(applyTo('a', 0, undefined, toggleOrderedListSpec(stateOf('a', 0), 'alpha'))).toEqual({
+      doc: 'a. a',
+      head: 3,
+    })
+  })
+
+  it('converts an existing ordered line and numbers the rest sequentially', () => {
+    expect(applyTo('1. one\ntwo', 0, 10, toggleOrderedListSpec(stateOf('1. one\ntwo', 0, 10), 'alpha'))).toEqual({
+      doc: 'a. one\nb. two',
+      head: 13,
     })
   })
 })
@@ -578,6 +634,49 @@ describe('continueList', () => {
       selection: { anchor: 9 },
     })
   })
+
+  it('alphabetical items continue the sequence (a → b)', () => {
+    expect(continueListSpec(stateOf('a. item', 7))).toEqual({
+      changes: { from: 7, to: 7, insert: '\nb. ' },
+      selection: { anchor: 11 },
+    })
+  })
+
+  it('alphabetical items wrap past z to aa', () => {
+    expect(continueListSpec(stateOf('z. item', 7))).toEqual({
+      changes: { from: 7, to: 7, insert: '\naa. ' },
+      selection: { anchor: 12 },
+    })
+  })
+
+  it('Roman items continue the sequence (i → ii, iv → v)', () => {
+    expect(continueListSpec(stateOf('i. item', 7))).toEqual({
+      changes: { from: 7, to: 7, insert: '\nii. ' },
+      selection: { anchor: 12 },
+    })
+    expect(continueListSpec(stateOf('iv. item', 8))).toEqual({
+      changes: { from: 8, to: 8, insert: '\nv. ' },
+      selection: { anchor: 12 },
+    })
+  })
+
+  it('ordered continuation preserves upper case and the ) delimiter', () => {
+    expect(continueListSpec(stateOf('A) item', 7))).toEqual({
+      changes: { from: 7, to: 7, insert: '\nB) ' },
+      selection: { anchor: 11 },
+    })
+    expect(continueListSpec(stateOf('I. item', 7))).toEqual({
+      changes: { from: 7, to: 7, insert: '\nII. ' },
+      selection: { anchor: 12 },
+    })
+  })
+
+  it('ordered continuation preserves indentation', () => {
+    expect(continueListSpec(stateOf('   a. item', 10))).toEqual({
+      changes: { from: 10, to: 10, insert: '\n   b. ' },
+      selection: { anchor: 17 },
+    })
+  })
 })
 
 describe('markdownListKeymap', () => {
@@ -649,6 +748,8 @@ describe('FORMATTING_COMMANDS', () => {
       'list',
       'list-unordered',
       'list-ordered',
+      'list-ordered-alpha',
+      'list-ordered-roman',
       'list-task',
       'blockquote',
       'inline-code',

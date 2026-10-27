@@ -28,6 +28,8 @@ import { detectLineEnding, resolveAgainstDocDir, stripBom } from './text'
 import { copySelection, cutSelection, pasteImage, pasteText } from './clipboard'
 import { FORMATTING_COMMANDS, markdownListKeymap } from './formatting'
 import { formattingHotkeyMap, openEmojiPicker, renderMenubar } from './menu'
+import { createNavigator } from './navigator'
+import type { NavigatorController } from './navigator'
 import { isSettingsOpen, openSettingsModal, wireSettingsModal } from './settingsUI'
 import { isAboutOpen, openAboutModal, wireAboutModal } from './about'
 import { isHelpOpen, openHelpModal, wireHelpModal } from './help'
@@ -45,6 +47,7 @@ const AUTOSAVE_DEBOUNCE_MS = 3000
 let io: FileIO
 let draftTimer: number | null = null
 let editor: EditorController | null = null
+let navigator: NavigatorController | null = null
 
 // Last value of the extra-pinned menubar setting, so the subscribe re-renders the
 // menubar only when the setting actually changes (not on every keystroke/state change).
@@ -612,6 +615,8 @@ const FORMATTING_ACTION_IDS = [
   'list',
   'list-unordered',
   'list-ordered',
+  'list-ordered-alpha',
+  'list-ordered-roman',
   'list-task',
   'blockquote',
   'inline-code',
@@ -944,6 +949,9 @@ function wireMenu(): void {
     'clear-recents': () => {
       void clearRecents()
     },
+    navigator: () => {
+      navigator?.toggle()
+    },
     undo: () => {
       editor?.undo()
     },
@@ -1024,6 +1032,7 @@ const APP_HOTKEY_IDS = [
   'export',
   'settings',
   'toggle-mode',
+  'toggle-navigator',
 ]
 
 function wireHotkeys(): void {
@@ -1066,6 +1075,9 @@ function wireHotkeys(): void {
     },
     settings: () => openModalWithCaretRestore((opts) => openSettingsModal(opts)),
     'toggle-mode': () => setMode(appState.get().mode === 'live' ? 'source' : 'live'),
+    'toggle-navigator': () => {
+      navigator?.toggle()
+    },
   }
 
   window.addEventListener('keydown', (e) => {
@@ -1289,6 +1301,11 @@ export async function initApp(): Promise<void> {
   })
   editor.onChange((content) => setContent(content))
   applyEditorSettings(settings)
+  navigator = createNavigator({
+    mount: byId('navigator-panel'),
+    getEditor: () => editor,
+    onPreferenceChange: (enabled) => updateSettings({ navigatorVisible: enabled }),
+  })
   wireSettingsModal({ getSettings: () => appState.get().settings, onApply: (patch) => updateSettings(patch) })
   wireImportDialog()
   wireExportDialog()
@@ -1299,17 +1316,23 @@ export async function initApp(): Promise<void> {
   const menubarRoot = byId('menubar-root')
   renderMenubar(menubarRoot, { extraPinned: settings.extraMenuAlwaysVisible })
   lastExtraPinned = settings.extraMenuAlwaysVisible
+  navigator.setEnabled(settings.navigatorVisible)
+  navigator.update(appState.get().doc.content, appState.get().doc.path ?? 'untitled')
 
   // Subscribe early so ANY doc.content change (recovery, open, new, open-recent)
   // flows into the editor. The controller's setContent never fires onChange, so
   // this cannot create a feedback loop and cannot flip the dirty flag.
   appState.subscribe((s) => {
+    navigator?.update(s.doc.content, s.doc.path ?? 'untitled')
     if (s.settings.extraMenuAlwaysVisible !== lastExtraPinned) {
       lastExtraPinned = s.settings.extraMenuAlwaysVisible
       renderMenubar(byId('menubar-root'), { extraPinned: s.settings.extraMenuAlwaysVisible })
       // Rebuilding the menubar replaces its data-action buttons, so re-attach listeners.
       wireMenu()
     }
+    // Run after any menubar rebuild so a freshly rendered toolbar button gets
+    // its aria-pressed/active state back.
+    navigator?.setEnabled(s.settings.navigatorVisible)
     const recentsJson = JSON.stringify(s.recents)
     if (recentsJson !== lastRecentsJson) {
       lastRecentsJson = recentsJson

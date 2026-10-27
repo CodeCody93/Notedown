@@ -2,8 +2,8 @@
 
 ## Repo state
 
-- **This file is the single source of truth** for conventions and locked decisions. Milestones M0–M3 are implemented (editor, live preview, menus, platform I/O) plus the post-feedback fix batch — see `docs/user-results.md` for what was fixed and `docs/user-tests.md` for the manual QA checklist.
-- Stack: Vite + TS frontend, Tauri v2 `src-tauri/` backend. Verified green: `npm run dev`, `npm run typecheck`, `npm run build`, `npm test` (269 Vitest tests). Rust toolchain 1.97.1 (rustup, MSVC) is installed; `cargo check` in `src-tauri/` is clean.
+- **This file is the single source of truth** for conventions and locked decisions. Milestones M0–M3 are implemented (editor, live preview, menus, platform I/O), the post-feedback fix batches are in, and the navigator outline side panel (collapsible heading tree, settings/toolbar/hotkey toggle) is implemented — see `docs/user-results.md` for what was fixed and `docs/user-tests.md` for the manual QA checklist.
+- Stack: Vite + TS frontend, Tauri v2 `src-tauri/` backend. Verified green: `npm run dev`, `npm run typecheck`, `npm run build`, `npm test` (672 Vitest tests). Rust toolchain 1.97.1 (rustup, MSVC) is installed; `cargo check` in `src-tauri/` is clean.
 - Git: initialized on `main` with save-point commits (M0–M3 batch, feedback-fix batch, round-2 test checklist).
 - **Rebranding:** Application renamed from "MarkItDown" to "Notedown" for beta/release. All references updated across codebase.
 

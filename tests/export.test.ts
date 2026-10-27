@@ -716,3 +716,81 @@ describe('markdownToDocxBytes (round-9 unified export)', () => {
     expect(text).toContain('a')
   })
 })
+
+describe('nesting-aware list indicators (round 11)', () => {
+  it('renders typed alphabetical and Roman markers as classed ordered lists', () => {
+    const alpha = renderMarkdown('a. one\nb. two')
+    expect(alpha).toContain('<ol class="md-list-alpha">')
+    expect(alpha).toContain('<li>one</li>')
+    expect(alpha).not.toContain('a. one')
+
+    const roman = renderMarkdown('i. one\nii. two')
+    expect(roman).toContain('<ol class="md-list-roman">')
+    expect(roman).toContain('<li>one</li>')
+
+    const upper = renderMarkdown('A) one\nB) two')
+    expect(upper).toContain('md-list-alpha-upper')
+  })
+
+  it('starts alphabetical lists at the typed letter', () => {
+    const html = renderMarkdown('c. three\nd. four')
+    expect(html).toContain('md-list-alpha')
+    expect(html).toContain('start="3"')
+  })
+
+  it('restarts a nested sub-list at its own first indicator', () => {
+    const html = renderMarkdown('a. one\n   b. sub')
+    expect(html).toContain('md-list-roman')
+    expect(html).not.toContain('start="2"')
+  })
+
+  it('parses a lettered nested list after indented continuation text', () => {
+    const html = renderMarkdown('1. one\n   continuation\n    a. sub')
+    expect(html).toContain('<li>one<br>')
+    expect(html).toContain('md-list-alpha')
+    expect(html).toContain('<li>sub</li>')
+    expect(html).not.toContain('a. sub')
+  })
+
+  it('cycles numeric ordered lists decimal -> alpha -> roman by depth', () => {
+    const html = renderMarkdown('1. one\n   1. sub\n      1. deep')
+    expect(html).toContain('<ol>')
+    expect(html).toContain('md-list-alpha')
+    expect(html).toContain('md-list-roman')
+  })
+
+  it('alternates bullet indicators with depth', () => {
+    const html = renderMarkdown('- one\n  - two\n    - three')
+    expect(html).toContain('md-list-circle')
+    expect(html).toContain('md-list-disc')
+  })
+
+  it('propagates an explicit alphabetical start to deeper numeric levels', () => {
+    const html = renderMarkdown('a. one\n   1. sub')
+    expect(html).toContain('md-list-alpha')
+    expect(html).toContain('md-list-roman')
+  })
+
+  it('leaves list-like lines inside fenced code untouched', () => {
+    const html = renderMarkdown('```\na. code\nb. code\n```')
+    expect(html).toContain('a. code')
+    expect(html).toContain('b. code')
+    expect(html).not.toContain('md-list-alpha')
+  })
+
+  it('adds the nesting list-style rules to the shared body CSS', () => {
+    expect(MARKDOWN_BODY_CSS).toContain('.md-body ol.md-list-alpha { list-style-type: lower-alpha; }')
+    expect(MARKDOWN_BODY_CSS).toContain('.md-body ul.md-list-circle { list-style-type: circle; }')
+  })
+
+  it('keeps alphabetical/Roman markers in RTF and DOCX literal list prefixes', () => {
+    const rtf = markdownToRtf('a. one\nb. two')
+    expect(rtf).toContain('a. one')
+    expect(rtf).toContain('b. two')
+    expect(markdownToRtf('1. one\n   1. sub')).toContain('a. sub')
+
+    const docx = Buffer.from(markdownToDocxBytes('i. one\nii. two')).toString('latin1')
+    expect(docx).toContain('i. one')
+    expect(docx).toContain('ii. two')
+  })
+})

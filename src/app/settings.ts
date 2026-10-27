@@ -11,6 +11,7 @@ export interface Settings {
   extraMenuAlwaysVisible: boolean
   spellCheck: boolean
   defaultMode: 'live' | 'source'
+  navigatorVisible: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -22,6 +23,7 @@ export const DEFAULT_SETTINGS: Settings = {
   extraMenuAlwaysVisible: false,
   spellCheck: true,
   defaultMode: 'live',
+  navigatorVisible: true,
 }
 
 // Merge persisted settings onto defaults, keeping only known settings keys.

@@ -73,6 +73,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'dropdown', keys: ['Mod-Shift-d'], label: 'Dropdown' },
   { id: 'graph', keys: ['Mod-Shift-g'], label: 'Graph' },
   { id: 'toggle-mode', keys: ['Mod-/'], label: 'Toggle live/source' },
+  { id: 'toggle-navigator', keys: ['Mod-Alt-n'], label: 'Toggle navigator' },
 ]
 
 /**

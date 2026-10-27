@@ -25,6 +25,11 @@ function clean(view: EditorView): void {
   view.dom.remove()
 }
 
+/** Rendered list-marker widget labels in document order. */
+function listMarkerLabels(view: EditorView): string[] {
+  return Array.from(view.contentDOM.querySelectorAll('.cm-list-marker')).map((el) => el.textContent ?? '')
+}
+
 describe('M2 editor smoke', () => {
   it('createEditor mounts a .cm-editor into the mount element', () => {
     const mount = document.createElement('div')
@@ -278,6 +283,93 @@ describe('M2 editor smoke', () => {
     // Click the marker: the bracket toggles to [x] in the doc.
     marker?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }))
     expect(view.state.doc.toString()).toBe('para\n\n-[x] task')
+    clean(view)
+  })
+
+  it('live mode: unordered list indicators alternate dot / circle with nesting depth', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\n- one\n  - two\n    - three\n  - two again'
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    expect(listMarkerLabels(view)).toEqual(['•', '◦', '•', '◦'])
+    clean(view)
+  })
+
+  it('live mode: ordered list indicators cycle 1 / a / i with nesting depth', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\n1. one\n   1. sub\n      1. deep\n   2. sub two\n2. two'
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    expect(listMarkerLabels(view)).toEqual(['1.', 'a.', 'i.', 'b.', '2.'])
+    clean(view)
+  })
+
+  it('live mode: an alphabetical source marker starts an alphabetical list', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\na. one\nb. two\n   1. sub'
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    expect(listMarkerLabels(view)).toEqual(['a.', 'b.', 'i.'])
+    clean(view)
+  })
+
+  it('live mode: an indented continuation of an alphabetical list starts the sub-list at Roman i', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\na. one\n   b. sub\nb. two'
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    expect(listMarkerLabels(view)).toEqual(['a.', 'i.', 'b.'])
+    clean(view)
+  })
+
+  it('live mode: nested lists keep their depth after indented continuation text', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\n1. one\n   continuation\n   1. sub\n2. two'
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    expect(listMarkerLabels(view)).toEqual(['1.', 'a.', '2.'])
+    clean(view)
+  })
+
+  it('live mode: Roman source markers render their Roman sequence', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      'para\n\ni. one\nii. two\niii. three'
+    )
+    view.dispatch({ selection: { anchor: 0, head: 0 } })
+    view.requestMeasure()
+    expect(listMarkerLabels(view)).toEqual(['i.', 'ii.', 'iii.'])
+    clean(view)
+  })
+
+  it('live mode: the active ordered line shows its depth-cycled indicator, not the source number', () => {
+    const view = mountEditor(
+      [markdown(), ...livePreviewExtensions({ collapse: true }), editorThemeExtension(), keymap.of(defaultKeymap)],
+      '1. text\n2. text\n   a. text\n   4. line being edited'
+    )
+    // Caret at the end of the last (active) line: every list line, including
+    // the active one, shows its rendered indicator. The nested `4.` is the
+    // second item of the alpha sub-list, so it must read `b.` — not `4.`.
+    view.dispatch({ selection: { anchor: view.state.doc.length, head: view.state.doc.length } })
+    view.requestMeasure()
+    expect(listMarkerLabels(view)).toEqual(['1.', '2.', 'a.', 'b.'])
+
+    // Moving the caret onto the raw marker reveals the source `4.` for editing.
+    const lastLine = view.state.doc.line(4)
+    view.dispatch({ selection: { anchor: lastLine.from + 3, head: lastLine.from + 3 } })
+    view.requestMeasure()
+    expect(listMarkerLabels(view)).toEqual(['1.', '2.', 'a.'])
+    expect(view.contentDOM.textContent).toContain('4.')
     clean(view)
   })
 

@@ -25,6 +25,8 @@ import { syntaxTree } from '@codemirror/language'
 import type { SyntaxNode } from '@lezer/common'
 import type { TableModel } from './table'
 import { serializeGfm } from './table'
+import type { OrderedStyle } from './lists'
+import { formatOrderedMarker, nextOrderedMarker, parseListItem } from './lists'
 
 /** Builds a transaction spec from the current state. Commands produce a SINGLE undo step. */
 export type FormattingCommand = (state: EditorState) => TransactionSpec
@@ -477,40 +479,31 @@ interface ListMarker {
 }
 
 /** Detect a list marker at the start of a line (after leading whitespace).
- * Task markers accept all four user-results #4 spellings: `-[]`, `- []`, `-[ ]`,
- * `- [ ]` (and checked variants). The pattern captures the exact marker
- * including the trailing space so continuation preserves the same form
- * (e.g. "- [] item" → "- [] "). The unordered pattern also consumes a
- * task checkbox so toggling unordered OFF removes the whole `- [ ]` marker
- * instead of leaving `[ ]` (E7). */
+ * Built on the shared `parseListItem`, so task markers accept all four
+ * user-results #4 spellings (`-[]`, `- []`, `-[ ]`, `- [ ]` and checked variants)
+ * and ordered markers accept decimal, alphabetical and Roman styles. The exact
+ * marker text (including trailing whitespace) is returned so toggling and
+ * continuation preserve the same form. Unordered also matches task markers so
+ * toggling unordered OFF removes the whole `- [ ]` checkbox instead of leaving
+ * `[ ]` behind (E7). */
 function listMarker(text: string, kind: ListKind): ListMarker | null {
-  let m: RegExpExecArray | null
-  if (kind === 'task') {
-    // Task: dash/star/plus, optional spaces, '[', optional space/x, ']', trailing spaces.
-    // This matches all four forms: "-[] ", "- [] ", "-[ ] ", "- [ ] " (and "*"/"+" variants).
-    m = /^(\s*)([-*+]\s*\[[ xX]?\]\s*)/.exec(text)
-    if (!m) return null
-    // Guard: must contain brackets; \s* alone would otherwise allow "- " to pass if regex changed.
-    if (!m[2].includes('[') || !m[2].includes(']')) return null
-    // Ensure at least the bracket pair is present; "- []" (dash space [] space) must be recognised.
-    // The regex already requires "\[", but keep explicit check for safety.
-    return { indent: m[1], marker: m[2] }
-  } else if (kind === 'ordered') {
-    m = /^(\s*)(\d+\.\s+)/.exec(text)
-  } else {
-    m = /^(\s*)([-*+]\s*(\[[ xX]?\]\s*)?)/.exec(text)
-  }
-  if (!m) return null
-  return { indent: m[1], marker: m[2] }
+  const info = parseListItem(text)
+  if (info === null) return null
+  if (kind === 'task') return info.kind === 'task' ? { indent: info.indent, marker: info.marker } : null
+  if (kind === 'ordered') return info.kind === 'ordered' ? { indent: info.indent, marker: info.marker } : null
+  return info.kind === 'unordered' || info.kind === 'task'
+    ? { indent: info.indent, marker: info.marker }
+    : null
 }
 
 /**
  * Smart list toggle. If EVERY selected line already carries the marker of `kind`,
  * remove the markers (toggle off); otherwise add the marker to every selected line
- * (ordered: sequential numbers starting at 1; task: `-[] ` — the user-results #4
- * default form). Empty selection operates on the caret's line.
+ * (task: `-[] ` — the user-results #4 default form). Empty selection operates on
+ * the caret's line. Ordered lists delegate to {@link toggleOrderedListSpec}.
  */
 export function toggleListSpec(state: EditorState, kind: ListKind): TransactionSpec {
+  if (kind === 'ordered') return toggleOrderedListSpec(state, 'decimal')
   const range = state.selection.main
   const lines = affectedLines(state, range.from, range.to)
   const hasAll = lines.every((line) => listMarker(line.text, kind) !== null)
@@ -526,15 +519,62 @@ export function toggleListSpec(state: EditorState, kind: ListKind): TransactionS
       })
     }
   } else {
-    let counter = 1
     for (const line of lines) {
       if (listMarker(line.text, kind) !== null) continue
       const indent = /^\s*/.exec(line.text)![0]
-      let markerText: string
-      if (kind === 'ordered') markerText = `${counter++}. `
-      else if (kind === 'task') markerText = '-[] '
-      else markerText = '- '
+      const markerText = kind === 'task' ? '-[] ' : '- '
       changes.push({ from: line.from + indent.length, to: line.from + indent.length, insert: markerText })
+    }
+  }
+  if (range.empty && changes.length === 1 && !hasAll) {
+    const cs = state.changes(changes)
+    const anchor = cs.mapPos(range.from, 1)
+    return { changes: cs, selection: { anchor } }
+  }
+  return finalizeChanges(state, changes, range.from, range.to)
+}
+
+/**
+ * Ordered-list toggle with a selectable indicator style. If EVERY selected line
+ * is already ordered in `style`, the markers are removed (toggle off). Otherwise
+ * markers are written at each selected line's indentation, numbered sequentially
+ * from 1 in `style` (`.` delimiter, lowercase): plain lines gain a marker and
+ * existing ordered lines of another style are converted in place. An empty
+ * selection on an unmarked line places the caret after the marker.
+ */
+export function toggleOrderedListSpec(state: EditorState, style: OrderedStyle = 'decimal'): TransactionSpec {
+  const range = state.selection.main
+  const lines = affectedLines(state, range.from, range.to)
+  const parsed = lines.map((line) => parseListItem(line.text))
+  const hasAll = parsed.every((info) => info !== null && info.kind === 'ordered' && info.style === style)
+  const changes: { from: number; to: number; insert: string }[] = []
+
+  if (hasAll) {
+    for (let i = 0; i < lines.length; i++) {
+      const marker = parsed[i]!
+      changes.push({
+        from: lines[i].from + marker.indent.length,
+        to: lines[i].from + marker.indent.length + marker.marker.length,
+        insert: '',
+      })
+    }
+  } else {
+    let counter = 1
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      const info = parsed[i]
+      const indent = info?.indent ?? /^\s*/.exec(line.text)![0]
+      const markerText = formatOrderedMarker(style, counter++, '.', 'lower')
+      if (info !== null && info.kind === 'ordered') {
+        // Convert an existing ordered marker (different style / mixed block).
+        changes.push({
+          from: line.from + indent.length,
+          to: line.from + indent.length + info.marker.length,
+          insert: markerText,
+        })
+      } else {
+        changes.push({ from: line.from + indent.length, to: line.from + indent.length, insert: markerText })
+      }
     }
   }
   if (range.empty && changes.length === 1 && !hasAll) {
@@ -1119,33 +1159,10 @@ export function insertTextSpec(state: EditorState, text: string): TransactionSpe
   }
 }
 
-/** Structured info about a list item line. */
-interface ListItemInfo {
-  indent: string
-  marker: string
-  kind: ListKind
-  number?: number
-}
-
 function blockquoteInfo(text: string): { indent: string; marker: string } | null {
   const m = /^(\s*)(> ?)/.exec(text)
   if (!m) return null
   return { indent: m[1], marker: m[2] }
-}
-
-function listItemInfo(text: string): ListItemInfo | null {
-  // Task must be checked first so "- [] item" is not mis-classified as unordered "- ".
-  // Regex matches all four spellings: "-[] ", "- [] ", "-[ ] ", "- [ ] " (also "*" and "+").
-  // \s* after the closing bracket captures the trailing space(s) so marker length
-  // includes them and content slicing is correct. The includes('[') && includes(']')
-  // guard ensures "- " alone is not treated as task.
-  let m = /^(\s*)([-*+]\s*\[[ xX]?\]\s*)/.exec(text)
-  if (m && m[2].includes('[') && m[2].includes(']')) return { indent: m[1], marker: m[2], kind: 'task' }
-  m = /^(\s*)(\d+\.\s+)/.exec(text)
-  if (m) return { indent: m[1], marker: m[2], kind: 'ordered', number: parseInt(m[2], 10) }
-  m = /^(\s*)([-*+]\s+)/.exec(text)
-  if (m) return { indent: m[1], marker: m[2], kind: 'unordered' }
-  return null
 }
 
 /**
@@ -1153,23 +1170,27 @@ function listItemInfo(text: string): ListItemInfo | null {
  * a list item, returns `null` (let Enter fall through). If the item is empty, remove
  * its marker so the line becomes empty (second Enter exits the list). Otherwise insert
  * a newline + the same marker (task keeps its own marker form — `-[]`, `- [ ]` etc. —
- * per user-results #4; ordered continues the sequence number) and put the caret after
- * the marker.
+ * per user-results #4; unordered keeps its exact bullet; ordered advances the
+ * sequence in the same style/case/delimiter, e.g. `a.` → `b.`, `I)` → `II)`) and put
+ * the caret after the marker.
  */
 export function continueListSpec(state: EditorState): TransactionSpec | null {
   const range = state.selection.main
   const line = state.doc.lineAt(range.head)
-  const info = listItemInfo(line.text)
-  if (info) {
-    // Marker length includes the trailing space(s) after "]" / "." / "-".
+  const info = parseListItem(line.text)
+  if (info !== null) {
+    // Marker length includes the trailing space(s) after "]" / "." / ")" / "-".
     // Content is everything after indent+marker; trim check handles empty item
     // (second Enter exits list) for all four task spellings.
     const content = line.text.slice(info.indent.length + info.marker.length)
     if (content.trim() === '') {
       return { changes: { from: line.from, to: line.to, insert: '' }, selection: { anchor: line.from } }
     }
-    let nextMarker = info.marker
-    if (info.kind === 'ordered' && info.number !== undefined) nextMarker = `${info.number + 1}. `
+    // Ordered: advance the value while preserving style, case and delimiter.
+    // info.marker already excludes the indent; nextOrderedMarker re-adds it, so
+    // pass an empty indent and prepend info.indent once below.
+    let nextMarker =
+      info.kind === 'ordered' ? nextOrderedMarker({ ...info, indent: '' }) : info.marker
     // Task: preserve the exact original form ("-[] ", "- [] ", "-[ ] ", "- [ ] ").
     // info.marker already includes the trailing space(s); if the original line
     // somehow had no trailing space (e.g. "- []" at EOL without content, though
@@ -1263,7 +1284,9 @@ export const FORMATTING_COMMANDS: Record<string, FormattingCommand> = {
   'header-6': setHeadingCommand(6),
   list: (state) => toggleListSpec(state, 'unordered'),
   'list-unordered': (state) => toggleListSpec(state, 'unordered'),
-  'list-ordered': (state) => toggleListSpec(state, 'ordered'),
+  'list-ordered': (state) => toggleOrderedListSpec(state, 'decimal'),
+  'list-ordered-alpha': (state) => toggleOrderedListSpec(state, 'alpha'),
+  'list-ordered-roman': (state) => toggleOrderedListSpec(state, 'roman'),
   'list-task': toggleTaskListSpec,
   blockquote: toggleBlockquoteSpec,
   'inline-code': toggleInlineCodeSpec,

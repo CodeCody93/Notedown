@@ -28,6 +28,7 @@ interface SettingsEls {
   autosaveDrafts: HTMLInputElement
   spellCheck: HTMLInputElement
   extraMenu: HTMLInputElement
+  navigator: HTMLInputElement
 }
 
 let deps: SettingsModalDeps | null = null
@@ -179,6 +180,15 @@ function buildMenubarFieldset(): { fieldset: HTMLFieldSetElement; extraMenu: HTM
   return { fieldset, extraMenu }
 }
 
+function buildPanelsFieldset(): { fieldset: HTMLFieldSetElement; navigator: HTMLInputElement } {
+  const fieldset = buildFieldset('Panels')
+  const navigator = document.createElement('input')
+  navigator.type = 'checkbox'
+  navigator.id = 'settings-navigator'
+  fieldset.appendChild(row(navigator, 'Navigator panel'))
+  return { fieldset, navigator }
+}
+
 function buildDialog(): SettingsEls {
   const root = byId('settings-modal-root')
   const backdrop = document.createElement('div')
@@ -204,7 +214,7 @@ function buildDialog(): SettingsEls {
   closeBtn.textContent = '\u00d7' // ×
   header.append(title, closeBtn)
 
-  // Desktop: Theme | Editing + Menubar side by side (.settings-grid is 2 cols).
+  // Desktop: Theme | Editing + Menubar + Panels side by side (.settings-grid is 2 cols).
   const grid = document.createElement('div')
   grid.className = 'settings-grid'
   grid.appendChild(buildThemeFieldset())
@@ -212,7 +222,8 @@ function buildDialog(): SettingsEls {
   editCol.className = 'settings-col'
   const editing = buildEditingFieldset()
   const menubar = buildMenubarFieldset()
-  editCol.append(editing.fieldset, menubar.fieldset)
+  const panels = buildPanelsFieldset()
+  editCol.append(editing.fieldset, menubar.fieldset, panels.fieldset)
   grid.appendChild(editCol)
 
   dialog.append(header, grid)
@@ -230,6 +241,7 @@ function buildDialog(): SettingsEls {
     autosaveDrafts: editing.autosaveDrafts,
     spellCheck: editing.spellCheck,
     extraMenu: menubar.extraMenu,
+    navigator: panels.navigator,
   }
 }
 
@@ -306,6 +318,10 @@ function onExtraMenuChange(ev: Event): void {
   applyPatch({ extraMenuAlwaysVisible: (ev.target as HTMLInputElement).checked })
 }
 
+function onNavigatorChange(ev: Event): void {
+  applyPatch({ navigatorVisible: (ev.target as HTMLInputElement).checked })
+}
+
 // --- listener lifecycle: attached on open, removed on close (no leaks) ---
 
 function attachListeners(): void {
@@ -320,6 +336,7 @@ function attachListeners(): void {
   els.autosaveDrafts.addEventListener('change', onAutosaveChange)
   els.spellCheck.addEventListener('change', onSpellCheckChange)
   els.extraMenu.addEventListener('change', onExtraMenuChange)
+  els.navigator.addEventListener('change', onNavigatorChange)
   for (const radio of els.dialog.querySelectorAll<HTMLInputElement>('input[type="radio"]')) {
     radio.addEventListener('change', onRadioChange)
   }
@@ -337,6 +354,7 @@ function detachListeners(): void {
   els.autosaveDrafts.removeEventListener('change', onAutosaveChange)
   els.spellCheck.removeEventListener('change', onSpellCheckChange)
   els.extraMenu.removeEventListener('change', onExtraMenuChange)
+  els.navigator.removeEventListener('change', onNavigatorChange)
   for (const radio of els.dialog.querySelectorAll<HTMLInputElement>('input[type="radio"]')) {
     radio.removeEventListener('change', onRadioChange)
   }
@@ -362,6 +380,7 @@ function refreshValues(): void {
   els.autosaveDrafts.checked = s.autosaveDrafts
   els.spellCheck.checked = s.spellCheck
   els.extraMenu.checked = s.extraMenuAlwaysVisible
+  els.navigator.checked = s.navigatorVisible
 }
 
 function focusableElements(): HTMLElement[] {

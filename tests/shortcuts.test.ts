@@ -56,6 +56,7 @@ const ALL_IDS = [
   'dropdown',
   'graph',
   'toggle-mode',
+  'toggle-navigator',
 ]
 
 describe('SHORTCUTS table', () => {

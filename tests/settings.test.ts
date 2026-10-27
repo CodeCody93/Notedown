@@ -12,6 +12,7 @@ describe('DEFAULT_SETTINGS', () => {
       extraMenuAlwaysVisible: false,
       spellCheck: true,
       defaultMode: 'live',
+      navigatorVisible: true,
     })
   })
 })
@@ -39,6 +40,12 @@ describe('mergeSettings', () => {
     expect(merged.extraMenuAlwaysVisible).toBe(DEFAULT_SETTINGS.extraMenuAlwaysVisible)
     expect(merged.spellCheck).toBe(DEFAULT_SETTINGS.spellCheck)
     expect(merged.defaultMode).toBe(DEFAULT_SETTINGS.defaultMode)
+    expect(merged.navigatorVisible).toBe(DEFAULT_SETTINGS.navigatorVisible)
+  })
+
+  it('navigatorVisible: passes a stored false through and defaults to true when absent', () => {
+    expect(mergeSettings({ navigatorVisible: false }).navigatorVisible).toBe(false)
+    expect(mergeSettings({}).navigatorVisible).toBe(true)
   })
 
   it('spellCheck: passes a stored false through and defaults to true when absent', () => {

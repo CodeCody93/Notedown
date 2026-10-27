@@ -66,6 +66,20 @@ export const HELP_ENTRIES: HelpEntry[] = [
     hotkeyId: 'list-ordered',
   },
   {
+    id: 'list-ordered-alpha',
+    title: 'Alphabetical list',
+    example: 'Insert an alphabetical ordered list',
+    syntax: 'a. item',
+    hotkeyId: null,
+  },
+  {
+    id: 'list-ordered-roman',
+    title: 'Roman numeral list',
+    example: 'Insert a Roman-numeral ordered list',
+    syntax: 'i. item',
+    hotkeyId: null,
+  },
+  {
     id: 'list-task',
     title: 'Task list item',
     example: 'Insert a task checkbox item',

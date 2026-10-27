@@ -42,6 +42,8 @@ import DOMPurify from 'dompurify'
 import { HLJS_CSS_DARK, HLJS_CSS_LIGHT } from '../styles/hljs-themes'
 import { resolveAgainstDocDir } from './text'
 import { parseGraphTag, graphToHtml, graphToErrorHtml, graphToTextFallback } from './graph'
+import { parseListItem, cycleOrderedStyle, ListDepthTracker } from './lists'
+import type { OrderedStyle, OrderedCase } from './lists'
 
 // Re-exported for the preview pane (a separate module): the preview injects the
 // same stylesheets into its own <style> element so preview and export match.
@@ -548,6 +550,193 @@ md.core.ruler.before('block', 'task-list-markers', (state) => {
 })
 
 /**
+ * Ordered-list indicators (round 11) — Notedown accepts `a.`/`A.` and
+ * `i.`/`iv)` (Roman) ordered markers, but markdown-it only parses decimal
+ * markers. This pre-block transform rewrites every alphabetic/Roman marker to
+ * its decimal value while keeping the line count identical, and records the
+ * original style/case per 0-based source line so the token rule below can
+ * attach depth-aware `list-style-type` classes. Numeric lines are recorded
+ * too (style `decimal`) so nested numeric markers still cycle by depth.
+ */
+type OrderedMarkerMeta = { style: OrderedStyle; markerCase: OrderedCase }
+
+interface OrderedListEnv {
+  notedownOrderedMeta?: Map<number, OrderedMarkerMeta>
+}
+
+/** Leading blockquote markers (`>`, `> >`, … with optional spaces/tabs). */
+const BLOCKQUOTE_PREFIX_RE = /^((?:[ \t]*>[ \t]?)*)/
+
+/** Visual indentation width (tabs count as 4) used by the list tracker. */
+function lineIndentWidth(line: string): number {
+  return (/^[ \t]*/.exec(line)?.[0] ?? '').replace(/\t/g, '    ').length
+}
+
+function normalizeOrderedListMarkers(src: string): { src: string; meta: Map<number, OrderedMarkerMeta> } {
+  const meta = new Map<number, OrderedMarkerMeta>()
+  const lines = src.split('\n')
+  const listTracker = new ListDepthTracker()
+  let inFence = false
+  let fenceChar = ''
+  let fenceLen = 0
+  let prevNonBlank: string | null = null
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line)
+    if (fence) {
+      listTracker.reset()
+      const marker = fence[1]
+      if (inFence) {
+        // A closing fence: only the same char, at least as long, nothing else.
+        if (
+          marker[0] === fenceChar &&
+          marker.length >= fenceLen &&
+          /^ {0,3}[`~]+[ \t]*$/.test(stripCR(line))
+        ) {
+          inFence = false
+        }
+      } else {
+        inFence = true
+        fenceChar = marker[0]
+        fenceLen = marker.length
+      }
+      // Fence lines are non-blank but never list items, so they break the
+      // "previous non-blank line was a list item" indented-code heuristic.
+      prevNonBlank = null
+      continue
+    }
+    if (inFence) continue
+
+    const prefix = BLOCKQUOTE_PREFIX_RE.exec(line)![1]
+    const rest = line.slice(prefix.length)
+    if (/^ {4,}/.test(rest) || /^\t/.test(rest)) {
+      // 4+ spaces (or a leading tab) is also how list-item content is
+      // indented, so only treat it as a genuine code block when the previous
+      // non-blank line was not itself a list item (same blockquote stripping).
+      const prevPrefix = prevNonBlank === null ? '' : BLOCKQUOTE_PREFIX_RE.exec(prevNonBlank)![1]
+      const prevRest = prevNonBlank === null ? null : prevNonBlank.slice(prevPrefix.length)
+      // Treat 4-space indentation as list content when the previous non-blank
+      // line was a list item OR indented continuation text (nested lists often
+      // follow wrapped text); otherwise it is a genuine indented code block.
+      const prevInList =
+        prevRest !== null && (parseListItem(prevRest) !== null || lineIndentWidth(prevRest) > 0)
+      if (!prevInList) {
+        listTracker.noteNonList()
+        prevNonBlank = line
+        continue
+      }
+    }
+
+    const info = parseListItem(rest)
+    if (info === null) {
+      if (line.trim() === '') listTracker.noteBlank()
+      else listTracker.noteNonList(lineIndentWidth(rest))
+    } else {
+      const res = listTracker.feed(info)
+      if (info.kind === 'ordered') {
+        meta.set(i, { style: info.style ?? 'decimal', markerCase: info.markerCase ?? 'lower' })
+        const value = res.orderedValue ?? info.value ?? 1
+        // Rewrite when the source value differs from the display value:
+        // non-decimal styles always, and nested list starts whose typed
+        // continuation value (b./2./ii.) must restart at 1. Rewriting a
+        // nested first item to `1.` also lets markdown-it interrupt the
+        // parent paragraph and actually create the nested list.
+        if (info.style !== 'decimal' || value !== info.value) {
+          // Swap only the marker token: blockquote prefix, indentation, the
+          // delimiter and trailing whitespace stay byte-for-byte intact.
+          const delimAt = info.marker.search(/[.)]/)
+          const trailing = delimAt >= 0 ? info.marker.slice(delimAt + 1) : ' '
+          const marker = `${value}${info.delimiter ?? '.'}${trailing}`
+          lines[i] = prefix + info.indent + marker + rest.slice(info.indent.length + info.marker.length)
+        }
+      }
+    }
+    if (line.trim() !== '') prevNonBlank = lines[i]
+  }
+  return { src: lines.join('\n'), meta }
+}
+
+md.core.ruler.before('block', 'ordered-list-markers', (state) => {
+  const result = normalizeOrderedListMarkers(state.src)
+  state.src = result.src
+  const env = state.env as OrderedListEnv
+  env.notedownOrderedMeta = result.meta
+})
+
+/** Ordered-list CSS class per display style/case (depth 1 decimal stays default). */
+const ORDERED_LIST_CLASS: Record<OrderedStyle, Record<OrderedCase, string>> = {
+  decimal: { lower: 'md-list-decimal', upper: 'md-list-decimal' },
+  alpha: { lower: 'md-list-alpha', upper: 'md-list-alpha-upper' },
+  roman: { lower: 'md-list-roman', upper: 'md-list-roman-upper' },
+}
+
+/**
+ * Post-core token rule — decorates list-open tokens so the shared
+ * MARKDOWN_BODY_CSS can switch indicators by nesting depth:
+ *  - bullets: depth 1 keeps the default disc (no class); depth ≥ 2 alternates
+ *    circle (even) / disc (odd);
+ *  - ordered: a typed alpha/Roman marker wins at its level, numeric markers
+ *    cycle decimal → alpha → roman from the nearest enclosing ordered level.
+ */
+md.core.ruler.push('notedown-list-styles', (state) => {
+  const env = state.env as OrderedListEnv
+  const meta = env.notedownOrderedMeta
+  const listStack: Array<'ul' | 'ol'> = []
+  const orderedStack: Array<{ depth: number; style: OrderedStyle }> = []
+  for (const token of state.tokens) {
+    if (token.type === 'bullet_list_open') {
+      const depth = listStack.length + 1
+      if (depth >= 2) token.attrJoin('class', depth % 2 === 0 ? 'md-list-circle' : 'md-list-disc')
+      listStack.push('ul')
+      continue
+    }
+    if (token.type === 'ordered_list_open') {
+      const depth = listStack.length + 1
+      const line = token.map?.[0]
+      const markerMeta = line === undefined ? undefined : meta?.get(line)
+      const explicit = markerMeta?.style ?? 'decimal'
+      // Deeper ordered levels always continue the numbered → alpha → roman
+      // cycle from the nearest enclosing ordered list, so continuation markers
+      // inherited from the parent (Enter+Tab) still switch by depth. An
+      // explicit alpha/Roman marker only chooses the starting style for a new
+      // ordered list with no ordered ancestor.
+      const ancestor = orderedStack[orderedStack.length - 1]
+      let style: OrderedStyle
+      if (ancestor !== undefined) {
+        style = cycleOrderedStyle(ancestor.style, depth - ancestor.depth)
+      } else if (explicit !== 'decimal') {
+        style = explicit
+      } else {
+        style = cycleOrderedStyle('decimal', depth - 1)
+      }
+      const markerCase = markerMeta?.markerCase ?? 'lower'
+      // Nested lists restart their own indicator sequence at 1/a/i: indenting
+      // a continued item (Enter then Tab) leaves b./2./ii. in the source, but
+      // the sub-list's first label must not inherit the parent's value.
+      if (depth > 1) token.attrSet('start', '1')
+      // Only add a class when it changes rendering; attrJoin keeps any
+      // existing classes (e.g. task-list classes).
+      if (depth > 1 || style !== 'decimal') {
+        token.attrJoin('class', ORDERED_LIST_CLASS[style][markerCase])
+      }
+      orderedStack.push({ depth, style })
+      listStack.push('ol')
+      continue
+    }
+    if (token.type === 'bullet_list_close') {
+      listStack.pop()
+      continue
+    }
+    if (token.type === 'ordered_list_close') {
+      listStack.pop()
+      orderedStack.pop()
+      continue
+    }
+  }
+  delete env.notedownOrderedMeta
+})
+
+/**
  * User-results Other #5 — `-# text` subtext paragraphs. Runs LAST in the core
  * chain (after 'text_join') so it sees the final inline tokens: a paragraph
  * whose first inline child is a text token starting with `-# ` (or exactly
@@ -646,6 +835,17 @@ export const MARKDOWN_BODY_CSS: string = `
   margin: 0.6em 0;
   padding-left: 1.6em;
 }
+
+/* Nesting-aware list indicators (same sheet feeds preview + export). */
+.md-body ul { list-style-type: disc; }
+.md-body ul.md-list-circle { list-style-type: circle; }
+.md-body ul.md-list-disc { list-style-type: disc; }
+.md-body ol { list-style-type: decimal; }
+.md-body ol.md-list-decimal { list-style-type: decimal; }
+.md-body ol.md-list-alpha { list-style-type: lower-alpha; }
+.md-body ol.md-list-alpha-upper { list-style-type: upper-alpha; }
+.md-body ol.md-list-roman { list-style-type: lower-roman; }
+.md-body ol.md-list-roman-upper { list-style-type: upper-roman; }
 
 .md-body li { margin: 0.2em 0; }
 
@@ -2219,6 +2419,7 @@ export function stripNestedTableHtml(cell: string): string {
 function parseExportBlocks(src: string): ExportBlock[] {
   const lines = src.replace(/\r\n?/g, '\n').split('\n')
   const blocks: ExportBlock[] = []
+  const listTracker = new ListDepthTracker()
   let para: string[] = []
   const flushPara = (): void => {
     if (para.length > 0) {
@@ -2232,9 +2433,16 @@ function parseExportBlocks(src: string): ExportBlock[] {
     const trimmed = line.trim()
     if (trimmed === '') {
       flushPara()
+      listTracker.noteBlank()
       i++
       continue
     }
+    const hrLine = /^\s*([-*_])(\s*\1){2,}\s*$/.test(line)
+    const preList = hrLine ? null : parseListItem(line)
+    // A non-list line ends the list context unless it is continuation text
+    // indented inside the current list item; list lines are fed exactly once
+    // in their own branches below.
+    if (preList === null) listTracker.noteNonList(lineIndentWidth(line))
     // Fenced code (``` or ~~~, closer = same char, ≥3 long).
     const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line)
     if (fence !== null) {
@@ -2274,7 +2482,7 @@ function parseExportBlocks(src: string): ExportBlock[] {
       }
       continue
     }
-    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
+    if (hrLine) {
       flushPara()
       blocks.push({ kind: 'hr' })
       i++
@@ -2340,20 +2548,26 @@ function parseExportBlocks(src: string): ExportBlock[] {
     const task = /^\s*[-*+•]\s*\[([ xX]?)\](?=\s|$)\s*(.*)$/.exec(line)
     if (task !== null) {
       flushPara()
+      listTracker.feed({ indent: /^\s*/.exec(line)![0], marker: '', kind: 'task' })
       blocks.push({ kind: 'task', checked: task[1].toLowerCase() === 'x', text: task[2] })
       i++
       continue
     }
-    const ord = /^\s*(\d+)[.)]\s+(.*)$/.exec(line)
-    if (ord !== null) {
+    if (preList !== null && preList.kind === 'ordered') {
       flushPara()
-      blocks.push({ kind: 'ordered', num: ord[1], text: ord[2] })
+      const res = listTracker.feed(preList)
+      blocks.push({
+        kind: 'ordered',
+        num: res.orderedLabel ?? '1',
+        text: line.slice(preList.indent.length + preList.marker.length).trim(),
+      })
       i++
       continue
     }
     const bul = /^\s*([-*+•])\s+(.*)$/.exec(line)
     if (bul !== null) {
       flushPara()
+      listTracker.feed({ indent: /^\s*/.exec(line)![0], marker: '', kind: 'unordered' })
       blocks.push({ kind: 'bullet', text: bul[2] })
       i++
       continue

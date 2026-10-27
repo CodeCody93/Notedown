@@ -92,6 +92,7 @@ import { parseGraphTag, graphToHtml, graphToErrorHtml } from '../app/graph'
 // the keydown handler below matches via this pure, dependency-free module
 // (no import cycle: shortcuts.ts imports nothing).
 import { matches as matchesShortcut } from '../app/shortcuts'
+import { parseListItem, ListDepthTracker } from '../app/lists'
 import hljs from 'highlight.js/lib/core'
 import markdownLang from 'highlight.js/lib/languages/markdown'
 import javascriptLang from 'highlight.js/lib/languages/javascript'
@@ -1520,6 +1521,95 @@ class MarkdownCodeWidget extends WidgetType {
   }
 }
 
+interface ListMarkerRenderInfo {
+  from: number
+  to: number
+  label: string
+  kind: 'unordered' | 'ordered' | 'task'
+  bracketFrom?: number
+  bracketTo?: number
+}
+
+function computeListMarkerWidgets(
+  state: EditorState,
+  skippedLines: ReadonlySet<number>,
+): Map<number, ListMarkerRenderInfo> {
+  const tracker = new ListDepthTracker()
+  const out = new Map<number, ListMarkerRenderInfo>()
+
+  const codeFenceRe = /^ {0,3}(`{3,}|~{3,})/
+  let inCodeFence = false
+  let codeFenceChar = ''
+  let codeFenceLen = 0
+
+  for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber++) {
+    const line = state.doc.line(lineNumber)
+    const lnText = line.text
+    const cf = codeFenceRe.exec(lnText)
+    if (cf) {
+      const marker = cf[1]
+      if (inCodeFence) {
+        if (marker[0] === codeFenceChar && marker.length >= codeFenceLen && /^ {0,3}[`~]+[ \t]*$/.test(lnText)) {
+          inCodeFence = false
+        }
+      } else {
+        inCodeFence = true
+        codeFenceChar = marker[0]
+        codeFenceLen = marker.length
+      }
+      tracker.reset()
+      continue
+    }
+    if (inCodeFence) {
+      tracker.reset()
+      continue
+    }
+    if (skippedLines.has(lineNumber)) {
+      tracker.reset()
+      continue
+    }
+    if (lnText.trim() === '') {
+      tracker.noteBlank()
+      continue
+    }
+
+    const prefixMatch = /^((?:\s*>\s?)+)/.exec(lnText)
+    const prefix = prefixMatch !== null ? prefixMatch[1] : ''
+    const contentText = lnText.slice(prefix.length)
+    const info = parseListItem(contentText)
+    if (info === null) {
+      // Wrapped continuation text indented inside a list item must not reset
+      // the list context (a nested list may follow it).
+      const lead = /^[ \t]*/.exec(contentText)![0].replace(/\t/g, '    ').length
+      tracker.noteNonList(lead)
+      continue
+    }
+    const res = tracker.feed(info)
+
+    const markerFrom = line.from + prefix.length + info.indent.length
+    const markerText = info.marker.replace(/[ \t]+$/, '')
+    const markerTo = markerFrom + markerText.length
+    if (markerTo <= markerFrom) continue
+
+    let label: string
+    let bracketFrom: number | undefined
+    let bracketTo: number | undefined
+    if (info.kind === 'task') {
+      label = info.checked ? '☑' : '☐'
+      bracketFrom = markerFrom + (info.bracketOffset ?? 0)
+      bracketTo = bracketFrom + (info.bracketLength ?? 3)
+    } else if (info.kind === 'unordered') {
+      // U+25E6 (white bullet) renders at the same ink size as U+2022 (bullet)
+      // in the UI fonts; U+25CB (white circle) is roughly 3× larger.
+      label = res.depth % 2 === 1 ? '•' : '◦'
+    } else {
+      label = `${res.orderedLabel ?? '1'}.`
+    }
+    out.set(lineNumber, { from: markerFrom, to: markerTo, label, kind: info.kind, bracketFrom, bracketTo })
+  }
+  return out
+}
+
 function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): DecorationSet {
   const decorations: Range<Decoration>[] = []
   const { state } = view
@@ -1544,10 +1634,6 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
   // Lines that are `>>>` dropdown markers — these must NOT get blockquote
   // styling even though the Lezer tree parses `>` as a QuoteMark.
   const dropdownMarkerLines = new Set<number>()
-  // Lines that already received a task checkbox via the tree iteration
-  // (ListMark or Paragraph paths). The line-text sweep must skip these to
-  // avoid duplicate widgets.
-  const taskHandledLines = new Set<number>()
   // Lines belonging to a Table node that contains the caret (raw mode) — their
   // `|` pipes get faded ghost marks in the active-line pass below. Populated
   // during the tree walk.
@@ -1753,81 +1839,13 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
         }
       }
 
-      // Task-marker fallback (Other #4): lezer only parses ListMark/Task for the
-      // `- [ ] ` spelling; `-[]`, `- [ ]`, `-[ ]` are plain Paragraphs. Render the
-      // checkbox widget on inactive, non-list paragraphs so all four spellings
-      // behave alike (raw source stays visible while the line is being edited).
-      if (node.name === 'Paragraph') {
-        const line = state.doc.lineAt(node.from)
-        if (!activeLines.has(line.number)) {
-          let parent = node.node.parent
-          let inListItem = false
-          while (parent !== null) {
-            if (parent.name === 'ListItem') {
-              inListItem = true
-              break
-            }
-            parent = parent.parent
-          }
-          if (!inListItem) {
-            const taskMatch = /^(\s*)[-*+]\s*\[([ xX]?)\]\s*/.exec(line.text)
-            if (taskMatch !== null) {
-              const headLen = taskMatch[0].length
-              const bracketText = (/\[[ xX]?\]/.exec(taskMatch[0])?.[0] ?? '[ ]')
-              const bracketFrom = line.from + taskMatch[0].indexOf('[')
-              const bracketTo = bracketFrom + bracketText.length
-              const to = line.from + headLen
-              const checked = /[xX]/.test(taskMatch[2])
-              decorations.push(
-                Decoration.replace({
-                  widget: new ListMarkerWidget(checked ? '☑' : '☐', line.from, to, bracketFrom, bracketTo, view),
-                }).range(line.from, to),
-              )
-              taskHandledLines.add(line.number)
-            }
-          }
-        }
-        return
-      }
-
       if (!BLOCK_MARK_TYPES.has(node.name) && !INLINE_MARK_TYPES.has(node.name)) return
       if (isInsideSkippedParent(node.node.parent)) return
 
       if (BLOCK_MARK_TYPES.has(node.name)) {
         const lineNum = state.doc.lineAt(node.from).number
         const isActiveLine = activeLines.has(lineNum)
-        if (node.name === 'ListMark' && !(isActiveLine && !isDrag)) {
-          // Inactive list line: show a stable bullet/number/task marker widget
-          // instead of the raw markdown chars (which the collapsed styling
-          // would otherwise hide entirely — the missing-bullet bug). Task
-          // detection runs on the line text from the marker so all four forms
-          // `-[]`, `- []`, `-[ ]`, `- [ ]` work (Other Noted Issues #4) —
-          // lezer only parses a Task node for the `- [ ] ` spelling.
-          const markText = state.doc.sliceString(node.from, node.to)
-          const listLine = state.doc.lineAt(node.from)
-          const taskMatch = /^(\s*)[-*+]\s*\[([ xX]?)\]\s*/.exec(listLine.text.slice(node.from - listLine.from))
-          if (taskMatch !== null) {
-            const headLen = taskMatch[0].length
-            const to = node.from + headLen
-            const bracketText = (/\[[ xX]?\]/.exec(taskMatch[0])?.[0] ?? '[ ]')
-            const bracketFrom = node.from + taskMatch[0].indexOf('[')
-            const bracketTo = bracketFrom + bracketText.length
-            const checked = /[xX]/.test(taskMatch[2])
-            decorations.push(
-              Decoration.replace({
-                widget: new ListMarkerWidget(checked ? '☑' : '☐', node.from, to, bracketFrom, bracketTo, view),
-              }).range(node.from, to),
-            )
-            taskHandledLines.add(listLine.number)
-          } else if (/^\d+/.test(markText)) {
-            // Ordered item: keep the number + period (e.g. '1.').
-            const digits = /^\d+/.exec(markText)![0]
-            decorations.push(Decoration.replace({ widget: new ListMarkerWidget(`${digits}.`, node.from, node.to) }).range(node.from, node.to))
-          } else {
-            decorations.push(Decoration.replace({ widget: new ListMarkerWidget('•', node.from, node.to) }).range(node.from, node.to))
-          }
-          return
-        }
+        if (node.name === 'ListMark') return
         // Skip `>>>` dropdown markers — they must show as plain ">>>" text,
         // not have their `>` characters hidden. Active pairs (caret anywhere
         // inside the pair's open/close range, i.e. raw mode) get a faded ghost
@@ -2191,6 +2209,8 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
     }
   }
 
+  const listMarkers = computeListMarkerWidgets(state, skipLines)
+
   for (let lineNum = 1; lineNum <= state.doc.lines; lineNum++) {
     if (skipLines.has(lineNum) || replacedLines.has(lineNum)) continue
     const line = state.doc.line(lineNum)
@@ -2220,31 +2240,32 @@ function buildDecorations(view: EditorView, opts: LivePreviewPluginOptions): Dec
       }
     }
 
-    if (activeLines.has(lineNum)) continue
-
-    // Task list fallback (B5/E8): all four spellings `-[]`, `- []`, `-[ ]`,
-    // `- [ ]` must show ☐/☑ when the caret is elsewhere. The tree paths
-    // (ListMark / Paragraph) miss cases where lezer coalesces multiple task
-    // lines into a single Paragraph node or treats `-[]` as non-list text.
-    // Sweep inactive lines directly so every line renders independently.
-    if (!taskHandledLines.has(lineNum)) {
-      const taskMatch = /^(\s*)[-*+]\s*\[([ xX]?)\]\s*/.exec(text)
-      if (taskMatch !== null) {
-        const headLen = taskMatch[0].length
-        const bracketText = (/\[[ xX]?\]/.exec(taskMatch[0])?.[0] ?? '[ ]')
-        const bracketFrom = line.from + taskMatch[0].indexOf('[')
-        const bracketTo = bracketFrom + bracketText.length
-        const to = line.from + headLen
-        const checked = /[xX]/.test(taskMatch[2])
+    // List markers. Inactive lines always show the rendered indicator. On the
+    // active ordered line keep showing the depth-cycled indicator too (e.g. a
+    // nested source `4.` renders as `b.`) so the line being edited matches the
+    // rest of its list; the raw source marker is revealed only while the caret
+    // is actually on the marker itself. Bullets/tasks keep their raw source on
+    // the active line (editing `-` / `[ ]` stays direct).
+    const lm = listMarkers.get(lineNum)
+    if (lm !== undefined) {
+      const isActive = activeLines.has(lineNum)
+      const caretOnMarker =
+        isActive &&
+        !isDrag &&
+        state.selection.ranges.some((r) => r.from <= lm.to && r.to >= lm.from)
+      const showWidget = !isActive || (lm.kind === 'ordered' && !caretOnMarker)
+      if (showWidget) {
         decorations.push(
           Decoration.replace({
-            widget: new ListMarkerWidget(checked ? '☑' : '☐', line.from, to, bracketFrom, bracketTo, view),
-          }).range(line.from, to),
+            widget: lm.bracketFrom !== undefined && lm.bracketTo !== undefined
+              ? new ListMarkerWidget(lm.label, lm.from, lm.to, lm.bracketFrom, lm.bracketTo, view)
+              : new ListMarkerWidget(lm.label, lm.from, lm.to),
+          }).range(lm.from, lm.to),
         )
-        taskHandledLines.add(lineNum)
-        // Don't `continue`; the tail of the line may still contain sub/sup/highlight etc.
       }
     }
+
+    if (activeLines.has(lineNum)) continue
 
     // Definition list (E18/F2): lines starting with `: ` / `:` on inactive
     // lines are definition-list definitions (markdown-it-deflist: `Term\n: def`).

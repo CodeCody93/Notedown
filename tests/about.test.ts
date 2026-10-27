@@ -14,7 +14,7 @@ import {
 
 describe('about constants', () => {
   it('pins the app version', () => {
-    expect(APP_VERSION).toBe('0.5.0')
+    expect(APP_VERSION).toBe('0.6.0')
   })
 
   it('keeps SUPPORT_URL as a replace-me placeholder', () => {

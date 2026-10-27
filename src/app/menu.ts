@@ -96,6 +96,7 @@ const ICON = {
   spoiler: `<path d="M3 8s2.5-4 5-4 5 4 5 4-2.5 4-5 4-5-4-5-4z" /><circle cx="8" cy="8" r="1.5" />`,
   dropdown: `<path d="M3 4h10M3 8h10M3 12h10" /><path d="M11 2l2 2-2 2" />`,
   graph: `<path d="M2.5 13.5h11" /><path d="M5 13V9M8 13V5.5M11 13V7.5" />`,
+  navigator: `<rect x="2.5" y="3" width="11" height="10" rx="1" /><path d="M6 3v10M8.5 6.5h3M8.5 9.5h3" />`,
 } as const
 
 // ---------------------------------------------------------------------------
@@ -133,7 +134,9 @@ const HEADER_ITEMS: MenuEntry[] = [
 
 const LIST_ITEMS: MenuEntry[] = [
   { id: 'list-unordered', label: 'Unordered', hotkey: 'list' },
-  { id: 'list-ordered', label: 'Ordered', hotkey: 'list-ordered' },
+  { id: 'list-ordered', label: 'Ordered (1, 2, 3)', hotkey: 'list-ordered' },
+  { id: 'list-ordered-alpha', label: 'Ordered (a, b, c)' },
+  { id: 'list-ordered-roman', label: 'Ordered (i, ii, iii)' },
   { id: 'list-task', label: 'Task', hotkey: 'task-list' },
 ]
 
@@ -168,9 +171,10 @@ export const EXTRA_MENU: MenuEntry[] = [
   },
 ]
 
-/** Toolbar groups: history/clipboard, inline, blocks (+ header/list), Extra dropdown. */
+/** Toolbar groups: navigation, history/clipboard, inline, blocks (+ header/list), Extra dropdown. */
 export const TOOLBAR_GROUPS: MenuEntry[][] = [
   [
+    { id: 'navigator', label: 'Navigator', hotkey: 'toggle-navigator', icon: ICON.navigator },
     { id: 'undo', label: 'Undo', hotkey: 'undo', icon: ICON.undo },
     { id: 'redo', label: 'Redo', hotkey: 'redo', icon: ICON.redo },
     { id: 'copy', label: 'Copy', hotkey: 'copy', icon: ICON.copy },

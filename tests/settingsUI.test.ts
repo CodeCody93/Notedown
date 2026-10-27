@@ -68,6 +68,7 @@ describe('settings modal', () => {
     expect(byId<HTMLInputElement>('settings-autosave').checked).toBe(true)
     expect(byId<HTMLInputElement>('settings-spellcheck').checked).toBe(true)
     expect(byId<HTMLInputElement>('settings-extra-menu').checked).toBe(false)
+    expect(byId<HTMLInputElement>('settings-navigator').checked).toBe(true)
     // opening/refreshing never fires onApply
     expect(deps.onApply).not.toHaveBeenCalled()
     closeSettingsModal()
@@ -125,10 +126,14 @@ describe('settings modal', () => {
     const spellCheck = byId<HTMLInputElement>('settings-spellcheck')
     spellCheck.checked = false
     spellCheck.dispatchEvent(new Event('change'))
+    const navigator = byId<HTMLInputElement>('settings-navigator')
+    navigator.checked = false
+    navigator.dispatchEvent(new Event('change'))
     expect(deps.onApply).toHaveBeenNthCalledWith(1, { lineWrapping: false })
     expect(deps.onApply).toHaveBeenNthCalledWith(2, { autosaveDrafts: false })
     expect(deps.onApply).toHaveBeenNthCalledWith(3, { extraMenuAlwaysVisible: true })
     expect(deps.onApply).toHaveBeenNthCalledWith(4, { spellCheck: false })
+    expect(deps.onApply).toHaveBeenNthCalledWith(5, { navigatorVisible: false })
   })
 
   it('applies default mode radio changes', () => {

@@ -1,0 +1,210 @@
+/* Navigator side panel — document outline tree. Colors come from theme.css
+   tokens so both light and dark themes are covered. */
+
+#editor-area {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  overflow: hidden;
+}
+
+#editor-area > .editor-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.navigator {
+  flex: 0 0 260px;
+  width: 260px;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  color: var(--text);
+}
+
+.navigator-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 10px 10px 6px 12px;
+}
+
+.navigator-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  user-select: none;
+}
+
+.navigator-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.navigator-close:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.navigator-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px 6px 12px;
+}
+
+.navigator-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.navigator-item {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.navigator-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding-left: calc(var(--nav-level, 0) * 14px);
+  border-radius: 5px;
+}
+
+.navigator-row:hover {
+  background: var(--surface-2);
+}
+
+.navigator-toggle,
+.navigator-toggle-spacer {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 24px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.navigator-toggle:hover {
+  color: var(--text);
+}
+
+.navigator-toggle-spacer {
+  pointer-events: none;
+}
+
+.navigator-link {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px 4px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.4;
+  color: inherit;
+  border-radius: 4px;
+}
+
+/* Depth 1 headings carry the primary structure; deeper levels step down in
+   size and end up muted. */
+.navigator-row[data-level="1"] .navigator-link {
+  font-weight: 600;
+}
+
+.navigator-row[data-level="3"] .navigator-link {
+  font-size: 12.5px;
+}
+
+.navigator-row[data-level="4"] .navigator-link,
+.navigator-row[data-level="5"] .navigator-link,
+.navigator-row[data-level="6"] .navigator-link {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Toolbar toggle (data-action="navigator") reads as pressed while the
+   navigator preference is enabled. */
+.tool-btn[aria-pressed="true"] {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+
+.tool-btn[aria-pressed="true"]:hover {
+  background: var(--surface-2);
+}
+
+/* Wide screens: the editor's writing column is capped at 860px and centered, so
+   there is a left gutter wide enough to hold the navigator without covering any
+   text. Overlay the panel in that gutter instead of taking flex space — opening
+   it therefore leaves the text column exactly where it was. At widths where the
+   gutter is too narrow, the base flex layout above still pushes the editor
+   instead of covering text. The 1340px breakpoint accounts for the 860px column,
+   its 32px inner padding and a typical 15px scrollbar. */
+@media (min-width: 1340px) {
+  #editor-area {
+    position: relative;
+  }
+
+  .navigator {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 20;
+    flex: none;
+    box-shadow: var(--shadow);
+  }
+
+  #editor-area > .editor-pane {
+    width: 100%;
+  }
+}
+
+/* Narrow screens: the navigator becomes a left overlay so the editor keeps its
+   full width (no horizontal scrollbar). */
+@media (max-width: 800px) {
+  #editor-area {
+    position: relative;
+  }
+
+  .navigator {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 80;
+    width: min(300px, 85vw);
+    flex: none;
+    box-shadow: var(--shadow);
+    border-right: 1px solid var(--border);
+  }
+
+  #editor-area > .editor-pane {
+    width: 100%;
+  }
+}

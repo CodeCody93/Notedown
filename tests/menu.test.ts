@@ -58,6 +58,22 @@ describe('renderMenubar', () => {
     expect(bold?.getAttribute('aria-label')).toBe('Bold')
   })
 
+  it('renders the navigator toolbar button with its label and hotkey tooltip', () => {
+    const root = renderRoot()
+    const navigator = root.querySelector<HTMLElement>('.tool-btn[data-action="navigator"]')
+    expect(navigator).toBeTruthy()
+    expect(navigator?.getAttribute('aria-label')).toBe('Navigator')
+    expect(navigator?.title).toContain(labelFor('toggle-navigator'))
+  })
+
+  it('places the navigator toggle before Undo in the first toolbar group', () => {
+    const root = renderRoot()
+    const actions = Array.from(
+      root.querySelectorAll<HTMLElement>('.toolbar > .toolbar-group:first-child > .tool-btn'),
+    ).map((button) => button.dataset.action)
+    expect(actions).toEqual(['navigator', 'undo', 'redo', 'copy', 'cut', 'paste'])
+  })
+
   it('renders every locked action id with a data-action attribute', () => {
     const root = renderRoot()
     const ids = [
@@ -108,6 +124,8 @@ describe('renderMenubar', () => {
       'sub',
       'sup',
       'highlight',
+      // Navigation
+      'navigator',
     ]
     for (const id of ids) {
       const el = root.querySelector<HTMLElement>(`[data-action="${id}"]`)
