@@ -1,7 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import type { FileIO, ImportResult, OpenResult } from './types'
 
 // Desktop paths only for now; mobile content:// URI I/O lands in M5 (Android/iOS).
+
+// Must match `OPEN_FILE_EVENT` in `src-tauri/src/open.rs`.
+const OPEN_FILE_EVENT = 'notedown:open-file'
 
 // Wrap invoke rejections into plain Errors so callers handle one error shape.
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -70,6 +74,16 @@ export const tauriIO: FileIO = {
 
   async readFile(path): Promise<string> {
     return call<string>('read_file', { path })
+  },
+
+  /** Drain OS file-open requests buffered by the Rust `take_pending_open_paths` command. */
+  async takePendingOpenPaths(): Promise<string[]> {
+    return call<string[]>('take_pending_open_paths')
+  },
+
+  /** Rust emits `notedown:open-file` whenever new paths are buffered; this is only a wake-up signal. */
+  async onOpenFileRequested(cb: () => void): Promise<() => void> {
+    return listen(OPEN_FILE_EVENT, () => cb())
   },
 
   async confirm(message): Promise<boolean> {

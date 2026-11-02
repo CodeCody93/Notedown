@@ -58,6 +58,18 @@ export interface FileIO {
   saveBytes(bytes: Uint8Array, suggestedName: string, opts?: { exportKind?: 'docx' | 'pdf' }): Promise<string | null>
   /** Read a file that was previously opened (used for Open Recent). Rejects on failure (missing/permission). */
   readFile(path: string): Promise<string>
+  /**
+   * Tauri only: drain buffered OS file-open requests (file association / CLI
+   * launch and second-instance forwarding). Returns absolute file paths.
+   * Browser mode omits this method.
+   */
+  takePendingOpenPaths?(): Promise<string[]>
+  /**
+   * Tauri only: subscribe to the Rust wake-up signal that new OS file-open
+   * paths are buffered. Resolves to an unsubscribe function.
+   * Browser mode omits this method.
+   */
+  onOpenFileRequested?(cb: () => void): Promise<() => void>
   /** Platform confirm dialog (browser: window.confirm; Tauri: native dialog). */
   confirm(message: string): Promise<boolean>
   /** Platform message dialog with an OK button (Tauri: native dialog — window.alert is a no-op in the webview, user-results C9; browser: window.alert). */

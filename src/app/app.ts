@@ -187,33 +187,94 @@ async function saveAsDoc(): Promise<void> {
   await writeSession(io, { path: saved, name: newName, ts: Date.now(), cursor: currentCursor() })
 }
 
-async function openRecent(path: string): Promise<void> {
-  if (!(await confirmDiscard())) return
+/**
+ * Read `path` and install it as the current document, updating recents and the
+ * session. Does not prompt for unsaved changes — callers run confirmDiscard()
+ * first. Returns false when the file cannot be read (caller owns the error UI).
+ */
+async function loadDocumentFromPath(path: string): Promise<boolean> {
   let content: string
   try {
     content = await io.readFile(path)
   } catch (err) {
-    // C9: the entry must be removed from recents, and the user must SEE an error
-    // (window.alert is a no-op in the Tauri webview → FileIO.alert).
-    const entry = appState.get().recents.find((r) => r.path === path)
-    const label = entry?.name ?? path
-    await showAlert(
-      `Could not open "${label}": the file was not found or could not be read. It has been removed from Open Recent.`
-    )
-    console.warn('Open recent failed', err)
-    const recents = removeRecent(appState.get().recents, path)
-    appState.set({ recents })
-    await io.writeRecents(JSON.stringify(recents))
-    return
+    console.warn('Open failed', err)
+    return false
   }
+  const prevDocPath = appState.get().doc.path
   const prevRecents = appState.get().recents
   const entry = prevRecents.find((r) => r.path === path)
-  const name = entry?.name ?? path.split(/[\\/]/).pop() ?? path
+  const name = entry?.name ?? basename(path)
+  if (prevDocPath !== null) await clearDraft(io, prevDocPath)
   appState.set({ doc: docFromContent(content, path, name, false) })
   const recents = addRecent(prevRecents, { path, name })
   appState.set({ recents })
   await io.writeRecents(JSON.stringify(recents))
   await writeSession(io, { path, name, ts: Date.now(), cursor: currentCursor() })
+  return true
+}
+
+async function openRecent(path: string): Promise<void> {
+  if (!(await confirmDiscard())) return
+  const entry = appState.get().recents.find((r) => r.path === path)
+  const label = entry?.name ?? path
+  if (await loadDocumentFromPath(path)) return
+  // C9: the entry must be removed from recents, and the user must SEE an error
+  // (window.alert is a no-op in the Tauri webview → FileIO.alert).
+  await showAlert(
+    `Could not open "${label}": the file was not found or could not be read. It has been removed from Open Recent.`
+  )
+  const recents = removeRecent(appState.get().recents, path)
+  appState.set({ recents })
+  await io.writeRecents(JSON.stringify(recents))
+}
+
+/** Open a path supplied by the OS (file association / Open with / second launch). */
+async function openSystemDocument(path: string): Promise<void> {
+  if (!(await confirmDiscard())) return
+  if (await loadDocumentFromPath(path)) return
+  await showAlert(`Could not open "${basename(path)}": the file was not found or could not be read.`)
+}
+
+// Re-entrancy guard: a second OS request can arrive while a dirty-doc confirm
+// or file read is in flight. The path stays buffered in Rust, so just ask the
+// drain loop to run once more.
+let systemOpenBusy = false
+let systemOpenQueued = false
+
+async function drainPendingOpenPaths(): Promise<void> {
+  if (systemOpenBusy) {
+    systemOpenQueued = true
+    return
+  }
+  systemOpenBusy = true
+  try {
+    do {
+      systemOpenQueued = false
+      const paths = (await io.takePendingOpenPaths?.()) ?? []
+      const path = paths[0]
+      if (path !== undefined) await openSystemDocument(path)
+    } while (systemOpenQueued)
+  } catch (err) {
+    console.warn('System open failed', err)
+  } finally {
+    systemOpenBusy = false
+  }
+}
+
+/**
+ * Consume OS file-open requests. The listener is registered BEFORE the initial
+ * drain: Rust buffers first and emits only a wake-up, so an early request is
+ * never lost. Both paths call takePendingOpenPaths, which drains atomically —
+ * no duplicate opens.
+ */
+function wireSystemOpenFiles(): void {
+  if (io.takePendingOpenPaths === undefined) return
+  const subscribe = io.onOpenFileRequested?.bind(io)
+  if (subscribe === undefined) return
+  void subscribe(() => {
+    void drainPendingOpenPaths()
+  }).catch((err) => console.warn('System open listener failed', err))
+  void drainPendingOpenPaths()
 }
 
 async function clearRecents(): Promise<void> {
@@ -1373,4 +1434,5 @@ export async function initApp(): Promise<void> {
   wireWindowFocus()
   wireCloseGuard()
   renderRecents()
+  wireSystemOpenFiles()
 }

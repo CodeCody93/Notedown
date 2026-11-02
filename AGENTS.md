@@ -6,6 +6,8 @@
 - Stack: Vite + TS frontend, Tauri v2 `src-tauri/` backend. Verified green: `npm run dev`, `npm run typecheck`, `npm run build`, `npm test` (672 Vitest tests). Rust toolchain 1.97.1 (rustup, MSVC) is installed; `cargo check` in `src-tauri/` is clean.
 - Git: initialized on `main` with save-point commits (M0–M3 batch, feedback-fix batch, round-2 test checklist).
 - **Rebranding:** Application renamed from "MarkItDown" to "Notedown" for beta/release. All references updated across codebase.
+- **App icon:** purple note-and-pen mark, master at `src-tauri/icons/app-icon.png`, browser favicon at `public/favicon.png`. Regenerate platform icons with `npm run tauri icon src-tauri/icons/app-icon.png`; `src-tauri/build.rs` tracks the icon files so rebuilt bundles pick up changes.
+- **OS file-open:** `bundle.fileAssociations` registers md/markdown/mdown/mkd/mkdn/mdwn on install. `src-tauri/src/open.rs` buffers OS-opened paths (Windows/Linux argv, macOS `RunEvent::Opened`), and `tauri-plugin-single-instance` forwards a second launch's argv to the running window. The frontend drains the queue via the optional `FileIO.takePendingOpenPaths()` / `onOpenFileRequested()` members and the payload-less `notedown:open-file` wake-up event.
 
 ## Multi-agent workflow
 
@@ -30,6 +32,7 @@
 - **Android save bug:** `dialog.save()` on Android can write a 0-byte file (upstream issue #3356) — use `tauri-plugin-android-fs` or a ContentResolver copy workaround. This is a required manual QA test, not an optional nice-to-have.
 - Browser-mode FS Access API is Chromium-only by design; document it as a dev/test surface, never as a production path.
 - Hotkeys: `Ctrl` on Windows/Linux, `Cmd` on macOS. Menu/toolbar hotkey hints must come from the single `src/app/shortcuts.ts` map so they always match.
+- OS file-open contract: `notedown:open-file` is a wake-up only (no payload) - always drain `take_pending_open_paths`, which is atomic. Keep the Rust `OPEN_FILE_EVENT` and `src/platform/tauri.ts` constant in sync, register the single-instance plugin first, and keep it on the `~2.4` line while Tauri is 2.11.x (2.5+ requires Tauri 2.12).
 
 ## Commands
 

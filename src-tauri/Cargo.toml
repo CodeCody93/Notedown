@@ -22,6 +22,8 @@ base64 = "0.22"
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+# 2.5+ requires tauri 2.12; this app has tauri 2.11.5 in Cargo.lock, so track the 2.4 line.
+tauri-plugin-single-instance = "~2.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
