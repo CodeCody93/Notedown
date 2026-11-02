@@ -1,0 +1,104 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  # Never cancel a tag build mid-release; branch/PR builds can supersede each other.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows (MSI)
+            platform: windows-latest
+            bundles: msi
+            artifactName: notedown-windows-msi
+            artifactPath: src-tauri/target/release/bundle/msi/*.msi
+          - name: Linux (deb + AppImage)
+            platform: ubuntu-22.04
+            bundles: deb,appimage
+            artifactName: notedown-linux
+            artifactPath: |
+              src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/appimage/*.AppImage
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            wget \
+            xdg-utils
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build bundles
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --bundles ${{ matrix.bundles }}
+          # Only tag pushes create/update a release. Empty strings mean "just build".
+          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && format('Notedown {0}', github.ref_name) || '' }}
+          releaseBody: |
+            Notedown ${{ github.ref_name }}
+
+            **Windows:** download and run the `.msi` installer. These builds are unsigned, so SmartScreen may warn about an unknown publisher; choose **More info**, then **Run anyway**.
+
+            **Ubuntu / Kubuntu:** install the `.deb` with `sudo apt install ./<file>.deb`, or make the `.AppImage` executable with `chmod +x` and run it.
+          releaseDraft: true
+          prerelease: false
+
+      - name: Upload bundles
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifactName }}
+          path: ${{ matrix.artifactPath }}
+          if-no-files-found: error
+          retention-days: 14

@@ -8,6 +8,7 @@
 - **Rebranding:** Application renamed from "MarkItDown" to "Notedown" for beta/release. All references updated across codebase.
 - **App icon:** purple note-and-pen mark, master at `src-tauri/icons/app-icon.png`, browser favicon at `public/favicon.png`. Regenerate platform icons with `npm run tauri icon src-tauri/icons/app-icon.png`; `src-tauri/build.rs` tracks the icon files so rebuilt bundles pick up changes.
 - **OS file-open:** `bundle.fileAssociations` registers md/markdown/mdown/mkd/mkdn/mdwn on install. `src-tauri/src/open.rs` buffers OS-opened paths (Windows/Linux argv, macOS `RunEvent::Opened`), and `tauri-plugin-single-instance` forwards a second launch's argv to the running window. The frontend drains the queue via the optional `FileIO.takePendingOpenPaths()` / `onOpenFileRequested()` members and the payload-less `notedown:open-file` wake-up event.
+- **CI (GitHub Actions):** `.github/workflows/build.yml` builds the Windows `.msi` and Ubuntu 22.04 `.deb`/`.AppImage` on pushes to `main`, pull requests, and `v*` tags. Tag pushes create a **draft** GitHub Release with the installers attached; branch/PR runs upload workflow artifacts instead. Bump the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` before pushing a release tag. Builds are unsigned (Windows SmartScreen will warn).
 
 ## Multi-agent workflow
 
