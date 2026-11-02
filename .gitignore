@@ -22,3 +22,30 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+
+# Tauri signing material
+*.keystore
+*.jks
+key.properties
+*.p12
+*.pfx
+
+# Generated test/export artifacts
+EXPORTED-*.md
+docs/exported/
+docs/reimported/
+docs/untitled.html
+docs/testing.pdf
+
+# Test and build output
+coverage/
+*.tsbuildinfo
+
+# OS clutter
+Thumbs.db
+desktop.ini

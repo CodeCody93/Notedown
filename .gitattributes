@@ -1,0 +1,19 @@
+# Normalize text files to LF so Windows, macOS, and Linux checkouts stay consistent.
+* text=auto eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.docx binary
+*.woff binary
+*.woff2 binary
+
+# Windows scripts, if added later
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
