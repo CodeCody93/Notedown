@@ -104,6 +104,8 @@ jobs:
   build:
     name: ${{ matrix.name }}
     needs: test
+    permissions:
+      contents: write
     runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -235,10 +237,16 @@ jobs:
           //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
           EOF
           VERSION="$(node -p "require('./package.json').version")"
+          echo "Package directory: $(pwd)"
+          echo "Publishing @codecody93/notedown-editor@${VERSION}"
           if npm view "@codecody93/notedown-editor@${VERSION}" version --registry=https://npm.pkg.github.com >/dev/null 2>&1; then
             echo "Version ${VERSION} is already published; skipping."
           else
-            npm publish --registry=https://npm.pkg.github.com
+            set -o pipefail
+            if ! npm publish --registry=https://npm.pkg.github.com 2>&1 | tee npm-publish.log; then
+              echo "::error title=npm publish failed::$(tail -n 8 npm-publish.log | tr '\n' ' ')"
+              exit 1
+            fi
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
