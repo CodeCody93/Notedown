@@ -1,5 +1,5 @@
 /**
- * About dialog (P4): app name, version, one-paragraph summary, support link.
+ * About dialog (P4): app name, version, one-paragraph summary, sponsor link.
  *
  * Mirrors src/app/settingsUI.ts deliberately: module-level state (no classes),
  * dialog DOM built once at wire time, every listener attached on open and
@@ -11,12 +11,18 @@
  * works even before the host HTML adds the root. All strings render via
  * textContent (the anchor href via setAttribute), never innerHTML.
  */
+import pkg from '../../package.json'
+import { getFileIO } from '../platform'
 
-/** Keep in sync with package.json + Cargo.toml. */
-export const APP_VERSION = '0.6.0'
+/**
+ * Version shown in the dialog, read from the root package.json so it can never
+ * drift from the release. `npm run version:bump` keeps package.json,
+ * src-tauri/Cargo.toml, and tauri.conf.json in sync.
+ */
+export const APP_VERSION: string = pkg.version
 
-/** PLACEHOLDER — user replaces with Ko-fi/GitHub Sponsors URL. */
-export const SUPPORT_URL = 'https://example.com/support-notedown-TODO'
+/** GitHub Sponsors page opened by the About dialog. */
+export const SPONSOR_URL = 'https://github.com/sponsors/CodeCody93'
 
 export const ABOUT_SUMMARY: string =
   'Notedown is a Markdown note-taking app with live preview, offline-first files ' +
@@ -27,6 +33,7 @@ interface AboutEls {
   backdrop: HTMLElement
   dialog: HTMLElement
   closeBtn: HTMLButtonElement
+  sponsorLink: HTMLAnchorElement
 }
 
 let els: AboutEls | null = null
@@ -84,12 +91,12 @@ function buildDialog(): AboutEls {
   summary.className = 'about-summary'
   summary.textContent = ABOUT_SUMMARY
 
-  const support = document.createElement('a')
-  support.className = 'about-support'
-  support.setAttribute('href', SUPPORT_URL)
-  support.setAttribute('target', '_blank')
-  support.setAttribute('rel', 'noopener')
-  support.textContent = 'Support Notedown'
+  const sponsorLink = document.createElement('a')
+  sponsorLink.className = 'about-support'
+  sponsorLink.setAttribute('href', SPONSOR_URL)
+  sponsorLink.setAttribute('target', '_blank')
+  sponsorLink.setAttribute('rel', 'noopener')
+  sponsorLink.textContent = 'Sponsor Notedown'
 
   const actions = document.createElement('div')
   actions.className = 'about-actions'
@@ -99,11 +106,11 @@ function buildDialog(): AboutEls {
   doneBtn.textContent = 'Close'
   actions.appendChild(doneBtn)
 
-  dialog.append(header, version, summary, support, actions)
+  dialog.append(header, version, summary, sponsorLink, actions)
   backdrop.appendChild(dialog)
   root.appendChild(backdrop)
 
-  return { root, backdrop, dialog, closeBtn }
+  return { root, backdrop, dialog, closeBtn, sponsorLink }
 }
 
 // --- handlers ---
@@ -143,6 +150,20 @@ function onCloseClick(): void {
   closeAboutModal()
 }
 
+/**
+ * Route the sponsor link through the platform layer: Tauri opens the system
+ * browser and the web target opens a new tab. The href/target/rel attributes
+ * stay on the anchor for accessibility and for middle-click/copy-link use.
+ */
+function onSponsorClick(ev: MouseEvent): void {
+  ev.preventDefault()
+  void getFileIO()
+    .openExternal(SPONSOR_URL)
+    .catch((error: unknown) => {
+      console.error('[about] failed to open the sponsor page', error)
+    })
+}
+
 // --- listener lifecycle: attached on open, removed on close (no leaks) ---
 
 function attachListeners(): void {
@@ -151,6 +172,7 @@ function attachListeners(): void {
   els.dialog.addEventListener('keydown', onDialogKeydown)
   els.backdrop.addEventListener('click', onBackdropClick)
   els.closeBtn.addEventListener('click', onCloseClick)
+  els.sponsorLink.addEventListener('click', onSponsorClick)
   for (const done of els.dialog.querySelectorAll('.about-done')) {
     done.addEventListener('click', onCloseClick)
   }
@@ -162,6 +184,7 @@ function detachListeners(): void {
   els.dialog.removeEventListener('keydown', onDialogKeydown)
   els.backdrop.removeEventListener('click', onBackdropClick)
   els.closeBtn.removeEventListener('click', onCloseClick)
+  els.sponsorLink.removeEventListener('click', onSponsorClick)
   for (const done of els.dialog.querySelectorAll('.about-done')) {
     done.removeEventListener('click', onCloseClick)
   }

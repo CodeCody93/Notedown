@@ -1,0 +1,63 @@
+/* Embed theme tokens — a scoped copy of the app's theme.css so the embeddable
+   editor is self-contained (the host page does not need to load the app
+   stylesheets). Light is the default; set data-theme="dark" on the root
+   element to switch themes. Keep these values in sync with theme.css. */
+
+.notedown-editor-root {
+  color-scheme: light;
+  --bg: #ffffff;
+  --surface: #f8f8f6;
+  --surface-2: #ececea;
+  --text: #1f2328;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --border: #e3e3df;
+  --code-bg: #f3f3f1;
+  --ghost: rgba(0, 0, 0, 0.55);
+  --selection: rgba(37, 99, 235, 0.22);
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  --menu-radius: 8px;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.notedown-editor-root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1e1e1e;
+  --surface: #252526;
+  --surface-2: #2d2d31;
+  --text: #e8e8e8;
+  --muted: #b0b0b0;
+  --accent: #4f8cff;
+  --border: #3c3c3c;
+  --code-bg: #2a2a2d;
+  --ghost: rgba(255, 255, 255, 0.55);
+  --selection: rgba(79, 140, 255, 0.32);
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --menu-radius: 8px;
+}
+
+/* Minimal component-scoped reset (the host page may not include the app's
+   base.css). box-sizing only — margins/padding are left to the host. */
+.notedown-editor-root,
+.notedown-editor-root *,
+.notedown-editor-root *::before,
+.notedown-editor-root *::after {
+  box-sizing: border-box;
+}
+
+.notedown-editor-root button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+.notedown-editor-root button:not(:disabled) {
+  cursor: pointer;
+}
+
+.notedown-editor-root :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

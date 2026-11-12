@@ -121,6 +121,8 @@
 
 .help-syntax {
   display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   padding: 2px 8px;
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -129,9 +131,16 @@
   white-space: pre-wrap;
 }
 
+/* Wrapping row shared by the syntax chip and hotkey chip(s). */
+.help-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .help-hotkey {
   display: inline-block;
-  margin-left: 8px;
   padding: 2px 8px;
   background: var(--surface-2);
   border: 1px solid var(--border);

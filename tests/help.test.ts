@@ -5,7 +5,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { HELP_ENTRIES, HELP_SUMMARY, missingHelpIds } from '../src/app/helpContent'
 import { FORMATTING_COMMANDS } from '../src/app/formatting'
-import { SHORTCUTS } from '../src/app/shortcuts'
+import { EXTRA_MENU, FILE_MENU, TOOLBAR_GROUPS, type MenuEntry } from '../src/app/menu'
+import { SHORTCUTS, chordLabel, keysFor } from '../src/app/shortcuts'
 import { closeHelpModal, isHelpOpen, openHelpModal, wireHelpModal } from '../src/app/help'
 
 const CORE_FILE_IDS = [
@@ -18,7 +19,32 @@ const CORE_FILE_IDS = [
   'import',
   'settings',
   'toggle-mode',
+  'navigator',
+  'help',
+  'about',
+  'find',
+  'replace',
+  'undo',
+  'redo',
+  'copy',
+  'cut',
+  'paste',
 ]
+
+/** Menu entries that only open a submenu (not user-facing actions of their own). */
+const STRUCTURAL_MENU_IDS = new Set(['header', 'extra', 'open-recent-list'])
+
+function collectMenuActionIds(): string[] {
+  const ids: string[] = []
+  const walk = (entries: MenuEntry[]): void => {
+    for (const entry of entries) {
+      if (!STRUCTURAL_MENU_IDS.has(entry.id)) ids.push(entry.id)
+      if (entry.children !== undefined) walk(entry.children)
+    }
+  }
+  walk([...FILE_MENU, ...EXTRA_MENU, ...TOOLBAR_GROUPS.flat()])
+  return [...new Set(ids)]
+}
 
 function entryById(id: string) {
   const entry = HELP_ENTRIES.find((e) => e.id === id)
@@ -31,8 +57,18 @@ describe('help content', () => {
     expect(missingHelpIds(Object.keys(FORMATTING_COMMANDS))).toEqual([])
   })
 
-  it('covers the core file/app feature ids', () => {
+  it('covers the core file/app, editing, and search ids', () => {
     expect(missingHelpIds(CORE_FILE_IDS)).toEqual([])
+  })
+
+  it('documents every SHORTCUTS chord through some entry hotkeyId', () => {
+    const documented = new Set(HELP_ENTRIES.map((e) => e.hotkeyId).filter((id): id is string => id !== null))
+    const undisplayed = SHORTCUTS.filter((s) => !documented.has(s.id)).map((s) => s.id)
+    expect(undisplayed).toEqual([])
+  })
+
+  it('covers every menu and toolbar action id', () => {
+    expect(missingHelpIds(collectMenuActionIds())).toEqual([])
   })
 
   it('has no duplicate ids', () => {
@@ -91,6 +127,36 @@ describe('help modal', () => {
 
     closeHelpModal()
     expect(isHelpOpen()).toBe(false)
+  })
+
+  it('starts hidden, opens visibly, and hides again on close', () => {
+    const root = document.getElementById('help-modal-root')
+    if (root === null) throw new Error('Missing #help-modal-root')
+    expect(root.hidden).toBe(true)
+    openHelpModal()
+    expect(root.hidden).toBe(false)
+    closeHelpModal()
+    expect(root.hidden).toBe(true)
+  })
+
+  it('renders every effective chord for multi-chord actions', () => {
+    openHelpModal()
+    const redo = document.getElementById('help-redo')
+    if (redo === null) throw new Error('Missing #help-redo')
+    const rendered = Array.from(redo.querySelectorAll('.help-hotkey')).map((el) => el.textContent)
+    const expected = keysFor('redo', 'win').map((chord) => chordLabel(chord, 'win'))
+    expect(expected.length).toBeGreaterThan(1)
+    expect(rendered).toEqual(expected)
+  })
+
+  it('TOC links scroll in place without changing the URL hash', () => {
+    openHelpModal()
+    window.location.hash = ''
+    const link = document.querySelector<HTMLAnchorElement>('a.help-toc-link[href="#help-export"]')
+    if (link === null) throw new Error('Missing Export TOC link')
+    const notCancelled = link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    expect(notCancelled).toBe(false)
+    expect(window.location.hash).toBe('')
   })
 
   it('closes on Escape', () => {

@@ -2,8 +2,9 @@ import { isTauri } from '@tauri-apps/api/core'
 
 export type Runtime = 'browser' | 'tauri'
 
-// Browser mode is a dev/test surface only (the File System Access API is
-// Chromium-only); production runs inside Tauri.
+// 'browser' is the web runtime: Chromium uses the File System Access API for
+// in-place saves, while Firefox/Safari fall back to file input + downloads. It
+// is a production target alongside the Tauri desktop app.
 
 /** Call-time runtime check — never cache at module load (Tauri internals may not be ready yet). */
 export function getRuntime(): Runtime {

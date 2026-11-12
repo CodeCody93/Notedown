@@ -18,8 +18,92 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
+  test:
+    name: Test & version check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Verify version consistency
+        run: npm run version:check
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build embed package
+        run: npm run build:embed
+
+      - name: Upload embed package
+        uses: actions/upload-artifact@v7
+        with:
+          name: notedown-editor-package
+          path: dist-embed
+          if-no-files-found: error
+          retention-days: 14
+
+  web:
+    name: Deploy web app
+    needs: test
+    # The web app deploys on pushes to main and v* tags; pull requests only test.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build web app and embed bundle
+        run: npm run build:web
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
   build:
     name: ${{ matrix.name }}
+    needs: test
     runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -27,16 +111,21 @@ jobs:
         include:
           - name: Windows (MSI)
             platform: windows-latest
-            bundles: msi
+            args: --bundles msi
             artifactName: notedown-windows-msi
             artifactPath: src-tauri/target/release/bundle/msi/*.msi
           - name: Linux (deb + AppImage)
             platform: ubuntu-22.04
-            bundles: deb,appimage
+            args: --bundles deb,appimage
             artifactName: notedown-linux
             artifactPath: |
               src-tauri/target/release/bundle/deb/*.deb
               src-tauri/target/release/bundle/appimage/*.AppImage
+          - name: macOS (Universal DMG)
+            platform: macos-latest
+            args: --target universal-apple-darwin --bundles dmg
+            artifactName: notedown-macos-universal
+            artifactPath: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
 
     steps:
       - name: Checkout
@@ -49,7 +138,9 @@ jobs:
           cache: npm
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -81,7 +172,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          args: --bundles ${{ matrix.bundles }}
+          args: ${{ matrix.args }}
           # Only tag pushes create/update a release. Empty strings mean "just build".
           tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && format('Notedown {0}', github.ref_name) || '' }}
@@ -91,6 +182,12 @@ jobs:
             **Windows:** download and run the `.msi` installer. These builds are unsigned, so SmartScreen may warn about an unknown publisher; choose **More info**, then **Run anyway**.
 
             **Ubuntu / Kubuntu:** install the `.deb` with `sudo apt install ./<file>.deb`, or make the `.AppImage` executable with `chmod +x` and run it.
+
+            **macOS:** open the universal `.dmg` and drag Notedown into Applications. This build is unsigned and not notarized, so macOS may warn that it cannot verify the app. Right-click the app and choose **Open**, or allow it in **System Settings → Privacy & Security**. If macOS says the app is damaged, run `xattr -cr /Applications/Notedown.app` once.
+
+            **Web app:** <https://codecody93.github.io/Notedown/> — no install required. Browser storage and save behavior vary by browser; see the web limitations in the README.
+
+            **Embeddable editor:** `@codecody93/notedown-editor` is published to GitHub Packages on `v*` tag runs: <https://github.com/CodeCody93/Notedown/pkgs/npm/notedown-editor>. Installation and CDN usage are documented in `docs/embedding.md`.
           releaseDraft: true
           prerelease: false
 
@@ -102,3 +199,41 @@ jobs:
           path: ${{ matrix.artifactPath }}
           if-no-files-found: error
           retention-days: 14
+
+  publish-embed:
+    name: Publish embed package
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          scope: '@codecody93'
+
+      - name: Download embed package
+        uses: actions/download-artifact@v7
+        with:
+          name: notedown-editor-package
+          path: dist-embed
+
+      - name: Publish to GitHub Packages
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./dist-embed/package.json').version")"
+          if npm view "@codecody93/notedown-editor@${VERSION}" version --registry=https://npm.pkg.github.com >/dev/null 2>&1; then
+            echo "Version ${VERSION} is already published; skipping."
+          else
+            npm publish dist-embed --registry=https://npm.pkg.github.com
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

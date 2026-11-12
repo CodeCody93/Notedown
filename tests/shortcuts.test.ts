@@ -9,7 +9,8 @@ import {
   matches,
 } from '../src/app/shortcuts'
 
-// Every id in the PLAN §9 table, in table order.
+// Every id in the PLAN §9 table, in table order, plus the editor-search
+// chords (`find`/`replace`) appended when the Help dialog was audited.
 const ALL_IDS = [
   'new',
   'open',
@@ -57,6 +58,8 @@ const ALL_IDS = [
   'graph',
   'toggle-mode',
   'toggle-navigator',
+  'find',
+  'replace',
 ]
 
 describe('SHORTCUTS table', () => {
@@ -86,7 +89,11 @@ describe('SHORTCUTS table', () => {
       'task-list': ['Mod-Alt-t'],
       table: ['Mod-t'],
       hr: ['Mod-Shift-h'],
-      footnote: ['Mod-Shift-f'],
+      // Moved off Mod-Shift-f (the editor's Find & Replace chord) and off
+      // Mod-Alt-f (Linux virtual-terminal switch).
+      footnote: ['Mod-Alt-p'],
+      find: ['Mod-f'],
+      replace: ['Mod-Shift-f'],
       emoji: ['Mod-Alt-e'],
       'heading-id': ['Mod-Shift-2'],
       'def-list': ['Mod-Alt-d'],

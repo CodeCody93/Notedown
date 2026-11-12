@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "outDir": "dist-embed/types",
+    "rootDir": "src"
+  },
+  "include": ["src/embed/**/*.ts", "src/types/**/*.d.ts", "src/vite-env.d.ts"]
+}

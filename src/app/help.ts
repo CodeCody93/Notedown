@@ -14,13 +14,15 @@
  */
 
 import { HELP_ENTRIES, HELP_SUMMARY } from './helpContent'
-import { labelFor } from './shortcuts'
+import { chordLabel, keysFor } from './shortcuts'
 
 interface HelpEls {
   root: HTMLElement
   backdrop: HTMLElement
   dialog: HTMLElement
   closeBtn: HTMLButtonElement
+  toc: HTMLElement
+  content: HTMLElement
 }
 
 let els: HelpEls | null = null
@@ -78,22 +80,30 @@ function buildSection(entry: (typeof HELP_ENTRIES)[number]): HTMLElement {
   example.textContent = entry.example
   section.appendChild(example)
 
+  // The syntax chip and every effective hotkey chip share a wrapping flex row
+  // (.help-meta) so multiple chords (e.g. redo) wrap tidily. Only append the
+  // wrapper when it has at least one child.
+  const meta = document.createElement('div')
+  meta.className = 'help-meta'
+
   if (entry.syntax !== '') {
     const syntax = document.createElement('code')
     syntax.className = 'help-syntax'
     syntax.textContent = entry.syntax
-    section.appendChild(syntax)
+    meta.appendChild(syntax)
   }
 
   if (entry.hotkeyId !== null) {
-    const label = labelFor(entry.hotkeyId)
-    if (label !== '') {
+    // Every effective chord, not just the first: Windows/Linux redo has two.
+    for (const chord of keysFor(entry.hotkeyId)) {
       const hotkey = document.createElement('span')
       hotkey.className = 'help-hotkey'
-      hotkey.textContent = label
-      section.appendChild(hotkey)
+      hotkey.textContent = chordLabel(chord)
+      meta.appendChild(hotkey)
     }
   }
+
+  if (meta.childElementCount > 0) section.appendChild(meta)
 
   return section
 }
@@ -109,6 +119,7 @@ function buildDialog(): HelpEls {
   dialog.setAttribute('role', 'dialog')
   dialog.setAttribute('aria-modal', 'true')
   dialog.setAttribute('aria-labelledby', 'help-title')
+  dialog.setAttribute('aria-describedby', 'help-summary')
 
   const header = document.createElement('header')
   header.className = 'help-header'
@@ -124,6 +135,7 @@ function buildDialog(): HelpEls {
   header.append(title, closeBtn)
 
   const summary = document.createElement('p')
+  summary.id = 'help-summary'
   summary.className = 'help-summary'
   summary.textContent = HELP_SUMMARY
 
@@ -132,13 +144,14 @@ function buildDialog(): HelpEls {
   const content = document.createElement('div')
   content.className = 'help-content'
   for (const entry of HELP_ENTRIES) content.appendChild(buildSection(entry))
-  grid.append(buildToc(), content)
+  const toc = buildToc()
+  grid.append(toc, content)
 
   dialog.append(header, summary, grid)
   backdrop.appendChild(dialog)
   root.appendChild(backdrop)
 
-  return { root, backdrop, dialog, closeBtn }
+  return { root, backdrop, dialog, closeBtn, toc, content }
 }
 
 // --- handlers ---
@@ -174,6 +187,26 @@ function onBackdropClick(ev: MouseEvent): void {
   if (els !== null && ev.target === els.backdrop) closeHelpModal()
 }
 
+/**
+ * TOC links scroll the guide in place. The default anchor navigation would
+ * append `#help-...` to the app URL and leave it there after close, so always
+ * preventDefault and scroll by element id instead. `scrollIntoView` is
+ * optional-chained because jsdom does not implement it.
+ */
+function onDialogClick(ev: MouseEvent): void {
+  if (els === null || !(ev.target instanceof Element)) return
+  const link = ev.target.closest('a.help-toc-link')
+  if (link === null || !els.dialog.contains(link)) return
+  ev.preventDefault()
+  const href = link.getAttribute('href') ?? ''
+  const hashIndex = href.indexOf('#')
+  if (hashIndex === -1) return
+  const id = href.slice(hashIndex + 1)
+  if (id === '') return
+  const section = document.getElementById(id)
+  section?.scrollIntoView?.({ block: 'start' })
+}
+
 function onCloseClick(): void {
   closeHelpModal()
 }
@@ -184,6 +217,7 @@ function attachListeners(): void {
   if (els === null) return
   document.addEventListener('keydown', onDocKeydown)
   els.dialog.addEventListener('keydown', onDialogKeydown)
+  els.dialog.addEventListener('click', onDialogClick)
   els.backdrop.addEventListener('click', onBackdropClick)
   els.closeBtn.addEventListener('click', onCloseClick)
 }
@@ -192,6 +226,7 @@ function detachListeners(): void {
   if (els === null) return
   document.removeEventListener('keydown', onDocKeydown)
   els.dialog.removeEventListener('keydown', onDialogKeydown)
+  els.dialog.removeEventListener('click', onDialogClick)
   els.backdrop.removeEventListener('click', onBackdropClick)
   els.closeBtn.removeEventListener('click', onCloseClick)
 }
@@ -223,6 +258,9 @@ export function wireHelpModal(): void {
     onClose = null
   }
   els = buildDialog()
+  // Start closed even when the mount root lacks the `hidden` attribute
+  // (tests host their own #help-modal-root without it).
+  els.root.hidden = true
 }
 
 export function openHelpModal(opts?: HelpModalOptions): void {
@@ -232,6 +270,9 @@ export function openHelpModal(opts?: HelpModalOptions): void {
   onClose = opts?.onClose ?? null
   lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : document.body
   els.root.hidden = false
+  // Always open the guide at the top, regardless of where it was last left.
+  els.toc.scrollTop = 0
+  els.content.scrollTop = 0
   attachListeners()
   focusFirst()
 }

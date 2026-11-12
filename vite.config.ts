@@ -5,6 +5,11 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
+  // GitHub Pages serves the app from https://<user>.github.io/<repo>/, so the
+  // Pages workflow sets VITE_BASE=/<repo>/ at build time. Desktop/Tauri builds
+  // and local dev leave it unset and use the root path.
+  // @ts-expect-error process is a nodejs global
+  base: process.env.VITE_BASE ?? "/",
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

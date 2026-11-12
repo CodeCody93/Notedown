@@ -9,7 +9,7 @@
  * The controller is the app-facing seam: `app.ts` / `main.ts` drive it through the
  * `EditorController` interface only â€” no CM6 types leak to the host.
  */
-import { EditorState, Prec, StateEffect, Transaction, type Extension, type TransactionSpec } from '@codemirror/state'
+import { Compartment, EditorState, Prec, StateEffect, Transaction, type Extension, type TransactionSpec } from '@codemirror/state'
 import { EditorView, keymap, placeholder, type Command, type KeyBinding, ViewUpdate } from '@codemirror/view'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from '@codemirror/commands'
@@ -17,6 +17,7 @@ import { openSearchPanel, search, searchKeymap } from '@codemirror/search'
 import { syntaxTree } from '@codemirror/language'
 import { livePreviewExtensions, wireMouseSelection } from './livePreview'
 import { editorThemeExtension } from './cmTheme'
+import { keysFor } from '../app/shortcuts'
 
 export interface EditorCursor {
   /** 1-based */
@@ -39,6 +40,12 @@ export interface EditorCreateOptions {
   onPasteImage?: (event: ClipboardEvent) => void
   /** Fires when a rendered link is clicked in live-preview mode. Used to open the URL externally. */
   onLinkClick?: (url: string) => void
+  /** Start in read-only mode: the content is visible/selectable but not editable. Toggle at runtime with `setReadOnly`. Default false. */
+  readOnly?: boolean
+  /** Placeholder shown while the document is empty. */
+  placeholder?: string
+  /** Accessible name applied to the editor's content textbox (aria-label). */
+  ariaLabel?: string
 }
 
 /** Matches a pasted URL (http/https). */
@@ -76,6 +83,8 @@ export interface EditorController {
   getCursor(): EditorCursor
   /** Enable/disable native spell checking on the editable surface. */
   setSpellCheck(enabled: boolean): void
+  /** Toggle read-only mode without rebuilding the editor (no-op when unchanged). */
+  setReadOnly(readOnly: boolean): void
   /** Register a callback for USER edits (fires with the full new content). */
   onChange(cb: (content: string) => void): void
   /** Register a callback for cursor moves (fires on selection/doc change). */
@@ -101,6 +110,12 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
   let suppressChange = false
   const onChangeCbs = new Set<(content: string) => void>()
   const onCursorCbs = new Set<(cursor: EditorCursor) => void>()
+
+  // Read-only lives in a compartment so `setReadOnly` can swap just the
+  // readOnly/editable facets in place instead of rebuilding the extension
+  // list (which would reset view plugins and their decorations).
+  const readOnlyCompartment = new Compartment()
+  let readOnly = opts?.readOnly ?? false
 
   const updateListener = EditorView.updateListener.of((update: ViewUpdate) => {
     if (update.docChanged && !suppressChange) {
@@ -142,27 +157,39 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
       // parser, which lacks strikethrough (`~~x~~` rendered as plain text).
       markdown({ base: markdownLanguage }),
       ...livePreviewExtensions({ collapse: mode === 'live', imageResolver: opts?.imageResolver, onLinkClick: opts?.onLinkClick }),
+      // Read-only is compartmentalized: rebuilds triggered by mode/wrap/history
+      // changes reuse the compartment's current content, but the tracked value
+      // is used here so a fresh state (or a first build) starts in the right mode.
+      readOnlyCompartment.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
       editorThemeExtension(),
-      // Find/replace (user-results Other #8 / B19): Mod-f opens the search
-      // panel, Mod-h opens replace. No app shortcut uses Mod-h alone
-      // (header-cycle is Mod-Alt-h, hr is Mod-Shift-h). `top: true` puts the
-      // panel in .cm-panels-top so the floating-card CSS (editor.css)
-      // positions it at the top instead of the default bottom bar — the built-
-      // in option is cleaner than a CSS-only override against a bottom
-      // container (absolute inside .cm-panels-bottom is relative to the bottom
-      // sticky box, so top:8 was still visually at the bottom).
+      ...(opts?.ariaLabel !== undefined
+        ? [EditorView.contentAttributes.of({ 'aria-label': opts.ariaLabel })]
+        : []),
+      // Find/replace (user-results Other #8 / B19): the canonical chords are
+      // derived from SHORTCUTS (find = Mod-f, replace = Mod-Shift-f) so Help
+      // dialog and menu hints stay in sync with the real keymap. Mod-h stays a
+      // non-canonical replace alias for muscle memory; no app shortcut uses
+      // Mod-h alone (header-cycle is Mod-Alt-h, hr is Mod-Shift-h).
+      // `top: true` puts the panel in .cm-panels-top so the floating-card CSS
+      // (editor.css) positions it at the top instead of the default bottom
+      // bar — the built-in option is cleaner than a CSS-only override against
+      // a bottom container (absolute inside .cm-panels-bottom is relative to
+      // the bottom sticky box, so top:8 was still visually at the bottom).
       search({ top: true }),
       // Custom search keymap at highest precedence so it beats the formatting
-      // hotkey layer (footnote is Mod-Shift-f). Mod-f opens find, Mod-h and
-      // Mod-Shift-f open replace (replace field focused). Without this,
-      // footnote would swallow Mod-Shift-f and Mod-h would do nothing
-      // (searchKeymap only binds Mod-f). Prec.highest guarantees this wins
-      // even though formattingHotkeyMap is at Prec.high via extraKeymaps.
+      // hotkey layer. The chords come from SHORTCUTS via keysFor (find =
+      // Mod-f, replace = Mod-Shift-f), so Help/menu hints always match the
+      // editor bindings. Mod-h remains an extra replace alias. Without this
+      // layer searchKeymap would bind only Mod-f and Mod-Shift-f would fall
+      // through to the formatting hotkey map. Prec.highest guarantees this
+      // wins even though formattingHotkeyMap is at Prec.high via extraKeymaps.
       Prec.highest(
         keymap.of([
-          { key: 'Mod-f', run: openSearchPanel, preventDefault: true },
+          ...keysFor('find').map((key): KeyBinding => ({ key, run: openSearchPanel, preventDefault: true })),
+          ...keysFor('replace').map((key): KeyBinding => ({ key, run: openReplacePanel, preventDefault: true })),
+          // Non-canonical alias kept for muscle memory; Help/menu hints show
+          // only the canonical Mod-Shift-F chord from SHORTCUTS.
           { key: 'Mod-h', run: openReplacePanel, preventDefault: true },
-          { key: 'Mod-Shift-f', run: openReplacePanel, preventDefault: true },
         ]),
       ),
       keymap.of([
@@ -178,7 +205,7 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
         ...(includeHistory ? historyKeymap : []),
         indentWithTab,
       ]),
-      placeholder('Start typing your markdown here'),
+      placeholder(opts?.placeholder ?? 'Start typing your markdown here'),
       updateListener,
     ]
     // The history field is a module-level singleton in @codemirror/commands, so a
@@ -250,6 +277,11 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
     }),
   })
 
+  // Accessible name for the contenteditable textbox. Also declared as a content
+  // attribute in buildExtensions so reconfigures re-apply it; setting it here
+  // covers the freshly-created DOM immediately.
+  if (opts?.ariaLabel !== undefined) view.contentDOM.setAttribute('aria-label', opts.ariaLabel)
+
   // Apply the CSS-var sizing immediately; defaults live in cmTheme.ts.
   const setFontSize = (px: number) => view.dom.style.setProperty('--cm-font-size', `${px}px`)
   // --cm-line-height is defined on BOTH view.dom and view.contentDOM: the
@@ -315,6 +347,16 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
       const value = String(enabled)
       view.dom.setAttribute('spellcheck', value)
       view.contentDOM.setAttribute('spellcheck', value)
+    },
+    setReadOnly(nextReadOnly: boolean): void {
+      if (nextReadOnly === readOnly) return
+      readOnly = nextReadOnly
+      view.dispatch({
+        effects: readOnlyCompartment.reconfigure([
+          EditorState.readOnly.of(readOnly),
+          EditorView.editable.of(!readOnly),
+        ]),
+      })
     },
     setMode(nextMode: 'live' | 'source'): void {
       if (nextMode === mode) return

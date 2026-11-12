@@ -84,7 +84,7 @@ import {
   shouldShowSource,
   checkUpdateAction,
 } from 'codemirror-live-markdown'
-import { renderInlineMarkdown, renderInlineOnlyMarkdown } from '../app/export'
+import { renderInlineMarkdown, renderInlineOnlyMarkdown } from '../app/markdown'
 import DOMPurify from 'dompurify'
 import { parseGraphTag, graphToHtml, graphToErrorHtml } from '../app/graph'
 // Single-source table chord (never hardcoded): the widget swallows all CM6
@@ -330,7 +330,7 @@ class MarkdownLinkWidget extends WidgetType {
         if (this.onLinkClick !== undefined) {
           this.onLinkClick(url)
         } else {
-          window.open(url, '_blank')
+          window.open(url, '_blank', 'noopener,noreferrer')
         }
       })
     }

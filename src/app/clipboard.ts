@@ -9,11 +9,14 @@
  * `document.execCommand('paste')` when the async API is unavailable or the read is
  * denied (button click = user activation).
  *
- * Paste-image (PLAN §11) is fully implemented in M4: the image is saved next to
- * the document via the Rust `write_image` command (behind `FileIO.saveImage`),
- * then the markdown reference is inserted at the caret. When the doc is unsaved
- * the user picks a folder first; on mobile it is a graceful no-op (`isMobile`
- * from platform/detect).
+ * Paste-image (PLAN §11) is fully implemented in M4: on desktop the image is
+ * saved next to the document via the Rust `write_image` command (behind
+ * `FileIO.saveImage`), then the markdown reference is inserted at the caret.
+ * When the doc is unsaved the user picks a folder first; on mobile it is a
+ * graceful no-op (`isMobile` from platform/detect).
+ *
+ * Web mode has no document folder: its FileIO provides `saveInlineImage`, which
+ * returns a data URL that is embedded directly in the markdown instead.
  */
 import { isMobile } from '../platform/detect'
 import type { Command } from '@codemirror/view'
@@ -149,10 +152,14 @@ async function saveImageBlob(io: FileIO, docPath: string | null, blob: Blob, fil
 
 /**
  * Paste-image flow (M4): on desktop, when the clipboard holds an image, build a
- * filename for it, save it next to the doc (`FileIO.saveImage` → Rust
- * `write_image`; a folder picker is shown when the doc is unsaved), and insert
- * the markdown reference at the caret when the save succeeded. Mobile is a
- * graceful no-op.
+ * filename for it and store it via the platform:
+ * - Web: `FileIO.saveInlineImage` embeds it as a data URL in the markdown
+ *   (there is no document folder to write into). Its alt text is the filename
+ *   stem so the raw markdown stays readable.
+ * - Tauri: `FileIO.saveImage` → Rust `write_image` saves it next to the doc (a
+ *   folder picker is shown when the doc is unsaved) and the markdown reference
+ *   uses the relative filename.
+ * Mobile is a graceful no-op.
  */
 export async function pasteImage(
   controller: EditorController,
@@ -167,6 +174,21 @@ export async function pasteImage(
   const file = firstImageFile(event)
   if (file === null) return
   const filename = imageFileName(doc.name, Date.now(), file.type)
+
+  // Prefer the inline (web) implementation. It reports its own failures (e.g.
+  // the size cap) via FileIO.alert, so returning here avoids a second alert
+  // from saveImage, which is unsupported on the web. Tauri omits the method
+  // entirely and therefore falls through to the native write_image path.
+  const saveInline = io.saveInlineImage
+  if (saveInline !== undefined) {
+    const dataUrl = await saveInline.call(io, file, filename)
+    if (dataUrl !== null) {
+      const label = filename.replace(/\.[^./\\]+$/, '')
+      controller.replaceSelection(buildImageRef(dataUrl, label))
+    }
+    return
+  }
+
   const savedPath = await saveImageBlob(io, doc.path, file, filename)
   if (savedPath !== null) {
     controller.replaceSelection(buildImageRef(filename))

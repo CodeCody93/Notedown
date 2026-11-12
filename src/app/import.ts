@@ -1056,17 +1056,20 @@ async function convertPdf(bytes: Uint8Array): Promise<ImportConversion> {
   // pdfjs-dist is lazy-loaded (the largest import dep by far). The worker is
   // resolved through Vite's `?url` import (typed via vite/client), so the
   // worker file is emitted as a hashed asset and loads identically in browser
-  // dev mode and the Tauri bundle. Pinned to the pdfjs v5 line in
-  // package.json — v6 may move/rename the `build/pdf.worker.min.mjs` asset.
+  // dev mode and the Tauri bundle. Verified on pdfjs v6: the
+  // `build/pdf.worker.min.mjs` asset still exists at this path.
   const pdfjs = await import('pdfjs-dist')
   const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url')
   pdfjs.GlobalWorkerOptions.workerSrc = worker.default
   // A copy: getDocument may detach/transfer the buffer it is given.
   // Encrypted/corrupt input rejects here (never hangs) — surface it as a
   // readable error so the caller can show "Import failed: …".
-  let doc: Awaited<ReturnType<typeof pdfjs.getDocument>['promise']> | undefined
+  // Keep the loadingTask: pdfjs v6 removed PDFDocumentProxy.destroy(), so
+  // cleanup is owned by the task (which also tears down the worker).
+  const loadingTask = pdfjs.getDocument({ data: bytes.slice() })
+  let doc: Awaited<typeof loadingTask.promise> | undefined
   try {
-    doc = await pdfjs.getDocument({ data: bytes.slice() }).promise
+    doc = await loadingTask.promise
   } catch (err) {
     throw readablePdfError(err)
   }
@@ -1142,7 +1145,7 @@ async function convertPdf(bytes: Uint8Array): Promise<ImportConversion> {
     }
     return { markdown, losses }
   } finally {
-    await doc.destroy()
+    await loadingTask.destroy()
   }
 }
 

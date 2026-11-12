@@ -1339,14 +1339,17 @@ export async function initApp(): Promise<void> {
       if (ed !== null) void pasteImage(ed, io, { name: doc.name, path: doc.path }, event)
     },
     onLinkClick: (url) => io.openExternal(url),
-    // Live-preview images: resolve a relative markdown src against the doc's
-    // directory into a URL the webview can render (data: URL via exposeImage),
-    // or null when unresolvable (unsaved doc, absolute/http/data/blob/asset
-    // srcs, browser dev mode). Results are cached per doc-path + absolute path.
+    // Live-preview images: remote/data/blob srcs are already renderable, so
+    // return them directly (also works for unsaved docs and the web target).
+    // Relative local srcs are resolved against the doc's directory into a URL
+    // the webview can render (data: URL via exposeImage); unsaved docs and
+    // absolute/asset/fragment srcs stay unresolved. Results are cached per
+    // doc-path + absolute path.
     imageResolver: async (src: string) => {
+      if (/^(https?:|data:image\/|blob:)/i.test(src)) return src
       const doc = appState.get().doc
       if (doc.path === null) return null
-      if (/^(https?:|data:|blob:|asset:|\/|#)/i.test(src)) return null
+      if (/^(asset:|\/|#)/i.test(src)) return null
       const abs = resolveAgainstDocDir(doc.path, src)
       const key = `${doc.path}::${abs}`
       const hit = imageCache.get(key)

@@ -18,26 +18,26 @@
  *   (table borders must never surface as underlines). Fills fully inside a
  *   grid cell (expanded 1pt) are dropped (cell shading, not highlights).
  *
- * Opcode numbers — verified against the installed pdfjs-dist 5.7.284, NOT
+ * Opcode numbers — verified against the installed pdfjs-dist 6.5.438, NOT
  * memory (source lines cited; re-verify on every pdfjs upgrade):
- * - OPS enum: `node_modules/pdfjs-dist/build/pdf.mjs` lines 239-331
+ * - OPS enum: `node_modules/pdfjs-dist/build/pdf.mjs` lines 228-320
  *   (moveTo 13, lineTo 14, curveTo 15, curveTo2 16, curveTo3 17,
  *   closePath 18, rectangle 19, stroke 20, closeStroke 21, fill 22,
  *   eoFill 23, fillStroke 24, eoFillStroke 25, closeFillStroke 26,
  *   closeEOFillStroke 27, endPath 28, clip 29, eoClip 30, save 10,
  *   restore 11, transform 12, setLineWidth 2; constructPath 91).
- *   The same values exist in `build/pdf.worker.mjs` lines 258-327.
+ *   The same values exist in `build/pdf.worker.mjs` lines 228-320.
  * - The caller passes OPS in (this module MUST stay statically free of
  *   `pdfjs-dist`, which the app shell lazy-loads to keep the bundle small).
  *   Every opcode is looked up by NAME at call time; a missing entry disables
  *   that op class instead of crashing.
- * - CRITICAL pdfjs-v5 encoding detail (`pdf.worker.mjs` lines 35057-35092):
+ * - CRITICAL pdfjs-v6 encoding detail (`pdf.worker.mjs` lines 35791-35798):
  *   raw path ops (moveTo/lineTo/rectangle/...) NEVER reach fnArray. The
- *   worker folds them into a DrawOPS buffer via buildPath (lines 34376-34448)
- *   and emits ONE `constructPath` op per paint: args are
+ *   worker folds them into a DrawOPS buffer via buildPath (method at lines
+ *   35127+) and emits ONE `constructPath` op per paint: args are
  *   `[paintOp, [Float32Array|null], minMax|null]` where the buffer encodes
  *   DrawOPS moveTo 0 (+x+y), lineTo 1 (+x+y), curveTo 2 (+6 coords),
- *   quadraticCurveTo 3 (+4 coords), closePath 4 (verified lines 332-338 of
+ *   quadraticCurveTo 3 (+4 coords), closePath 4 (verified lines 321-327 of
  *   both bundles). Raw moveTo/lineTo/... ops are STILL handled (other
  *   producers, hand-built streams, future pdfjs shapes) — both forms feed the
  *   same paint pipeline.

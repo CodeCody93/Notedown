@@ -1,16 +1,31 @@
 {
   "name": "notedown",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.7.0",
   "type": "module",
+  "license": "MIT",
+  "author": "Cody S.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CodeCody93/Notedown.git"
+  },
+  "homepage": "https://codecody93.github.io/Notedown/",
+  "bugs": {
+    "url": "https://github.com/CodeCody93/Notedown/issues"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:embed": "vite build --config vite.config.embed.ts && tsc -p tsconfig.embed.json && node scripts/build-embed.mjs",
+    "build:web": "npm run build && npm run build:embed && node scripts/copy-embed-to-web.mjs",
+    "demo:embed": "vite --config examples/embed-demo/vite.config.ts",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "verify": "npm run typecheck && npm test && npm run tauri build"
+    "version:check": "node scripts/check-version.mjs",
+    "version:bump": "node scripts/bump-version.mjs",
+    "verify": "npm run version:check && npm run typecheck && npm test && npm run build:web && npm run tauri build"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.4",
@@ -36,7 +51,7 @@
     "markdown-it-sup": "2.0.0",
     "markdown-it-task-lists": "2.1.1",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^5.4.54",
+    "pdfjs-dist": "^6.5.438",
     "turndown": "^7.2.0",
     "turndown-plugin-gfm": "^1.0.2"
   },
@@ -45,8 +60,8 @@
     "@types/markdown-it": "14.1.2",
     "jsdom": "^30.0.1",
     "typescript": "~5.6.2",
-    "vite": "^6.0.3",
-    "vitest": "^3.2.4"
+    "vite": "^6.4.6",
+    "vitest": "^5.1.0"
   },
   "allowScripts": {
     "esbuild@0.25.12": true

@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Notedown embed demo</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --page-bg: #f4f4f2;
+        --page-text: #1f2328;
+        --page-muted: #6b7280;
+        --page-border: #e3e3df;
+        --page-surface: #ffffff;
+        --page-shadow: 0 8px 24px rgba(30, 41, 59, 0.08);
+        --page-focus: #2563eb;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --page-bg: #141416;
+          --page-text: #e8e8e8;
+          --page-muted: #a1a1aa;
+          --page-border: #333338;
+          --page-surface: #1e1e22;
+          --page-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+          --page-focus: #4f8cff;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--page-bg);
+        color: var(--page-text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+      }
+
+      .demo {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 32px 20px 56px;
+      }
+
+      .demo-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+
+      h1 {
+        margin: 0 0 4px;
+        font-size: 22px;
+        line-height: 1.2;
+      }
+
+      .demo-subtitle {
+        margin: 0;
+        max-width: 56ch;
+        color: var(--page-muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .demo-subtitle code {
+        padding: 1px 4px;
+        border: 1px solid var(--page-border);
+        border-radius: 4px;
+        background: var(--page-surface);
+        font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas,
+          "Liberation Mono", monospace;
+        font-size: 12px;
+      }
+
+      .demo-controls {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        font-size: 13px;
+      }
+
+      .demo-controls label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+      }
+
+      select {
+        height: 30px;
+        padding: 0 8px;
+        border: 1px solid var(--page-border);
+        border-radius: 7px;
+        background: var(--page-surface);
+        color: inherit;
+        font: inherit;
+      }
+
+      select:focus-visible,
+      input[type="checkbox"]:focus-visible {
+        outline: 2px solid var(--page-focus);
+        outline-offset: 1px;
+      }
+
+      .demo-check {
+        gap: 6px;
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .demo-stats {
+        color: var(--page-muted);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+
+      #editor {
+        height: 520px;
+        overflow: hidden;
+        border: 1px solid var(--page-border);
+        border-radius: 10px;
+        background: var(--page-surface);
+        box-shadow: var(--page-shadow);
+      }
+
+      .demo-readout {
+        margin-top: 24px;
+      }
+
+      .demo-readout h2 {
+        margin: 0 0 8px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      #value-readout {
+        height: 180px;
+        margin: 0;
+        overflow: auto;
+        padding: 12px 14px;
+        border: 1px solid var(--page-border);
+        border-radius: 10px;
+        background: var(--page-surface);
+        color: var(--page-text);
+        font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas,
+          "Liberation Mono", monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="demo">
+      <header class="demo-header">
+        <div>
+          <h1>Notedown embed demo</h1>
+          <p class="demo-subtitle">
+            A standalone Markdown editor with live preview. The host page only
+            imports <code>createNotedownEditor</code> — the embed entry owns its
+            stylesheet.
+          </p>
+        </div>
+
+        <div class="demo-controls">
+          <label for="theme-select">
+            Theme
+            <select id="theme-select">
+              <option value="system" selected>System</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+
+          <label for="mode-select">
+            Mode
+            <select id="mode-select">
+              <option value="live" selected>Live preview</option>
+              <option value="source">Source</option>
+            </select>
+          </label>
+
+          <label class="demo-check" for="readonly-toggle">
+            <input id="readonly-toggle" type="checkbox" />
+            Read-only
+          </label>
+
+          <span id="value-stats" class="demo-stats">0 chars</span>
+          <span id="cursor-position" class="demo-stats">Ln 1, Col 1</span>
+        </div>
+      </header>
+
+      <div id="editor" style="height: 520px"></div>
+
+      <section class="demo-readout" aria-labelledby="readout-heading">
+        <h2 id="readout-heading">Value readout</h2>
+        <pre id="value-readout"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -1,7 +1,9 @@
 /**
- * FileIO abstraction. Full implementations arrive in M1:
+ * FileIO abstraction:
  * - browser.ts uses the File System Access API (showOpenFilePicker /
- *   showSaveFilePicker) plus localStorage/IndexedDB for settings/recents/drafts.
+ *   showSaveFilePicker) where available, with a download / hidden-input
+ *   fallback for other browsers, plus localStorage/IndexedDB for
+ *   settings/recents/drafts/opened-file snapshots.
  * - tauri.ts calls the Rust commands via invoke().
  * UI code must never call window.showOpenFilePicker or invoke() directly —
  * all file I/O goes through this interface.
@@ -84,8 +86,16 @@ export interface FileIO {
   clearDraft(key: string): Promise<void>
   /** Open a URL in the default external browser (Tauri opener) / a new browser tab (browser dev mode). Never window.open into the app; javascript:/data:/vbscript: URLs are rejected by the implementations. */
   openExternal(url: string): Promise<void>
-  /** Save an image blob next to the document (paste-image, PLAN §11). docPath null (unsaved doc) → ask the user for a folder first. Returns the saved ABSOLUTE path, or null when the user cancelled the folder picker or the platform cannot do it (browser dev mode). */
+  /** Save an image blob next to the document (paste-image, PLAN §11). docPath null (unsaved doc) → ask the user for a folder first. Returns the saved ABSOLUTE path, or null when the user cancelled the folder picker or the platform cannot do it (web mode has no document folder — see saveInlineImage). */
   saveImage(docPath: string | null, filename: string, blob: Blob): Promise<string | null>
+  /**
+   * Web only: embed a pasted image inline because there is no document folder.
+   * Resolves to a data URL the markdown can reference directly, or null when
+   * the image is too large (implementations show a user-facing alert).
+   * Tauri omits this method — it saves the image next to the document through
+   * saveImage instead.
+   */
+  saveInlineImage?(blob: Blob, filename: string): Promise<string | null>
   /** Resolve an absolute local path to a URL the webview can render (data: URL in M4). Rejects when unresolvable (browser dev mode cannot read sibling files). */
   exposeImage(absPath: string): Promise<string>
 }

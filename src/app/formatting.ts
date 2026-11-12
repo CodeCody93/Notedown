@@ -21,12 +21,14 @@
 
 import type { EditorState, Line, Transaction, TransactionSpec } from '@codemirror/state'
 import type { Command, KeyBinding } from '@codemirror/view'
+import { searchPanelOpen } from '@codemirror/search'
 import { syntaxTree } from '@codemirror/language'
 import type { SyntaxNode } from '@lezer/common'
 import type { TableModel } from './table'
 import { serializeGfm } from './table'
 import type { OrderedStyle } from './lists'
 import { formatOrderedMarker, nextOrderedMarker, parseListItem } from './lists'
+import { SHORTCUTS, getPlatform } from './shortcuts'
 
 /** Builds a transaction spec from the current state. Commands produce a SINGLE undo step. */
 export type FormattingCommand = (state: EditorState) => TransactionSpec
@@ -1307,4 +1309,34 @@ export const FORMATTING_COMMANDS: Record<string, FormattingCommand> = {
   'pie-graph': insertPieGraphSpec,
   'bar-graph': insertBarGraphSpec,
   'line-graph': insertLineGraphSpec,
+}
+
+// ---------------------------------------------------------------------------
+// CM6 formatting hotkey layer
+// ---------------------------------------------------------------------------
+
+/**
+ * KeyBindings for every SHORTCUT whose id exists in FORMATTING_COMMANDS, running
+ * that command against the view (a single undo step). Used as the editor's
+ * formatting hotkey layer; the editor wraps the returned array with keymap.of
+ * (the wrapper lives in src/editor/editor.ts so the app shell has no CM6 value
+ * imports). 'table' is excluded — it opens the table builder via
+ * tableHotkeyMap (app.ts) instead of the legacy template insert.
+ */
+export function formattingHotkeyMap(): KeyBinding[] {
+  return SHORTCUTS.filter((s) => s.id in FORMATTING_COMMANDS && s.id !== 'table').map((s) => {
+    const chord = getPlatform() === 'mac' ? (s.macKeys?.[0] ?? s.keys[0]) : s.keys[0]
+    return {
+      key: chord,
+      run: (view) => {
+        // Footnote (Mod-Alt-p) no longer shares the search chord, but keep
+        // this guard defensively: never insert a footnote while the search
+        // panel is open, so the panel keeps focus no matter which chord
+        // opened it.
+        if (s.id === 'footnote' && searchPanelOpen(view.state)) return false
+        view.dispatch(FORMATTING_COMMANDS[s.id](view.state))
+        return true
+      },
+    }
+  })
 }

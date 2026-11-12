@@ -332,7 +332,8 @@ describe('round-trip: Notedown export -> pdfjs vectors (coordinate-space proof)'
         resolve('node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'),
       ).href
       const bytes = await markdownToPdfBytes('__ul__ and ~~st~~\n\n==hl==\n\n| a | b |\n| --- | --- |\n| c | d |\n')
-      const doc = await pdfjs.getDocument({ data: bytes.slice() }).promise
+      const loadingTask = pdfjs.getDocument({ data: bytes.slice() })
+      const doc = await loadingTask.promise
       try {
         const page = await doc.getPage(1)
         const content = await page.getTextContent()
@@ -394,7 +395,7 @@ describe('round-trip: Notedown export -> pdfjs vectors (coordinate-space proof)'
         // Contract: the module never guesses strike-vs-underline itself.
         expect(analysis.strikes).toEqual([])
       } finally {
-        await doc.destroy()
+        await loadingTask.destroy()
       }
     },
   )

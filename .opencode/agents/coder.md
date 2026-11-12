@@ -1,8 +1,7 @@
 ---
 description: Subagent that implements exactly one work packet assigned by the orchestrator. Writes tests only when necessary; never runs tests or builds (other agents share the workspace).
 mode: subagent
-model: opencode/muse-spark-1.3-contributor-free
-variant: xhigh
+model: opencode-go/deepseek-v4.1-flash#max
 permission: allow
 ---
 

@@ -3,8 +3,9 @@
  * file/app features. All strings are PLAIN text — the help modal renders them
  * via textContent, never innerHTML, so there is no injection surface.
  *
- * hotkeyId must be a SHORTCUTS id or null. The modal resolves it through
- * labelFor(), so displayed hints always match the real keymap.
+ * hotkeyId must be a SHORTCUTS id or null. The modal resolves every effective
+ * chord through keysFor()/chordLabel(), so displayed hints always match the
+ * real keymap (including macOS overrides and multi-chord actions such as redo).
  */
 
 export interface HelpEntry {
@@ -19,7 +20,7 @@ export interface HelpEntry {
 export const HELP_SUMMARY: string =
   'Notedown is a Markdown note-taking app with live preview and source modes. ' +
   'Use the toolbar or keyboard shortcuts to format text, and the File menu to manage documents. ' +
-  'This guide lists every formatting command with its syntax and shortcut.'
+  'This guide lists every formatting command, editing action, and app feature with its syntax and shortcut.'
 
 export const HELP_ENTRIES: HelpEntry[] = [
   // --- inline formatting ---
@@ -99,7 +100,13 @@ export const HELP_ENTRIES: HelpEntry[] = [
   },
   { id: 'link', title: 'Link', example: 'Insert a link', syntax: '[text](url)', hotkeyId: 'link' },
   { id: 'image', title: 'Image', example: 'Insert an image', syntax: '![alt](image.png)', hotkeyId: 'image' },
-  { id: 'table', title: 'Table', example: 'Open the table builder (HTML tables with per-row headers)', syntax: '| Col 1 | Col 2 |\n| --- | :---: |', hotkeyId: 'table' },
+  {
+    id: 'table',
+    title: 'Table',
+    example: 'Open the table builder (HTML output; each row can be a header)',
+    syntax: '<table>...</table>',
+    hotkeyId: 'table',
+  },
   { id: 'hr', title: 'Horizontal rule', example: 'Insert a divider', syntax: '---', hotkeyId: 'hr' },
   { id: 'footnote', title: 'Footnote', example: 'Insert a footnote', syntax: '[^1]', hotkeyId: 'footnote' },
   { id: 'task-list', title: 'Task list', example: 'Toggle a task list', syntax: '- [ ] item', hotkeyId: 'task-list' },
@@ -122,11 +129,25 @@ export const HELP_ENTRIES: HelpEntry[] = [
   { id: 'sup', title: 'Superscript', example: 'Superscript text', syntax: '^text^', hotkeyId: 'sup' },
   { id: 'highlight', title: 'Highlight', example: 'Highlight text', syntax: '==text==', hotkeyId: 'highlight' },
   { id: 'spoiler', title: 'Spoiler', example: 'Hide spoiler text', syntax: '||text||', hotkeyId: 'spoiler' },
-  { id: 'dropdown', title: 'Dropdown', example: 'Insert a collapsible block', syntax: '>>> Title', hotkeyId: 'dropdown' },
-  { id: 'graph', title: 'Graph', example: 'Open the graph builder (or insert a chart tag)', syntax: '%% pie "Title" (Apples, 30) (Bananas, 45) %% / %% bar "Title" Units (Jan, 120) (Feb, 200) %% / %% line "Title" (Week, Mon, Tue) (Hits, 0, 100) (SiteA, 120, 200) %%', hotkeyId: 'graph' },
+  { id: 'dropdown', title: 'Dropdown', example: 'Insert a collapsible block', syntax: '>>> Title\n\n>>>', hotkeyId: 'dropdown' },
+  {
+    id: 'graph',
+    title: 'Graph',
+    example: 'Open the graph builder to insert a pie, bar, or line chart',
+    syntax: '%% pie|bar|line "Title" ... %%',
+    hotkeyId: 'graph',
+  },
   { id: 'pie-graph', title: 'Pie chart', example: 'Insert a pie chart', syntax: '%% pie "Title" (Apples, 30) (Bananas, 45) %%', hotkeyId: null },
   { id: 'bar-graph', title: 'Bar chart', example: 'Insert a bar chart', syntax: '%% bar "Title" Units (Jan, 120) (Feb, 200) %%', hotkeyId: null },
   { id: 'line-graph', title: 'Line chart', example: 'Insert a multi-series line chart', syntax: '%% line "Title" (Week, Mon, Tue) (Hits, 0, 100) (SiteA, 120, 200) %%', hotkeyId: null },
+  // --- editing / search (no markdown syntax — syntax stays '') ---
+  { id: 'undo', title: 'Undo', example: 'Undo the last change', syntax: '', hotkeyId: 'undo' },
+  { id: 'redo', title: 'Redo', example: 'Redo the last undone change', syntax: '', hotkeyId: 'redo' },
+  { id: 'copy', title: 'Copy', example: 'Copy the selection to the clipboard', syntax: '', hotkeyId: 'copy' },
+  { id: 'cut', title: 'Cut', example: 'Cut the selection to the clipboard', syntax: '', hotkeyId: 'cut' },
+  { id: 'paste', title: 'Paste', example: 'Paste from the clipboard', syntax: '', hotkeyId: 'paste' },
+  { id: 'find', title: 'Find', example: 'Search the document in the floating find panel', syntax: '', hotkeyId: 'find' },
+  { id: 'replace', title: 'Find & replace', example: 'Find and replace text in the document', syntax: '', hotkeyId: 'replace' },
   // --- file / app features (no markdown syntax — syntax stays '') ---
   { id: 'new', title: 'New', example: 'Start a new document', syntax: '', hotkeyId: 'new' },
   { id: 'open', title: 'Open', example: 'Open a Markdown file', syntax: '', hotkeyId: 'open' },
@@ -134,7 +155,7 @@ export const HELP_ENTRIES: HelpEntry[] = [
   { id: 'save', title: 'Save', example: 'Save the current file', syntax: '', hotkeyId: 'save' },
   { id: 'save-as', title: 'Save as', example: 'Save under a new name', syntax: '', hotkeyId: 'save-as' },
   { id: 'export', title: 'Export', example: 'Export the document as TXT, HTML, PDF, Word (.docx), or RTF', syntax: '', hotkeyId: 'export' },
-  { id: 'import', title: 'Import', example: 'Import a file into the editor', syntax: '', hotkeyId: null },
+  { id: 'import', title: 'Import', example: 'Import a TXT, HTML, PDF, DOCX, RTF, or Markdown file into the editor', syntax: '', hotkeyId: null },
   { id: 'settings', title: 'Settings', example: 'Open app settings', syntax: '', hotkeyId: 'settings' },
   {
     id: 'toggle-mode',
@@ -143,6 +164,9 @@ export const HELP_ENTRIES: HelpEntry[] = [
     syntax: '',
     hotkeyId: 'toggle-mode',
   },
+  { id: 'navigator', title: 'Navigator', example: 'Show or hide the heading outline panel', syntax: '', hotkeyId: 'toggle-navigator' },
+  { id: 'help', title: 'Help', example: 'Open this guide', syntax: '', hotkeyId: null },
+  { id: 'about', title: 'About', example: 'View the app version and support link', syntax: '', hotkeyId: null },
 ]
 
 /**

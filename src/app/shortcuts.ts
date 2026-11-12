@@ -56,7 +56,10 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'image', keys: ['Mod-Alt-i'], label: 'Image' },
   { id: 'table', keys: ['Mod-t'], label: 'Table' },
   { id: 'hr', keys: ['Mod-Shift-h'], label: 'Horizontal rule' },
-  { id: 'footnote', keys: ['Mod-Shift-f'], label: 'Footnote' },
+  // Footnote moved off Mod-Shift-f: that is the editor's Find & Replace chord
+  // (search keymap in src/editor/editor.ts). Mod-Alt-f is avoided because
+  // Ctrl+Alt+F switches Linux virtual terminals; Mod-Alt-p is free.
+  { id: 'footnote', keys: ['Mod-Alt-p'], label: 'Footnote' },
   { id: 'task-list', keys: ['Mod-Alt-t'], label: 'Task list' },
   { id: 'emoji', keys: ['Mod-Alt-e'], label: 'Emoji picker' },
   { id: 'heading-id', keys: ['Mod-Shift-2'], label: 'Heading ID' },
@@ -74,6 +77,11 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'graph', keys: ['Mod-Shift-g'], label: 'Graph' },
   { id: 'toggle-mode', keys: ['Mod-/'], label: 'Toggle live/source' },
   { id: 'toggle-navigator', keys: ['Mod-Alt-n'], label: 'Toggle navigator' },
+  // Editor search panel (CM6 search keymap in src/editor/editor.ts). Not a
+  // window-level chord: these are bound inside the editor, but they live here
+  // so menu/help hints share the same single source of truth.
+  { id: 'find', keys: ['Mod-f'], label: 'Find' },
+  { id: 'replace', keys: ['Mod-Shift-f'], label: 'Replace' },
 ]
 
 /**
