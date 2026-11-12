@@ -1,7 +1,7 @@
 {
   "name": "notedown",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.7.5",
   "type": "module",
   "license": "MIT",
   "author": "Cody S.",
@@ -16,7 +16,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "build:embed": "vite build --config vite.config.embed.ts && tsc -p tsconfig.embed.json && node scripts/build-embed.mjs",
+    "build:embed": "vite build --config vite.config.embed.ts && vite build --config vite.config.embed-render.ts && tsc -p tsconfig.embed.json && node scripts/build-embed.mjs",
     "build:web": "npm run build && npm run build:embed && node scripts/copy-embed-to-web.mjs",
     "demo:embed": "vite --config examples/embed-demo/vite.config.ts",
     "typecheck": "tsc --noEmit",
@@ -57,6 +57,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@types/jsdom": "^30.0.0",
     "@types/markdown-it": "14.1.2",
     "jsdom": "^30.0.1",
     "typescript": "~5.6.2",

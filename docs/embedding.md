@@ -3,16 +3,20 @@
 `@codecody93/notedown-editor` packages Notedown's CodeMirror 6 editor and
 live-preview Markdown renderer as a framework-agnostic ES module. The package
 bundles its dependencies, ships scoped CSS and TypeScript declarations, and
-never imports Tauri or the desktop app shell.
+never imports Tauri or the desktop app shell. An optional Node-only subpath,
+`@codecody93/notedown-editor/render`, exposes the same Markdown pipeline for
+server-side rendering.
 
-This package is the editor, not the full application. If you want the desktop
-app, download the latest release; if you want the hosted web app, open the Pages
-site. Both are linked from the [README](../README.md) and
+This package is not the full application: the root entry is the editor, and
+the optional `/render` subpath converts Markdown to HTML on the server. If you
+want the desktop app, download the latest release; if you want the hosted web
+app, open the Pages site. Both are linked from the [README](../README.md) and
 [`docs/install.md`](install.md).
 
 - Package: `@codecody93/notedown-editor`
+- Server renderer: `@codecody93/notedown-editor/render` (Node 20+, optional `jsdom` peer)
 - Registry: GitHub Packages (`https://npm.pkg.github.com`)
-- CDN: <https://codecody93.github.io/Notedown/embed/>
+- CDN: <https://codecody93.github.io/Notedown/embed/> (browser editor only)
 - License: MIT
 
 ## Installation from GitHub Packages
@@ -53,6 +57,10 @@ the host project (or enable auto-install peers):
 npm install @codemirror/state @codemirror/view
 ```
 
+The `@codecody93/notedown-editor/render` subpath additionally declares `jsdom`
+as an optional peer dependency; editor-only installs do not need it. See
+[Server-side rendering (Node)](#server-side-rendering-node).
+
 ## CDN usage
 
 The web build publishes the same files under the GitHub Pages site, so hosts
@@ -76,7 +84,9 @@ that cannot use GitHub Packages authentication can load them directly:
 
 Pin a release by downloading the bundle into your own assets rather than
 depending on `main` continuing to serve a compatible copy. The Pages copy is
-redeployed on every push to `main` and on release tags.
+redeployed on every push to `main` and on release tags. It contains the browser
+editor bundle only; the Node renderer subpath is published on npm and is not
+part of the CDN copy.
 
 ## Minimal usage
 
@@ -168,6 +178,10 @@ and the related TypeScript types (`CreateNotedownEditorOptions`,
 `NotedownPasteImageHandler`, `EmbedTheme`, `ToolbarItem`, `ToolbarOptions`,
 `EditorController`, `EditorCursor`, `OutlineHeading`).
 
+The Node-only `@codecody93/notedown-editor/render` subpath is a separate package
+surface for Markdown-to-HTML rendering (see below). The root entry and its
+exports are unchanged.
+
 ## CSS and theming
 
 The JavaScript entry imports its scoped stylesheet, so bundlers that process
@@ -244,12 +258,126 @@ CSP violations. Scripts can stay strict: the bundle is a normal ES module and
 does not require `eval` or `unsafe-eval`. If you load remote Markdown images,
 allow the relevant image origins with `img-src`.
 
+## Server-side rendering (Node)
+
+The `@codecody93/notedown-editor/render` subpath converts Markdown to sanitized
+HTML on the server without loading the editor. It requires Node 20 or newer;
+edge runtimes are out of scope for 0.7.5.
+
+`jsdom` is an optional peer dependency; the browser editor does not use it.
+Install both:
+
+```sh
+npm install @codecody93/notedown-editor jsdom
+```
+
+Use a jsdom release compatible with your Node runtime: jsdom 30 requires Node
+22.22 or newer, so Node 20 installations should use jsdom 26–29.
+
+The subpath exports:
+
+| Export | Description |
+| --- | --- |
+| `renderMarkdown(markdown)` | Sanitized HTML fragment. |
+| `renderMarkdownDocument(markdown, options?)` | Complete standalone HTML page. |
+| `createNotedownRenderer(sanitizeHtml)` | `renderMarkdown`/`renderMarkdownDocument` bound to a custom sanitizer/DOM. |
+| `MARKDOWN_BODY_CSS` | Default typography and element styles, scoped under `.md-body`. |
+| `NOTEDOWN_THEME_CSS` | Light and dark theme custom properties. |
+| `HLJS_CSS_LIGHT`, `HLJS_CSS_DARK` | highlight.js themes used by the standalone document. |
+
+`renderMarkdownDocument` options:
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `title` | `string` | `'Notedown document'` | `<title>` text. |
+| `lang` | `string` | `'en'` | `<html lang>` value. |
+| `csp` | `string \| false` | Notedown's export CSP | CSP meta tag content. `false` omits the meta tag. |
+
+Rendering from a file:
+
+```ts
+import { readFile, writeFile } from 'node:fs/promises'
+import {
+  renderMarkdown,
+  renderMarkdownDocument,
+} from '@codecody93/notedown-editor/render'
+
+const source = await readFile('notes.md', 'utf8')
+
+// Fragment for your own page layout:
+const fragment = renderMarkdown(source)
+
+// Complete standalone page:
+const page = renderMarkdownDocument(source, { title: 'Notes' })
+await writeFile('notes.html', page, 'utf8')
+```
+
+`renderMarkdownDocument` mirrors File → Export HTML in the desktop and web apps:
+theme variables, body CSS, light and dark highlight themes, print CSS, the CSP
+meta tag, and the spoiler/copy inline script. It follows
+`prefers-color-scheme`.
+
+`renderMarkdown` returns a fragment, not a page. Wrap it in an element with the
+`md-body` class and include the CSS exports yourself: `MARKDOWN_BODY_CSS` plus
+`NOTEDOWN_THEME_CSS`, or the app's own equivalent. Add `HLJS_CSS_LIGHT` and/or
+`HLJS_CSS_DARK` for highlighted code blocks.
+
+Relative image and link URLs are passed through unchanged. Resolve them on the
+host; the renderer deliberately has no file-reading helper, so use `node:fs` as
+above.
+
+### CSP and remote images
+
+The standalone document's default CSP permits inline styles and scripts and
+`data:`/`blob:` images. If the host owns the policy, or the document references
+remote images, pass a custom policy or disable the meta tag:
+
+```ts
+renderMarkdownDocument(source, {
+  csp: "default-src 'none'; img-src 'self' https:; style-src 'unsafe-inline'",
+})
+
+// Or attach your own CSP at the HTTP-header layer:
+renderMarkdownDocument(source, { csp: false })
+```
+
+For the strictest policy, use `renderMarkdown` and serve the fragment inside a
+host page with your own CSP. A custom policy must allow the inline styles the
+document ships; allow inline scripts too if you want the spoiler and copy-code
+buttons to work.
+
+### Custom sanitizer
+
+`createNotedownRenderer(sanitizeHtml)` is the escape hatch for a custom
+DOMPurify configuration or DOM implementation. The callback receives the raw
+markdown-it HTML and must return sanitized HTML:
+
+```ts
+import DOMPurify from 'dompurify'
+import { JSDOM } from 'jsdom'
+import { createNotedownRenderer } from '@codecody93/notedown-editor/render'
+
+const purify = DOMPurify(
+  new JSDOM('').window as unknown as Parameters<typeof DOMPurify>[0],
+)
+const renderer = createNotedownRenderer((html) =>
+  purify.sanitize(html, { ADD_ATTR: ['target'] }),
+)
+const fragment = renderer.renderMarkdown('# Notes')
+```
+
+Every render must still pass through DOMPurify in production; the callback
+replaces the built-in sanitizer, it does not bypass sanitization.
+
 ## SSR and framework notes
 
-- Create the editor only in the browser. The entry expects `document` and
-  `window`; importing it in a Node/SSR render is not supported. In Next.js,
-  Nuxt, SvelteKit, or similar, import and call `createNotedownEditor` inside
-  `onMounted`/`useEffect`/a client-only component.
+- The root entry (`@codecody93/notedown-editor`) is browser-only. It expects
+  `document` and `window`; importing it in a Node/SSR render is not supported.
+  In Next.js, Nuxt, SvelteKit, or similar, import and call
+  `createNotedownEditor` inside `onMounted`/`useEffect`/a client-only component.
+- To produce Markdown HTML on the server, use the Node-only
+  `@codecody93/notedown-editor/render` subpath described above. Do not import the
+  editor entry on the server just to render Markdown.
 - `destroy()` in the framework's unmount hook and remove any host listeners you
   added around the editor.
 - The editor owns its own undo history and content state. Treat `value` as the

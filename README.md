@@ -104,7 +104,7 @@ See [`docs/web.md`](docs/web.md) for the deployment details and the browser QA c
 
 ## Embeddable editor
 
-`@codecody93/notedown-editor` packages the editor core as a framework-agnostic ES module plus CSS and TypeScript declarations. It is published to GitHub Packages and is also served from the Pages site. The package is editor-only: it does not include Notedown's desktop menus, native file dialogs, import/export pipeline, recents, or drafts. The host page supplies the initial value, listens for changes, and decides where to save.
+`@codecody93/notedown-editor` packages the editor core as a framework-agnostic ES module plus CSS and TypeScript declarations. It is published to GitHub Packages and is also served from the Pages site. The package is editor-focused: it does not include Notedown's desktop menus, native file dialogs, recents, or drafts. The root entry supplies the editor; a separate Node-only subpath renders Markdown to sanitized HTML. The host page supplies the initial value, listens for changes, and decides where to save.
 
 ```ts
 import { createNotedownEditor } from '@codecody93/notedown-editor'
@@ -121,6 +121,14 @@ const editor = createNotedownEditor({
 // On unmount:
 editor.destroy()
 ```
+
+For server-side Markdown rendering, the package publishes a Node-only `@codecody93/notedown-editor/render` subpath. It converts Markdown to sanitized HTML with the same pipeline as the editor and File → Export HTML, and needs Node 20+ plus the optional `jsdom` peer:
+
+```ts
+import { renderMarkdown } from '@codecody93/notedown-editor/render'
+```
+
+See [`docs/embedding.md`](docs/embedding.md#server-side-rendering-node) for the full API, fragment CSS, CSP, and custom sanitizer notes.
 
 Authentication is required even though the package is public. Configure
 `.npmrc` first:
@@ -155,7 +163,7 @@ Notedown is MIT-licensed and free to use. If it saves you time, you can support 
 | `npm run dev` | Start the web app dev server |
 | `npm run build` | Typecheck and build the web app into `dist/` |
 | `npm run build:web` | Build the web app, the embed bundle, and copy the embed package into `dist/embed/` |
-| `npm run build:embed` | Build the publishable embed package into `dist-embed/` |
+| `npm run build:embed` | Build the publishable editor bundle and Node renderer into `dist-embed/` |
 | `npm run demo:embed` | Run the embed demo locally |
 | `npm run typecheck` | Run `tsc --noEmit` |
 | `npm test` | Run the Vitest suite |
@@ -173,6 +181,7 @@ Pushes to `main` deploy the web app to GitHub Pages. Pushing a `v<version>` tag 
 - `src/app/` - application state, menus, shortcuts, formatting, drafts, import/export
 - `src/editor/` - CodeMirror 6 wiring and live preview
 - `src/embed/` - embeddable editor entry point and public API
+- `src/render/` - Node-only server rendering entry (`@codecody93/notedown-editor/render`)
 - `examples/embed-demo/` - local demo for the embeddable editor (`npm run demo:embed`)
 - `src/platform/` - file I/O abstraction with browser and Tauri implementations
 - `src/styles/` - application and embed styles

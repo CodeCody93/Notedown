@@ -432,7 +432,7 @@ md.core.ruler.before('block', 'md-graph', (state) => {
  * Used by livePreview.ts to render dropdown inner content.
  */
 export function renderInlineMarkdown(text: string): string {
-  return DOMPurify.sanitize(md.render(text))
+  return dompurifySanitize(md.render(text))
 }
 
 /**
@@ -445,7 +445,7 @@ export function renderInlineMarkdown(text: string): string {
  * while the same line renders as a spoiler everywhere else.
  */
 export function renderInlineOnlyMarkdown(text: string): string {
-  return DOMPurify.sanitize(md.renderInline(applySpoilerSpans(text)))
+  return dompurifySanitize(md.renderInline(applySpoilerSpans(text)))
 }
 
 /**
@@ -767,6 +767,44 @@ md.core.ruler.push('md-subtext', (state) => {
 })
 
 /**
+ * Sanitizes one rendered HTML fragment (markdown-it output is HTML, not
+ * markdown). Node-only consumers that cannot rely on a global DOMPurify pass
+ * their own DOMPurify-backed implementation — see
+ * `@codecody93/notedown-editor/render`.
+ *
+ * SECURITY: a production sanitizer MUST be DOMPurify-backed (or an equivalent
+ * allow-list sanitizer). Never pass an identity function.
+ */
+export type HtmlSanitizer = (html: string) => string
+
+/**
+ * DOMPurify-backed sanitizer for the browser/Tauri webview (preview pane,
+ * dialogs and app exports). In environments where DOMPurify has no window
+ * (bare Node) this throws a clear error instead of returning unsanitized HTML.
+ */
+const dompurifySanitize: HtmlSanitizer = (html) => {
+  if (typeof DOMPurify.sanitize !== 'function') {
+    throw new Error(
+      'DOMPurify is not available in this environment (no window). ' +
+        'Node consumers must use @codecody93/notedown-editor/render, which provides a jsdom-backed sanitizer.',
+    )
+  }
+  return DOMPurify.sanitize(html)
+}
+
+/**
+ * Render markdown through the single shared markdown-it instance and sanitize
+ * the result with the supplied sanitizer.
+ *
+ * SECURITY: production callers MUST pass a DOMPurify-backed sanitizer —
+ * `html: true` means raw author HTML reaches the renderer, so skipping
+ * sanitization would inject untrusted HTML into the DOM.
+ */
+export function renderMarkdownWithSanitizer(markdown: string, sanitize: HtmlSanitizer): string {
+  return sanitize(md.render(markdown))
+}
+
+/**
  * Render markdown to sanitized HTML.
  *
  * SECURITY (PLAN §16): `html: true` is on, so raw HTML in the document would
@@ -781,7 +819,7 @@ md.core.ruler.push('md-subtext', (state) => {
  * `figure`/`figcaption`/`table` elements — all preserved by default.
  */
 export function renderMarkdown(markdown: string): string {
-  return DOMPurify.sanitize(md.render(markdown))
+  return renderMarkdownWithSanitizer(markdown, dompurifySanitize)
 }
 
 /**

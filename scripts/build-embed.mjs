@@ -2,11 +2,12 @@
 /**
  * Assemble the publishable embeddable-editor package in `dist-embed/`.
  *
- * Run after the Vite library build and the declaration emit:
+ * Run after the Vite library builds and the declaration emit:
  *   vite build --config vite.config.embed.ts
+ *   vite build --config vite.config.embed-render.ts
  *   tsc -p tsconfig.embed.json
  *   node scripts/build-embed.mjs
- * (`npm run build:embed` runs all three.)
+ * (`npm run build:embed` runs all four.)
  */
 import {
   cpSync,
@@ -17,15 +18,17 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = resolve(root, "dist-embed");
 
 const PACKAGE_NAME = "@codecody93/notedown-editor";
 const JS_FILE = "notedown-editor.js";
+const RENDER_JS_FILE = "notedown-render.js";
 const CSS_FILE = "notedown-editor.css";
 const TYPES_FILE = "types/embed/index.d.ts";
+const RENDER_TYPES_FILE = "types/render/index.d.ts";
 
 function fail(message) {
   console.error(`Embed package build failed: ${message}`);
@@ -62,14 +65,17 @@ const version = readRootVersion();
 // Fail loudly rather than publishing an empty or half-built package.
 for (const [label, relativePath] of [
   ["JavaScript bundle", JS_FILE],
+  ["render bundle", RENDER_JS_FILE],
   ["CSS bundle", CSS_FILE],
   ["type declarations", TYPES_FILE],
+  ["render type declarations", RENDER_TYPES_FILE],
 ]) {
   if (!existsSync(resolve(outDir, relativePath))) {
     fail(
       `${label} is missing at dist-embed/${relativePath}. Run ` +
-        "`vite build --config vite.config.embed.ts && tsc -p tsconfig.embed.json` first " +
-        "(or use `npm run build:embed`).",
+        "`vite build --config vite.config.embed.ts && " +
+        "vite build --config vite.config.embed-render.ts && " +
+        "tsc -p tsconfig.embed.json` first (or use `npm run build:embed`).",
     );
   }
 }
@@ -107,14 +113,29 @@ if (strippedDeclarations > 0) {
   );
 }
 
-// The embed package is framework-agnostic: a Tauri import in the bundle means
-// the entry accidentally pulled in the app shell or the platform layer.
-const bundleSource = readFileSync(resolve(outDir, JS_FILE), "utf8");
-const tauriReferences = [...new Set(bundleSource.match(/@tauri-apps\/[a-z0-9-]+/g) ?? [])];
-if (tauriReferences.length > 0) {
+// The embed package is framework-agnostic: a Tauri import in either bundle
+// means the entry accidentally pulled in the app shell or the platform layer.
+for (const relativePath of [JS_FILE, RENDER_JS_FILE]) {
+  const bundleSource = readFileSync(resolve(outDir, relativePath), "utf8");
+  const tauriReferences = [...new Set(bundleSource.match(/@tauri-apps\/[a-z0-9-]+/g) ?? [])];
+  if (tauriReferences.length > 0) {
+    fail(
+      `${relativePath} references Tauri (${tauriReferences.join(", ")}). ` +
+        "The embed and render entries must not import src/app/app.ts, src/main.ts, or " +
+        "src/platform/tauri.ts.",
+    );
+  }
+}
+
+// The Node renderer must stay editor-free: CodeMirror is browser-only (and the
+// bulk of the editor bundle), so a reference here means the render entry pulled
+// in the editor. The editor bundle legitimately contains CodeMirror code.
+const renderSource = readFileSync(resolve(outDir, RENDER_JS_FILE), "utf8");
+const codeMirrorReferences = [...new Set(renderSource.match(/@codemirror\/[a-z0-9-]+/g) ?? [])];
+if (codeMirrorReferences.length > 0) {
   fail(
-    `the bundle references Tauri (${tauriReferences.join(", ")}). ` +
-      "The embed entry must not import src/app/app.ts, src/main.ts, or src/platform/tauri.ts.",
+    `${RENDER_JS_FILE} references CodeMirror (${codeMirrorReferences.join(", ")}). ` +
+      "The render entry must not import the editor or src/editor/*.",
   );
 }
 
@@ -132,6 +153,7 @@ const hasNotices = repoFileExists("THIRD_PARTY_NOTICES.md");
 
 const files = [
   JS_FILE,
+  RENDER_JS_FILE,
   CSS_FILE,
   "types",
   "README.md",
@@ -166,6 +188,11 @@ const embedPackage = {
       import: `./${JS_FILE}`,
       default: `./${JS_FILE}`,
     },
+    "./render": {
+      types: `./${RENDER_TYPES_FILE}`,
+      import: `./${RENDER_JS_FILE}`,
+      default: `./${RENDER_JS_FILE}`,
+    },
     "./style.css": {
       types: "./types/style.d.ts",
       default: `./${CSS_FILE}`,
@@ -174,13 +201,27 @@ const embedPackage = {
   files,
   sideEffects: ["*.css"],
   license: "MIT",
-  // The runtime bundle includes CodeMirror, but the emitted declarations expose
-  // EditorController/KeyBinding types, so consumers need the CM type packages.
+  // The runtime editor bundle includes CodeMirror, but the emitted declarations
+  // expose EditorController/KeyBinding types, so consumers need the CM type
+  // packages. The Node renderer needs jsdom; it is optional so browser editor
+  // consumers do not install it.
   peerDependencies: {
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.8",
+    jsdom: ">=26",
   },
-  keywords: ["markdown", "editor", "codemirror", "live-preview", "notedown"],
+  peerDependenciesMeta: {
+    jsdom: { optional: true },
+  },
+  keywords: [
+    "markdown",
+    "editor",
+    "codemirror",
+    "live-preview",
+    "notedown",
+    "ssr",
+    "server-side-rendering",
+  ],
   repository: {
     type: "git",
     url: "https://github.com/CodeCody93/Notedown.git",
@@ -208,6 +249,38 @@ cpSync(repoFile(readmeSource), resolve(outDir, "README.md"));
 if (hasNotices) {
   cpSync(repoFile("THIRD_PARTY_NOTICES.md"), resolve(outDir, "THIRD_PARTY_NOTICES.md"));
 }
+
+// Post-package smoke test: import the built renderer the way a consumer would
+// and assert on its rendered output. The bundle is minified, so only output
+// behavior is checked here, never internal symbol names.
+let renderModule;
+try {
+  renderModule = await import(pathToFileURL(resolve(outDir, RENDER_JS_FILE)).href);
+} catch (error) {
+  fail(`could not import dist-embed/${RENDER_JS_FILE}: ${error.message}`);
+}
+
+const { renderMarkdown, renderMarkdownDocument } = renderModule ?? {};
+if (typeof renderMarkdown !== "function" || typeof renderMarkdownDocument !== "function") {
+  fail(`${RENDER_JS_FILE} must export renderMarkdown() and renderMarkdownDocument().`);
+}
+
+const smokeHtml = renderMarkdown("# Smoke **test**\n\n<script>alert(1)</script>");
+if (!smokeHtml.includes("<h1>Smoke <strong>test</strong></h1>")) {
+  fail("renderMarkdown() did not produce the expected heading and strong text.");
+}
+if (/<script\b/i.test(smokeHtml)) {
+  fail("renderMarkdown() left a <script> tag in its output; DOMPurify sanitization is broken.");
+}
+
+const smokeDocument = renderMarkdownDocument("# Title", { title: "A & B" });
+for (const expected of ["<!doctype html>", "<title>A &amp; B</title>", 'class="md-body"']) {
+  if (!smokeDocument.includes(expected)) {
+    fail(`renderMarkdownDocument() output is missing ${JSON.stringify(expected)}.`);
+  }
+}
+
+console.log("Render bundle smoke test passed (sanitization + document wrapper).");
 
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;

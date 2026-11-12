@@ -31,6 +31,12 @@ bundles.
 | `highlight.js` | BSD-3-Clause | Code-block syntax highlighting |
 | `dompurify` | MPL-2.0 OR Apache-2.0 | HTML sanitizer applied to every markdown-it HTML render |
 
+## Server rendering (optional)
+
+| Package | License | Notes |
+| --- | --- | --- |
+| `jsdom` | MIT | Optional runtime peer for `@codecody93/notedown-editor/render`; also used as the Vitest DOM test environment |
+
 ## Import, export, and file handling
 
 | Package | License | Notes |
@@ -58,7 +64,6 @@ of each dependency.
 | --- | --- | --- |
 | `vite` | MIT | Frontend build and dev server |
 | `vitest` | MIT | Test runner |
-| `jsdom` | MIT | DOM test environment |
 | `typescript` | Apache-2.0 | Type checker and declaration emit |
 | `@types/markdown-it` | MIT | Type declarations |
 

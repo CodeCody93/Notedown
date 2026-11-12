@@ -4,6 +4,26 @@ All notable changes to Notedown are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/) and the format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.5] - 2026-11-13
+
+### Added
+
+- **Node server renderer.** The embed package now publishes
+  `@codecody93/notedown-editor/render`, a Node-only subpath that renders
+  Markdown without loading the browser editor.
+  `renderMarkdown()` returns a sanitized HTML fragment, and
+  `renderMarkdownDocument()` returns a complete standalone page mirroring
+  File → Export HTML (theme, highlight themes, print CSS, CSP, and the
+  spoiler/copy script).
+- **Renderer helpers and CSS exports.** `createNotedownRenderer(sanitizeHtml)`
+  accepts a custom DOMPurify configuration or DOM implementation, and
+  `MARKDOWN_BODY_CSS`, `NOTEDOWN_THEME_CSS`, `HLJS_CSS_LIGHT`, and
+  `HLJS_CSS_DARK` are exported for hosts that render the fragment themselves.
+- **Optional `jsdom` peer.** Server rendering requires Node 20+ and `jsdom`;
+  editor-only installs do not need it. The renderer reuses the exact editor
+  markdown-it pipeline and DOMPurify sanitization, so all Notedown extensions
+  render the same.
+
 ## [0.7.0] - 2026-11-12
 
 First public release. The repository, desktop installers, web app, and embeddable

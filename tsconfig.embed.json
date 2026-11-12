@@ -8,5 +8,5 @@
     "outDir": "dist-embed/types",
     "rootDir": "src"
   },
-  "include": ["src/embed/**/*.ts", "src/types/**/*.d.ts", "src/vite-env.d.ts"]
+  "include": ["src/embed/**/*.ts", "src/render/**/*.ts", "src/types/**/*.d.ts", "src/vite-env.d.ts"]
 }
