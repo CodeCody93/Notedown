@@ -43,7 +43,7 @@ Notedown's Markdown dialect is documented as **The Notedown Standard**: CommonMa
 
 - Node.js 20 LTS or newer
 - npm 10 or newer
-- Rust 1.97.1 or newer installed with rustup
+- Rust 1.99.1 or newer installed with rustup
 - Tauri v2 platform prerequisites:
   - Windows: Visual Studio Build Tools with the C++ desktop workload, plus WebView2
   - macOS: Xcode Command Line Tools

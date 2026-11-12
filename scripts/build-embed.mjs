@@ -183,7 +183,7 @@ const embedPackage = {
   keywords: ["markdown", "editor", "codemirror", "live-preview", "notedown"],
   repository: {
     type: "git",
-    url: "git+https://github.com/CodeCody93/Notedown.git",
+    url: "https://github.com/CodeCody93/Notedown.git",
   },
   homepage: "https://codecody93.github.io/Notedown/",
   publishConfig: {
