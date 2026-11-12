@@ -235,7 +235,6 @@ jobs:
           //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
           EOF
           VERSION="$(node -p "require('./package.json').version")"
-          npm whoami --registry=https://npm.pkg.github.com
           if npm view "@codecody93/notedown-editor@${VERSION}" version --registry=https://npm.pkg.github.com >/dev/null 2>&1; then
             echo "Version ${VERSION} is already published; skipping."
           else
