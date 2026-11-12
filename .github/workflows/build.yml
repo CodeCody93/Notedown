@@ -57,8 +57,10 @@ jobs:
   web:
     name: Deploy web app
     needs: test
-    # The web app deploys on pushes to main and v* tags; pull requests only test.
-    if: github.event_name == 'push'
+    # The web app always tracks main. Do not deploy on tags: the github-pages
+    # environment is protected to the main branch, and tags must stay focused on
+    # the desktop/package release.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read

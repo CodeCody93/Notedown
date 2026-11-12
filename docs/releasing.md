@@ -1,11 +1,13 @@
 # Releasing Notedown
 
-Notedown 0.7.0 is the first public release. One `v*` tag produces three
+Notedown 0.7.0 is the first public release. One `v*` tag produces two release
 artifacts:
 
 - Desktop installers attached to a draft GitHub Release.
-- The static web app deployed to GitHub Pages.
 - The `@codecody93/notedown-editor` package published to GitHub Packages.
+
+The static web app is deployed separately from pushes to `main`, so it tracks
+`main` rather than the tagged release.
 
 ## CI overview
 
@@ -14,7 +16,7 @@ artifacts:
 | Job | Runner | What it does |
 | --- | --- | --- |
 | Test & version check | `ubuntu-latest` | `npm run version:check`, `npm ci`, typecheck, Vitest, `npm run build:embed`, uploads `notedown-editor-package` |
-| Web | `ubuntu-latest` | On pushes to `main` and `v*` tags (not PRs): builds with `VITE_BASE=/<repo>/`, uploads the Pages artifact, deploys `dist/` |
+| Web | `ubuntu-latest` | On pushes to `main` only (not tags/PRs): builds with `VITE_BASE=/<repo>/`, uploads the Pages artifact, deploys `dist/` |
 | Build | matrix | Windows MSI, Linux deb/AppImage, macOS universal DMG |
 | Publish embed | `ubuntu-latest` | On `v*` tags: downloads `notedown-editor-package` and publishes `dist-embed/` to GitHub Packages |
 
@@ -132,10 +134,11 @@ Do these before the first public release:
    The tag must be exactly `v<package version>`. The test job fails if it is not.
 
 7. **Wait for all jobs.** The draft release is created after the test job
-   passes, each platform build uploads its assets, the web job redeploys Pages,
-   and `publish-embed` publishes the package.
+   passes, each platform build uploads its assets, and `publish-embed` publishes
+   the package. The tag run deliberately does not deploy Pages; the web job is
+   protected to `main`.
 
-8. **Verify all three artifacts.**
+8. **Verify all artifacts.**
 
    - **Web:** open <https://codecody93.github.io/Notedown/>, hard-refresh, and
      check the browser QA checklist in [`docs/web.md`](web.md).

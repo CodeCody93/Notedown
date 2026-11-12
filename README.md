@@ -166,7 +166,7 @@ Notedown is MIT-licensed and free to use. If it saves you time, you can support 
 
 ## Releases
 
-Pushing a `v<version>` tag triggers GitHub Actions to build the Windows `.msi`, Linux `.deb`/`.AppImage`, and a universal macOS `.dmg`, deploy the web app to GitHub Pages, and publish `@codecody93/notedown-editor` to GitHub Packages. Desktop installers are attached to a draft GitHub Release for review. See [`docs/releasing.md`](docs/releasing.md) for the full checklist.
+Pushes to `main` deploy the web app to GitHub Pages. Pushing a `v<version>` tag triggers GitHub Actions to build the Windows `.msi`, Linux `.deb`/`.AppImage`, and a universal macOS `.dmg`, and publish `@codecody93/notedown-editor` to GitHub Packages. Desktop installers are attached to a draft GitHub Release for review. See [`docs/releasing.md`](docs/releasing.md) for the full checklist.
 
 ## Project layout
 
