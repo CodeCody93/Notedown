@@ -4,6 +4,25 @@ All notable changes to Notedown are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/) and the format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+## [0.7.6] - 2026-11-16
+
+### Fixed
+
+- **Blurry text while scrolling on Linux.** WebKitGTK's smooth scrolling
+  animates the scroll offset through fractional pixel positions, which made
+  text look blurry on alternating mouse-wheel steps. The desktop app now
+  disables WebKitGTK smooth scrolling on Linux (touchpad and touch scrolling
+  are unaffected).
+- **App window froze on startup when a draft was waiting to be recovered
+  (Linux).** Native dialogs were opened from Tauri's synchronous command
+  path, which runs on the GTK main thread; the blocking dialog call then
+  deadlocked the event loop, so the window rendered but could not be moved or
+  accept input, and the recovery prompt never appeared. All dialog commands
+  now run off the main thread, so the recovery prompt shows up and
+  Open/Save/Import/Export and alert dialogs no longer freeze the app.
+
 ## [0.7.5] - 2026-11-13
 
 ### Added

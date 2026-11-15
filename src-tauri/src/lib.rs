@@ -25,6 +25,28 @@ pub fn run() {
         .manage(open::PendingOpenPaths::new(startup_paths))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(|_app| {
+            // WebKitGTK's smooth scrolling animates the scroll offset through
+            // fractional pixel positions, so text is rasterised off the pixel
+            // grid and looks blurry on alternating mouse-wheel steps (reported
+            // on Kubuntu 25.10). The setting only affects discrete wheel and
+            // keyboard scrolling; touchpad/touch gestures are unaffected.
+            // See AGENTS.md Gotchas.
+            #[cfg(target_os = "linux")]
+            {
+                use tauri::Manager;
+                use webkit2gtk::{SettingsExt, WebViewExt};
+
+                for window in _app.webview_windows().values() {
+                    let _ = window.with_webview(|webview| {
+                        if let Some(settings) = webview.inner().settings() {
+                            settings.set_enable_smooth_scrolling(false);
+                        }
+                    });
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             io::pick_and_read,
             io::pick_and_read_bytes,

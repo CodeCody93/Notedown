@@ -1,6 +1,6 @@
 [package]
 name = "notedown"
-version = "0.7.5"
+version = "0.7.6"
 description = "A local-first Markdown editor with live preview"
 authors = ["Cody S."]
 license = "MIT"
@@ -27,4 +27,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "~2.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Linux only: the setup hook in src/lib.rs tweaks WebKitGTK's scroll settings.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2"
 

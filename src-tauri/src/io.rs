@@ -108,7 +108,7 @@ fn looks_like_uri(s: &str) -> bool {
 /// Returns `None` when the user cancels; `Some(OpenResult)` otherwise. Desktop
 /// (`FilePath::Path`) reads via `std::fs`; mobile (`FilePath::Url`) delegates to
 /// `mobile_fs` (which errors for M1).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pick_and_read(app: AppHandle) -> Result<Option<OpenResult>, String> {
     let mut dialog = app.dialog().file();
     for (name, exts) in markdown_filters() {
@@ -158,7 +158,7 @@ pub fn pick_and_read(app: AppHandle) -> Result<Option<OpenResult>, String> {
 /// Desktop (`FilePath::Path`) reads via `std::fs`; mobile (`FilePath::Url`)
 /// errors like the rest of the M1 seam — `content://`/`file://` import lands
 /// in M5 (see `mobile_fs`).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pick_and_read_bytes(app: AppHandle) -> Result<Option<ImportBytesResult>, String> {
     let mut dialog = app.dialog().file();
     for (name, exts) in import_filters() {
@@ -202,7 +202,7 @@ pub fn read_file(path: String) -> Result<String, String> {
 /// `kind` selects txt/html/docx/rtf/pdf filters; when `kind` is None, fall back to
 /// the legacy `html`-bool behavior (true → HTML filters, else Markdown).
 /// `None` when cancelled.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pick_save_path(
     app: AppHandle,
     suggested: Option<String>,
@@ -395,7 +395,15 @@ pub fn clear_draft(app: AppHandle, key: String) -> Result<(), String> {
 
 /// `confirm_dialog(app, message)` — blocking Yes/No warning; `true` for the
 /// affirmative reply. Used for unsaved-changes prompts, draft recovery, etc.
-#[tauri::command]
+// NATIVE DIALOGS MUST NEVER RUN ON THE GTK MAIN THREAD. Tauri runs synchronous
+// commands on the main thread, and tauri-plugin-dialog's `blocking_*` calls
+// deadlock there on Linux (rfd posts the dialog to another GTK thread's idle
+// callback, which cannot run while the main thread is blocked): the window
+// renders but is frozen and no dialog is ever shown. Both dialog commands below
+// are therefore deliberately `#[tauri::command(async)]` so the blocking call
+// runs on the worker pool instead. Same applies to the other dialog commands
+// above (`pick_and_read`, `pick_and_read_bytes`, `pick_save_path`, `write_image`).
+#[tauri::command(async)]
 pub fn confirm_dialog(app: AppHandle, message: String) -> Result<bool, String> {
     let reply = app
         .dialog()
@@ -410,7 +418,7 @@ pub fn confirm_dialog(app: AppHandle, message: String) -> Result<bool, String> {
 /// `alert_dialog(app, message)` — blocking native message dialog with a single
 /// OK button. The Tauri webview's `window.alert` is a no-op (user-results C9),
 /// so the UI routes through this command instead. Mirrors `confirm_dialog`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn alert_dialog(app: AppHandle, message: String) -> Result<(), String> {
     app.dialog()
         .message(message)
@@ -438,7 +446,9 @@ pub fn open_external(app: AppHandle, url: String) -> Result<(), String> {
 /// Returns the saved absolute path, or None when the folder picker was cancelled.
 /// `filename` is sanitized to a bare basename (defense in depth — it originates
 /// from imageFileName() in TS but must never traverse directories).
-#[tauri::command]
+// `(async)` — uses `blocking_pick_folder`; see the note above `confirm_dialog`
+// on why blocking dialogs must not run on the GTK main thread.
+#[tauri::command(async)]
 pub fn write_image(
     app: AppHandle,
     doc_path: Option<String>,
