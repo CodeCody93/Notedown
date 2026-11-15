@@ -1,29 +1,38 @@
 # Releasing Notedown
 
-Notedown 0.7.0 is the first public release. One `v*` tag produces two release
-artifacts:
+Notedown 0.7.0 is the first public release. A version bump on `main` produces
+two release artifacts automatically:
 
-- Desktop installers attached to a draft GitHub Release.
+- Desktop installers attached to a published GitHub Release.
 - The `@codecody93/notedown-editor` package published to GitHub Packages.
+
+The build is version-gated: every push to `main` reads `package.json`, and when
+`v<version>` has no published release yet, CI builds the installers, attaches
+them to a draft, and publishes the release after all three platform builds
+succeed. `v*` tags still work and go through the same gate, so tagging is
+optional.
 
 The static web app is deployed separately from pushes to `main`, so it tracks
 `main` rather than the tagged release.
 
 ## CI overview
 
-`.github/workflows/build.yml` runs four jobs:
+`.github/workflows/build.yml` runs these jobs:
 
 | Job | Runner | What it does |
 | --- | --- | --- |
 | Test & version check | `ubuntu-latest` | `npm run version:check`, `npm ci`, typecheck, Vitest, `npm run build:embed`, uploads `notedown-editor-package` |
+| Release info | `ubuntu-latest` | Reads `package.json`, checks whether `v<version>` is already published, decides whether this run creates a release |
 | Web | `ubuntu-latest` | On pushes to `main` only (not tags/PRs): builds with `VITE_BASE=/<repo>/`, uploads the Pages artifact, deploys `dist/` |
-| Build | matrix | Windows MSI, Linux deb/AppImage, macOS universal DMG |
-| Publish embed | `ubuntu-latest` | On `v*` tags: downloads `notedown-editor-package` and publishes `dist-embed/` to GitHub Packages |
+| Build | matrix | Windows MSI, Linux deb/AppImage, macOS universal DMG; attaches them to the draft release on release runs, otherwise uploads workflow artifacts |
+| Publish embed | `ubuntu-latest` | On release runs: downloads `notedown-editor-package` and publishes `dist-embed/` to GitHub Packages (skips versions that already exist) |
+| Publish release | `ubuntu-latest` | Publishes the draft GitHub Release after the whole build matrix succeeds and every platform installer is attached |
 
-The desktop build and publish jobs do not start unless the test job passes. Tag
-pushes (`v*`) attach the desktop bundles to a draft GitHub Release; branch/PR/
-manual runs upload workflow artifacts for 14 days instead. The web job deploys
-on every push to `main`, so the live site tracks `main` between releases.
+The desktop build and publish jobs do not start unless the test job passes, and
+publishing waits for all three platform builds. Main/tag runs whose version is
+already published build only; branch/PR runs upload workflow artifacts for 14
+days instead. The web job deploys on every push to `main`, so the live site
+tracks `main` between releases.
 
 ## One-time repository setup
 
@@ -58,7 +67,7 @@ Do these before the first public release:
    enrollment is approved.
 
 6. **Workflow permissions.** The workflow declares permissions at job level:
-   - `contents: write` (top level) for the draft release.
+   - `contents: write` (top level) for creating and publishing the release.
    - `pages: write`, `id-token: write` for the Pages deployment.
    - `packages: write` for the GitHub Packages publish.
 
@@ -107,7 +116,7 @@ Do these before the first public release:
    Smoke-test the demo (open the printed URL, switch theme/mode/read-only) and
    the previewed web build.
 
-4. **Commit and push.**
+4. **Commit and push `main`.**
 
    ```powershell
    git add -A
@@ -115,16 +124,21 @@ Do these before the first public release:
    git push origin main
    ```
 
-   Confirm the `web` job redeploys <https://codecody93.github.io/Notedown/> from
-   `main` before tagging.
+   The push is the release trigger: the `release-info` job sees a new version,
+   the matrix builds the installers, and `publish-release` publishes the GitHub
+   Release automatically. No tag or manual publish step is needed. Confirm the
+   `web` job also redeploys <https://codecody93.github.io/Notedown/>.
 
-5. **Optional dry run.** Go to Actions → Build → Run workflow on `main`. This
-   builds and uploads `notedown-windows-msi`, `notedown-linux`,
+5. **Optional dry run.** Go to Actions → Build → Run workflow on a **feature
+   branch** (release creation only happens on `main` and `v*` tags). This builds
+   and uploads `notedown-windows-msi`, `notedown-linux`,
    `notedown-macos-universal`, and `notedown-editor-package` artifacts without
    creating a release or publishing the package. Download and smoke-test the
    installers.
 
-6. **Tag and push.**
+6. **Tags are optional.** The workflow creates `v<version>` at the built commit
+   for a main-driven release. If you prefer to publish the tag yourself, push it
+   before or after `main`:
 
    ```powershell
    git tag -a v0.7.0 -m "Notedown 0.7.0"
@@ -132,9 +146,11 @@ Do these before the first public release:
    ```
 
    The tag must be exactly `v<package version>`. The test job fails if it is not.
+   If the version is already published, the tag run only builds artifacts.
 
-7. **Wait for all jobs.** The draft release is created after the test job
-   passes, each platform build uploads its assets, and `publish-embed` publishes
+7. **Wait for all jobs.** The draft release is created after the test and
+   release-info jobs pass, each platform build uploads its assets, the
+   `publish-release` job flips the draft public, and `publish-embed` publishes
    the package. The tag run deliberately does not deploy Pages; the web job is
    protected to `main`.
 
@@ -147,20 +163,23 @@ Do these before the first public release:
      installation in a clean project with the `.npmrc` from
      [`docs/embedding.md`](embedding.md). Also load the CDN copy from
      <https://codecody93.github.io/Notedown/embed/notedown-editor.js>.
-   - **Desktop:** open GitHub → Releases → the draft `Notedown v0.7.0`; confirm
-     these assets are attached:
+   - **Desktop:** open GitHub → Releases → `Notedown v0.7.0`; confirm these
+     assets are attached:
      - `*.msi` (Windows x64)
      - `*.deb` and `*.AppImage` (Linux x64)
      - `*universal*.dmg` (macOS Apple Silicon + Intel)
 
-   Then click **Publish release**.
+   The release should already be public; `publish-release` verifies that every
+   platform asset is present before publishing.
 
-## Important: do not create the release by hand first
+## Important: let the workflow own the release
 
-Push the tag and let the workflow create the draft. `tauri-action` is configured
-with `releaseDraft: true`; if a published release already exists for that tag,
-the action can fail while trying to create its draft. Edit the generated draft
-instead.
+The workflow creates the tag (for main-driven releases), attaches the
+installers, and publishes the release. Do not create or publish a release by
+hand: `release-info` treats any published release for the current version as
+"already done" and will only build artifacts, so a manual release freezes that
+version. If a release exists but is wrong, bump the patch version instead of
+editing or reusing it.
 
 ## GitHub Packages consumer auth caveat
 
@@ -180,13 +199,16 @@ the CDN copy under the Pages site's `/embed/` path instead. Never commit tokens.
 
 ## If a release run fails
 
-- Re-run the workflow. `tauri-action` reuses a draft release with the same tag.
+- Re-run the workflow (or push a fix to `main`). `tauri-action` reuses the
+  draft release with the same tag, and `publish-release` publishes it once every
+  platform installer is present.
+- If `publish-release` reports a missing installer, inspect the failed platform
+  build; do not hand-edit the release.
 - The `publish-embed` job fails if the version already exists in the registry.
-  Bump the patch version and tag again; npm/GitHub Packages versions are
-  immutable.
-- If the draft was already published, do not move or reuse the tag. Bump the
-  patch version and tag a new release.
-- Branch/PR/manual runs keep their bundles as workflow artifacts for 14 days.
+  Bump the patch version; npm/GitHub Packages versions are immutable.
+- If the release was already published, do not reuse the version. Bump the patch
+  version and push `main` again.
+- Branch/PR runs keep their bundles as workflow artifacts for 14 days.
 
 ## Platform notes
 

@@ -14,8 +14,8 @@ permissions:
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
-  # Never cancel a tag build mid-release; branch/PR builds can supersede each other.
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+  # Never cancel a main or tag build mid-release; only PR/branch runs supersede.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
   test:
@@ -53,6 +53,59 @@ jobs:
           path: dist-embed
           if-no-files-found: error
           retention-days: 14
+
+  release-info:
+    name: Release info
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.info.outputs.version }}
+      tag: ${{ steps.info.outputs.tag }}
+      create_release: ${{ steps.info.outputs.create_release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve version and release state
+        id: info
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs')
+            const { version } = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+            const tag = `v${version}`
+            core.setOutput('version', version)
+            core.setOutput('tag', tag)
+
+            const releasableRef =
+              context.ref === 'refs/heads/main' ||
+              context.ref.startsWith('refs/tags/v')
+            if (context.eventName === 'pull_request' || !releasableRef) {
+              core.info(`Ref ${context.ref}: building only, no release.`)
+              core.setOutput('create_release', 'false')
+              return
+            }
+
+            // getReleaseByTag returns 404 for draft releases, so a 200 means
+            // this version is already published. Drafts are reused by
+            // tauri-action and published by the publish-release job below.
+            let published = false
+            try {
+              const { data } = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag,
+              })
+              published = data.draft === false
+            } catch (error) {
+              if (error.status !== 404) throw error
+            }
+
+            core.setOutput('create_release', published ? 'false' : 'true')
+            core.info(
+              published
+                ? `Release ${tag} is already published; building only.`
+                : `Release ${tag} will be built and published.`
+            )
 
   web:
     name: Deploy web app
@@ -105,7 +158,7 @@ jobs:
 
   build:
     name: ${{ matrix.name }}
-    needs: test
+    needs: [test, release-info]
     permissions:
       contents: write
     runs-on: ${{ matrix.platform }}
@@ -177,11 +230,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: ${{ matrix.args }}
-          # Only tag pushes create/update a release. Empty strings mean "just build".
-          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
-          releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && format('Notedown {0}', github.ref_name) || '' }}
+          # create_release is true for main/tag runs whose package version has
+          # no published release yet. Empty strings mean "just build".
+          tagName: ${{ needs.release-info.outputs.create_release == 'true' && needs.release-info.outputs.tag || '' }}
+          releaseName: ${{ needs.release-info.outputs.create_release == 'true' && format('Notedown {0}', needs.release-info.outputs.tag) || '' }}
+          releaseCommitish: ${{ github.sha }}
           releaseBody: |
-            Notedown ${{ github.ref_name }}
+            Notedown ${{ needs.release-info.outputs.tag }}
 
             **Windows:** download and run the `.msi` installer. These builds are unsigned, so SmartScreen may warn about an unknown publisher; choose **More info**, then **Run anyway**.
 
@@ -191,12 +246,14 @@ jobs:
 
             **Web app:** <https://codecody93.github.io/Notedown/> — no install required. Browser storage and save behavior vary by browser; see the web limitations in the README.
 
-            **Embeddable editor:** `@codecody93/notedown-editor` is published to GitHub Packages on `v*` tag runs: <https://github.com/CodeCody93/Notedown/pkgs/npm/notedown-editor>. Installation and CDN usage are documented in `docs/embedding.md`.
+            **Embeddable editor:** `@codecody93/notedown-editor` is published to GitHub Packages on release runs: <https://github.com/CodeCody93/Notedown/pkgs/npm/notedown-editor>. Installation and CDN usage are documented in `docs/embedding.md`.
+          # Stay a draft until every platform has uploaded; publish-release
+          # flips it public after the build matrix succeeds.
           releaseDraft: true
           prerelease: false
 
       - name: Upload bundles
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ needs.release-info.outputs.create_release != 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifactName }}
@@ -206,8 +263,8 @@ jobs:
 
   publish-embed:
     name: Publish embed package
-    needs: test
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, release-info, build]
+    if: needs.release-info.outputs.create_release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -252,3 +309,56 @@ jobs:
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-release:
+    name: Publish GitHub release
+    needs: [release-info, build]
+    if: needs.release-info.outputs.create_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish draft release
+        uses: actions/github-script@v8
+        env:
+          RELEASE_TAG: ${{ needs.release-info.outputs.tag }}
+        with:
+          script: |
+            const tag = process.env.RELEASE_TAG
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            })
+            const draft = releases.find((r) => r.tag_name === tag && r.draft)
+            const release = draft ?? releases.find((r) => r.tag_name === tag)
+            if (!release) {
+              core.setFailed(`No release found for ${tag}. Did the build matrix run?`)
+              return
+            }
+            if (!release.draft) {
+              core.info(`Release ${tag} is already published: ${release.html_url}`)
+              return
+            }
+
+            // Refuse to publish an incomplete release: every platform must have
+            // uploaded its installer before the draft goes public.
+            const names = (release.assets ?? []).map((a) => a.name.toLowerCase())
+            const missing = ['.msi', '.deb', '.appimage', '.dmg'].filter(
+              (ext) => !names.some((name) => name.endsWith(ext)),
+            )
+            if (missing.length > 0) {
+              core.setFailed(
+                `Release ${tag} is missing ${missing.join(', ')}; refusing to publish a partial release.`,
+              )
+              return
+            }
+
+            const { data } = await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release.id,
+              draft: false,
+            })
+            core.info(`Published ${data.tag_name}: ${data.html_url}`)

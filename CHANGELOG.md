@@ -6,6 +6,16 @@ All notable changes to Notedown are documented in this file. The project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **GitHub Releases publish automatically from `main`.** The Build workflow
+  reads the version from `package.json` on every push to `main`; when that
+  version has no published release yet, it builds the installers, attaches them
+  to a draft release, and publishes it once all three platform builds succeed.
+  `v*` tags still work and go through the same version gate, so tagging is
+  optional, and an already-published version only produces build artifacts
+  instead of a second release.
+
 ## [0.7.6] - 2026-11-16
 
 ### Fixed
