@@ -386,6 +386,12 @@ replaces the built-in sanitizer, it does not bypass sanitization.
 - The package is a pure ES module. Hosts that need a global build should import
   the CDN module directly rather than expecting a UMD/`window` global.
 
+## Sponsor
+
+Notedown is MIT-licensed and free to use. If it saves you time, you can
+support development through GitHub Sponsors:
+<https://github.com/sponsors/CodeCody93>.
+
 ## License
 
 MIT. See the repository

@@ -4,10 +4,32 @@ All notable changes to Notedown are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/) and the format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.8.0] - 2026-11-16
+
+### Added
+
+- **Built-in update checks.** File → Check for updates… and the About dialog
+  query the latest published GitHub release, compare it with the bundled
+  version, and report either "you're on the latest version" or the newer
+  version with a platform-matched installer link (`.msi` on Windows, `.dmg` on
+  macOS, `.AppImage`/`.deb` on Linux) and a release-notes link. When no
+  installer matches the platform, the release page is offered instead. The app
+  never downloads or installs updates itself: links open through the OS
+  browser via the platform layer.
+- **Optional automatic checks.** Settings → Updates adds an opt-in "Check for
+  updates automatically" toggle (off by default), mirrored in the About dialog.
+  Automatic checks run at most once every 24 hours, and a newer release adds an
+  "Update X.Y.Z available" pill to the status bar that opens the cached result
+  without another network request.
+- **Support links.** The About dialog's GitHub Sponsors link is now labeled
+  "Support Notedown", and `package.json` plus the generated embed package
+  advertise the Sponsors page through npm `funding` metadata.
 
 ### Changed
 
+- **About dialog refresh.** The dialog now includes update status, installer
+  and release-note links, the auto-check toggle, and the version read from the
+  shared update module so it cannot drift from the release.
 - **GitHub Releases publish automatically from `main`.** The Build workflow
   reads the version from `package.json` on every push to `main`; when that
   version has no published release yet, it builds the installers, attaches them
@@ -15,6 +37,13 @@ All notable changes to Notedown are documented in this file. The project follows
   `v*` tags still work and go through the same version gate, so tagging is
   optional, and an already-published version only produces build artifacts
   instead of a second release.
+- **App identifier.** The Tauri identifier is now `com.codecody93.notedown`,
+  which resolves the macOS bundle warning from the old `com.notedown.app`
+  suffix. Settings, recents, and drafts stored under the old identifier are not
+  migrated.
+- **Update-check network allowlist.** The production desktop CSP now permits
+  `https://api.github.com` in `connect-src` so update checks work in packaged
+  builds; no other network access was added.
 
 ## [0.7.6] - 2026-11-16
 

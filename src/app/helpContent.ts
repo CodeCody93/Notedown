@@ -166,6 +166,13 @@ export const HELP_ENTRIES: HelpEntry[] = [
   },
   { id: 'navigator', title: 'Navigator', example: 'Show or hide the heading outline panel', syntax: '', hotkeyId: 'toggle-navigator' },
   { id: 'help', title: 'Help', example: 'Open this guide', syntax: '', hotkeyId: null },
+  {
+    id: 'check-updates',
+    title: 'Check for updates',
+    example: 'Check GitHub releases for a newer version of Notedown',
+    syntax: '',
+    hotkeyId: null,
+  },
   { id: 'about', title: 'About', example: 'View the app version and support link', syntax: '', hotkeyId: null },
 ]
 

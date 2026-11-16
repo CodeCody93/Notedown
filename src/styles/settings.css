@@ -140,6 +140,14 @@ label.settings-row {
   color: var(--muted);
 }
 
+/* Secondary explanation under a checkbox (indented to line up with the label). */
+.settings-hint {
+  margin: 0 0 2px 22px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
 .settings-radio-group {
   display: flex;
   flex-direction: column;

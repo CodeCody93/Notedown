@@ -32,6 +32,7 @@ export const ICON = {
   import: `<path d="M4.5 14.5h4.5l3-3v-9a1 1 0 0 0-1-1H4.5a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1z" /><path d="M8.5 8.5v-4M6.8 6.2l1.7-1.7 1.7 1.7" />`,
   help: `<circle cx="8" cy="8" r="5.8" /><path d="M6.2 6.2c0-1 0.8-1.7 1.8-1.7 1 0 1.8 0.7 1.8 1.6 0 1.2-1.8 1.4-1.8 2.6" /><path d="M8 11.5h.01" />`,
   about: `<circle cx="8" cy="8" r="5.8" /><path d="M8 7.2v3.3" /><path d="M8 4.8h.01" />`,
+  update: `<path d="M13 8a5 5 0 1 1-1.6-3.7" /><path d="M13.4 1.8v3.1h-3.1" />`,
   settings: `<path d="M2.5 4.5h6M2.5 8h3.5M2.5 11.5h7" /><circle cx="11.5" cy="4.5" r="1.7" fill="currentColor" stroke="none" /><circle cx="9" cy="8" r="1.7" fill="currentColor" stroke="none" /><circle cx="12.5" cy="11.5" r="1.7" fill="currentColor" stroke="none" />`,
   undo: `<path d="M4 7H11a3.5 3.5 0 0 1 0 7H9" /><polyline points="6.5 4.5 4 7 6.5 9.5" />`,
   redo: `<path d="M12 7H5a3.5 3.5 0 0 0 0 7h2" /><polyline points="9.5 4.5 12 7 9.5 9.5" />`,

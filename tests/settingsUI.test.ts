@@ -69,6 +69,10 @@ describe('settings modal', () => {
     expect(byId<HTMLInputElement>('settings-spellcheck').checked).toBe(true)
     expect(byId<HTMLInputElement>('settings-extra-menu').checked).toBe(false)
     expect(byId<HTMLInputElement>('settings-navigator').checked).toBe(true)
+    expect(byId<HTMLInputElement>('settings-auto-update').checked).toBe(false)
+    expect(dialog().querySelector('.settings-hint')?.textContent).toBe(
+      'Contacts GitHub once a day when enabled.',
+    )
     // opening/refreshing never fires onApply
     expect(deps.onApply).not.toHaveBeenCalled()
     closeSettingsModal()
@@ -134,6 +138,23 @@ describe('settings modal', () => {
     expect(deps.onApply).toHaveBeenNthCalledWith(3, { extraMenuAlwaysVisible: true })
     expect(deps.onApply).toHaveBeenNthCalledWith(4, { spellCheck: false })
     expect(deps.onApply).toHaveBeenNthCalledWith(5, { navigatorVisible: false })
+  })
+
+  it('reflects and applies the automatic update setting', () => {
+    openSettingsModal()
+    const autoUpdate = byId<HTMLInputElement>('settings-auto-update')
+    expect(autoUpdate.checked).toBe(false)
+    autoUpdate.checked = true
+    autoUpdate.dispatchEvent(new Event('change'))
+    expect(deps.onApply).toHaveBeenCalledWith({ autoCheckForUpdates: true })
+    expect(deps.onApply).toHaveBeenCalledTimes(1)
+    closeSettingsModal()
+
+    // A getSettings override is reflected on the next open.
+    deps.getSettings.mockReturnValue({ ...DEFAULT_SETTINGS, autoCheckForUpdates: true })
+    openSettingsModal()
+    expect(byId<HTMLInputElement>('settings-auto-update').checked).toBe(true)
+    closeSettingsModal()
   })
 
   it('applies default mode radio changes', () => {

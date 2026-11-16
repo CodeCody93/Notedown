@@ -13,6 +13,8 @@ describe('DEFAULT_SETTINGS', () => {
       spellCheck: true,
       defaultMode: 'live',
       navigatorVisible: true,
+      autoCheckForUpdates: false,
+      lastUpdateCheckAt: null,
     })
   })
 })
@@ -51,6 +53,23 @@ describe('mergeSettings', () => {
   it('spellCheck: passes a stored false through and defaults to true when absent', () => {
     expect(mergeSettings({ spellCheck: false }).spellCheck).toBe(false)
     expect(mergeSettings({}).spellCheck).toBe(true)
+  })
+
+  it('autoCheckForUpdates: only a strict true opts in; anything else is false', () => {
+    expect(mergeSettings({ autoCheckForUpdates: true }).autoCheckForUpdates).toBe(true)
+    expect(mergeSettings({ autoCheckForUpdates: false }).autoCheckForUpdates).toBe(false)
+    expect(mergeSettings({}).autoCheckForUpdates).toBe(false)
+    expect(mergeSettings({ autoCheckForUpdates: 'yes' as unknown as boolean }).autoCheckForUpdates).toBe(false)
+    expect(mergeSettings({ autoCheckForUpdates: 1 as unknown as boolean }).autoCheckForUpdates).toBe(false)
+  })
+
+  it('lastUpdateCheckAt: keeps finite numbers and nulls anything else', () => {
+    expect(mergeSettings({ lastUpdateCheckAt: 1_700_000_000_000 }).lastUpdateCheckAt).toBe(1_700_000_000_000)
+    expect(mergeSettings({ lastUpdateCheckAt: 0 }).lastUpdateCheckAt).toBe(0)
+    expect(mergeSettings({ lastUpdateCheckAt: null }).lastUpdateCheckAt).toBeNull()
+    expect(mergeSettings({}).lastUpdateCheckAt).toBeNull()
+    expect(mergeSettings({ lastUpdateCheckAt: Number.POSITIVE_INFINITY }).lastUpdateCheckAt).toBeNull()
+    expect(mergeSettings({ lastUpdateCheckAt: 'yesterday' as unknown as number }).lastUpdateCheckAt).toBeNull()
   })
 
   it('coerces a stored defaultMode of "preview" (mode removed) back to live', () => {

@@ -59,12 +59,12 @@ Do these before the first public release:
    package visibility to public. Grant the repository write access under the
    package's settings if package creation was inherited from another repo.
 
-5. **Enroll in GitHub Sponsors.** Sponsors enrollment is a manual, account-level
-   process at <https://github.com/sponsors>. Complete the payout and tax setup
-   for `CodeCody93`; the repository already ships `.github/FUNDING.yml`
-   (`github: CodeCody93`) and the About dialog links to
-   <https://github.com/sponsors/CodeCody93>. The Sponsor button appears once
-   enrollment is approved.
+5. **Verify GitHub Sponsors.** Confirm the approved account at
+   <https://github.com/sponsors/CodeCody93>: the profile details are correct and
+   both the monthly and one-time tiers are published. The repository ships
+   `.github/FUNDING.yml` (`github: CodeCody93`), and the About dialog uses the
+   same URL (`SPONSOR_URL` in `src/app/about.ts`). Keep those references and the
+   `funding` metadata in `package.json` and the generated embed package in sync.
 
 6. **Workflow permissions.** The workflow declares permissions at job level:
    - `contents: write` (top level) for creating and publishing the release.

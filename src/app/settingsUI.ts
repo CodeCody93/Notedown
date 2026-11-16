@@ -29,6 +29,7 @@ interface SettingsEls {
   spellCheck: HTMLInputElement
   extraMenu: HTMLInputElement
   navigator: HTMLInputElement
+  autoUpdate: HTMLInputElement
 }
 
 let deps: SettingsModalDeps | null = null
@@ -189,6 +190,19 @@ function buildPanelsFieldset(): { fieldset: HTMLFieldSetElement; navigator: HTML
   return { fieldset, navigator }
 }
 
+function buildUpdatesFieldset(): { fieldset: HTMLFieldSetElement; autoUpdate: HTMLInputElement } {
+  const fieldset = buildFieldset('Updates')
+  const autoUpdate = document.createElement('input')
+  autoUpdate.type = 'checkbox'
+  autoUpdate.id = 'settings-auto-update'
+  fieldset.appendChild(row(autoUpdate, 'Check for updates automatically'))
+  const hint = document.createElement('p')
+  hint.className = 'settings-hint'
+  hint.textContent = 'Contacts GitHub once a day when enabled.'
+  fieldset.appendChild(hint)
+  return { fieldset, autoUpdate }
+}
+
 function buildDialog(): SettingsEls {
   const root = byId('settings-modal-root')
   const backdrop = document.createElement('div')
@@ -214,7 +228,7 @@ function buildDialog(): SettingsEls {
   closeBtn.textContent = '\u00d7' // ×
   header.append(title, closeBtn)
 
-  // Desktop: Theme | Editing + Menubar + Panels side by side (.settings-grid is 2 cols).
+  // Desktop: Theme | Editing + Menubar + Panels + Updates side by side (.settings-grid is 2 cols).
   const grid = document.createElement('div')
   grid.className = 'settings-grid'
   grid.appendChild(buildThemeFieldset())
@@ -223,7 +237,8 @@ function buildDialog(): SettingsEls {
   const editing = buildEditingFieldset()
   const menubar = buildMenubarFieldset()
   const panels = buildPanelsFieldset()
-  editCol.append(editing.fieldset, menubar.fieldset, panels.fieldset)
+  const updates = buildUpdatesFieldset()
+  editCol.append(editing.fieldset, menubar.fieldset, panels.fieldset, updates.fieldset)
   grid.appendChild(editCol)
 
   dialog.append(header, grid)
@@ -242,6 +257,7 @@ function buildDialog(): SettingsEls {
     spellCheck: editing.spellCheck,
     extraMenu: menubar.extraMenu,
     navigator: panels.navigator,
+    autoUpdate: updates.autoUpdate,
   }
 }
 
@@ -322,6 +338,10 @@ function onNavigatorChange(ev: Event): void {
   applyPatch({ navigatorVisible: (ev.target as HTMLInputElement).checked })
 }
 
+function onAutoUpdateChange(ev: Event): void {
+  applyPatch({ autoCheckForUpdates: (ev.target as HTMLInputElement).checked })
+}
+
 // --- listener lifecycle: attached on open, removed on close (no leaks) ---
 
 function attachListeners(): void {
@@ -337,6 +357,7 @@ function attachListeners(): void {
   els.spellCheck.addEventListener('change', onSpellCheckChange)
   els.extraMenu.addEventListener('change', onExtraMenuChange)
   els.navigator.addEventListener('change', onNavigatorChange)
+  els.autoUpdate.addEventListener('change', onAutoUpdateChange)
   for (const radio of els.dialog.querySelectorAll<HTMLInputElement>('input[type="radio"]')) {
     radio.addEventListener('change', onRadioChange)
   }
@@ -355,6 +376,7 @@ function detachListeners(): void {
   els.spellCheck.removeEventListener('change', onSpellCheckChange)
   els.extraMenu.removeEventListener('change', onExtraMenuChange)
   els.navigator.removeEventListener('change', onNavigatorChange)
+  els.autoUpdate.removeEventListener('change', onAutoUpdateChange)
   for (const radio of els.dialog.querySelectorAll<HTMLInputElement>('input[type="radio"]')) {
     radio.removeEventListener('change', onRadioChange)
   }
@@ -381,6 +403,7 @@ function refreshValues(): void {
   els.spellCheck.checked = s.spellCheck
   els.extraMenu.checked = s.extraMenuAlwaysVisible
   els.navigator.checked = s.navigatorVisible
+  els.autoUpdate.checked = s.autoCheckForUpdates
 }
 
 function focusableElements(): HTMLElement[] {

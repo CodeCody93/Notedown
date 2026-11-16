@@ -12,6 +12,8 @@ export interface Settings {
   spellCheck: boolean
   defaultMode: 'live' | 'source'
   navigatorVisible: boolean
+  autoCheckForUpdates: boolean
+  lastUpdateCheckAt: number | null
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -24,6 +26,11 @@ export const DEFAULT_SETTINGS: Settings = {
   spellCheck: true,
   defaultMode: 'live',
   navigatorVisible: true,
+  // Opt-in: no network call happens unless the user turns this on (or asks for
+  // an update check manually).
+  autoCheckForUpdates: false,
+  // Epoch millis of the last successful check; drives the 24h auto-check throttle.
+  lastUpdateCheckAt: null,
 }
 
 // Merge persisted settings onto defaults, keeping only known settings keys.
@@ -34,9 +41,16 @@ export function mergeSettings(stored: Partial<Settings> | null | undefined): Set
     const value = stored[key]
     if (value !== undefined) {
       const target = merged as unknown as Record<string, unknown>
-      // 'preview' mode was removed — a stored value from an older build must not
-      // resurrect it, so coerce anything outside the narrowed union to 'live'.
-      target[key] = key === 'defaultMode' && value !== 'live' && value !== 'source' ? 'live' : value
+      if (key === 'autoCheckForUpdates') {
+        // Strict boolean opt-in: anything but true (missing/corrupt JSON) stays off.
+        target[key] = value === true
+      } else if (key === 'lastUpdateCheckAt') {
+        target[key] = typeof value === 'number' && Number.isFinite(value) ? value : null
+      } else {
+        // 'preview' mode was removed — a stored value from an older build must not
+        // resurrect it, so coerce anything outside the narrowed union to 'live'.
+        target[key] = key === 'defaultMode' && value !== 'live' && value !== 'source' ? 'live' : value
+      }
     }
   }
   return merged

@@ -32,6 +32,7 @@ import { createNavigator } from './navigator'
 import type { NavigatorController } from './navigator'
 import { isSettingsOpen, openSettingsModal, wireSettingsModal } from './settingsUI'
 import { isAboutOpen, openAboutModal, wireAboutModal } from './about'
+import { checkForUpdates, shouldAutoCheck, subscribeUpdateState, type UpdateState } from './updates'
 import { isHelpOpen, openHelpModal, wireHelpModal } from './help'
 import { isGraphBuilderOpen, openGraphBuilder } from './graphDialog'
 import { isTableBuilderOpen, openTableBuilder } from './tableDialog'
@@ -522,13 +523,20 @@ export function setContent(content: string): void {
 }
 
 export function updateSettings(patch: Partial<Settings>): void {
-  const settings = { ...appState.get().settings, ...patch }
+  const previous = appState.get().settings
+  const settings = { ...previous, ...patch }
   appState.set({ settings })
   applyTheme(settings.theme)
   applyEditorSettings(settings)
   io.writeSettings(JSON.stringify(settings)).catch((err) => {
     console.warn('Settings save failed', err)
   })
+  // Opting in to automatic update checks runs one immediately (the 24h throttle
+  // only governs the silent startup check). lastUpdateCheckAt writes leave the
+  // flag unchanged, so they never trigger a check.
+  if (!previous.autoCheckForUpdates && settings.autoCheckForUpdates) {
+    void checkForUpdates({ force: true })
+  }
 }
 
 function applyEditorSettings(s: Settings): void {
@@ -1006,6 +1014,8 @@ function wireMenu(): void {
     },
     help: () => openModalWithCaretRestore((opts) => openHelpModal(opts)),
     about: () => openModalWithCaretRestore((opts) => openAboutModal(opts)),
+    'check-updates': () =>
+      openModalWithCaretRestore((opts) => openAboutModal({ ...opts, checkForUpdates: true })),
     settings: () => openModalWithCaretRestore((opts) => openSettingsModal(opts)),
     'clear-recents': () => {
       void clearRecents()
@@ -1220,6 +1230,59 @@ function wireStatusMode(): void {
 }
 
 /**
+ * Reflect a finished update check in the status-bar pill: visible only when a
+ * newer release is available, clicking it opens About with the cached result
+ * (no forced network request). Guard a missing element so the module works
+ * before/stale of the host HTML.
+ */
+function syncUpdateBadge(state: UpdateState): void {
+  const badge = document.getElementById('status-update')
+  if (badge === null) return
+  if (state.phase === 'done' && state.result !== null && state.result.status === 'available') {
+    badge.textContent = `Update ${state.result.latestVersion} available`
+    badge.title = `Notedown ${state.result.latestVersion} is available — click for details`
+    badge.hidden = false
+  } else {
+    badge.hidden = true
+  }
+}
+
+let updateChecksWired = false
+
+/**
+ * Update-check wiring: the status-bar pill opens About with the cached result,
+ * successful checks persist lastUpdateCheckAt (the 24h auto-check throttle), and
+ * an opted-in startup check runs non-forced/silently at the end. Called from
+ * initApp() after the editor/menubar are up.
+ */
+function wireUpdateChecks(): void {
+  if (updateChecksWired) return
+  updateChecksWired = true
+  document.getElementById('status-update')?.addEventListener('click', () => {
+    openModalWithCaretRestore((opts) => openAboutModal(opts))
+  })
+  subscribeUpdateState((state) => {
+    if (
+      state.phase === 'done' &&
+      state.lastCheckedAt !== null &&
+      state.result !== null &&
+      state.result.status !== 'error'
+    ) {
+      // Persist the throttle timestamp only when it actually changed — this
+      // write also flows through updateSettings, so it must never trigger a check.
+      if (state.lastCheckedAt !== appState.get().settings.lastUpdateCheckAt) {
+        updateSettings({ lastUpdateCheckAt: state.lastCheckedAt })
+      }
+    }
+    syncUpdateBadge(state)
+  })
+  const settings = appState.get().settings
+  if (settings.autoCheckForUpdates === true && shouldAutoCheck(settings.lastUpdateCheckAt)) {
+    void checkForUpdates()
+  }
+}
+
+/**
  * Refocus the editor when the window regains focus — but never while the
  * settings modal is open (settingsUI toggles the hidden attribute on
  * #settings-modal-root) and only once the editor exists.
@@ -1374,7 +1437,7 @@ export async function initApp(): Promise<void> {
   wireImportDialog()
   wireExportDialog()
   wireHelpModal()
-  wireAboutModal()
+  wireAboutModal({ getSettings: () => appState.get().settings, onApply: (patch) => updateSettings(patch) })
 
   // Render the menubar once before wiring; recents + data-action clicks live inside it.
   const menubarRoot = byId('menubar-root')
@@ -1438,4 +1501,5 @@ export async function initApp(): Promise<void> {
   wireCloseGuard()
   renderRecents()
   wireSystemOpenFiles()
+  wireUpdateChecks()
 }

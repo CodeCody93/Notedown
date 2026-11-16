@@ -54,6 +54,7 @@ export const FILE_MENU: MenuEntry[] = [
   { id: 'export', label: 'Export…', hotkey: 'export', icon: ICON.export },
   { id: 'settings', label: 'Settings', hotkey: 'settings', icon: ICON.settings, dividerBefore: true },
   { id: 'help', label: 'Help', icon: ICON.help },
+  { id: 'check-updates', label: 'Check for updates…', icon: ICON.update, dividerBefore: true },
   { id: 'about', label: 'About', icon: ICON.about },
 ]
 

@@ -20,8 +20,10 @@ Download the latest installer from the GitHub Releases page:
 | Linux (x64) | `Notedown_<version>_amd64.AppImage` | Portable single file; make it executable and run. |
 | macOS (Universal) | `Notedown_<version>_universal.dmg` | Apple Silicon and Intel. Unsigned and not notarized. |
 
-Release assets are built by GitHub Actions from the tagged source. The project
-does not currently publish checksums or signed binaries.
+Release assets are built by GitHub Actions from the release commit on `main`.
+The project does not currently publish checksums or signed binaries. The desktop
+app can also check for newer releases from **File → Check for updates…** and
+open the matching installer in your browser.
 
 ## Windows
 

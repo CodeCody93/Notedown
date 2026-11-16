@@ -1,6 +1,6 @@
 [package]
 name = "notedown"
-version = "0.7.6"
+version = "0.8.0"
 description = "A local-first Markdown editor with live preview"
 authors = ["Cody S."]
 license = "MIT"

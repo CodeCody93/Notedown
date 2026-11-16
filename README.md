@@ -25,6 +25,7 @@ Notedown is a local-first Markdown editor with live preview, built with Tauri v2
 - Local draft recovery, recent files, and session restore
 - OS file associations for `.md`, `.markdown`, `.mdown`, `.mkd`, `.mkdn`, and `.mdwn`
 - Single-instance forwarding so opening a second document reuses the running window
+- Built-in update checks against GitHub Releases, with optional daily automatic checks
 - Browser build with a save fallback for Firefox and Safari
 - Embeddable editor package for other web apps
 
@@ -174,7 +175,7 @@ Notedown is MIT-licensed and free to use. If it saves you time, you can support 
 
 ## Releases
 
-Pushes to `main` deploy the web app to GitHub Pages. Pushing a `v<version>` tag triggers GitHub Actions to build the Windows `.msi`, Linux `.deb`/`.AppImage`, and a universal macOS `.dmg`, and publish `@codecody93/notedown-editor` to GitHub Packages. Desktop installers are attached to a draft GitHub Release for review. See [`docs/releasing.md`](docs/releasing.md) for the full checklist.
+Pushes to `main` deploy the web app to GitHub Pages. A version bump on `main` also triggers GitHub Actions to build the Windows `.msi`, Linux `.deb`/`.AppImage`, and a universal macOS `.dmg`, publish `@codecody93/notedown-editor` to GitHub Packages, and publish the GitHub Release automatically once all platform builds succeed. See [`docs/releasing.md`](docs/releasing.md) for the full checklist.
 
 ## Project layout
 

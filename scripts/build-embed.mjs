@@ -227,6 +227,10 @@ const embedPackage = {
     url: "https://github.com/CodeCody93/Notedown.git",
   },
   homepage: "https://codecody93.github.io/Notedown/",
+  funding: {
+    type: "github",
+    url: "https://github.com/sponsors/CodeCody93",
+  },
   publishConfig: {
     registry: "https://npm.pkg.github.com",
   },

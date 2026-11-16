@@ -85,6 +85,9 @@ describe('renderMenubar', () => {
       'save-as',
       'export',
       'settings',
+      'help',
+      'check-updates',
+      'about',
       'clear-recents',
       // Toolbar
       'undo',
@@ -133,7 +136,7 @@ describe('renderMenubar', () => {
     }
   })
 
-  it('File menu order is New, Open, Open Recent, Import…, Save, Save as, Export…, Settings, Help, About (round-9 unified export)', () => {
+  it('File menu order is New, Open, Open Recent, Import…, Save, Save as, Export…, Settings, Help, Check for updates…, About (round-9 unified export)', () => {
     expect(FILE_MENU.map((e) => e.id)).toEqual([
       'new',
       'open',
@@ -144,11 +147,15 @@ describe('renderMenubar', () => {
       'export',
       'settings',
       'help',
+      'check-updates',
       'about',
     ])
     const exportEntry = FILE_MENU.find((e) => e.id === 'export')
     expect(exportEntry?.label).toBe('Export…')
     expect(exportEntry?.hotkey).toBe('export')
+    const updateEntry = FILE_MENU.find((e) => e.id === 'check-updates')
+    expect(updateEntry?.label).toBe('Check for updates…')
+    expect(updateEntry?.dividerBefore).toBe(true)
   })
 
   it('renders the Open Recent submenu with the #recent-list placeholder and Clear recent', () => {

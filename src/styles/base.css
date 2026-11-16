@@ -76,3 +76,23 @@ button:not(:disabled) {
   border-radius: 50%;
   background: var(--accent);
 }
+
+/* Status-bar update badge: shown by the app layer when a newer release exists.
+   Clicking it opens the validated release/download link through FileIO. */
+.status-update {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  background: transparent;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.status-update:hover {
+  color: #fff;
+  background: var(--accent);
+}

@@ -67,6 +67,86 @@
   color: var(--muted);
 }
 
+/* Update check block: sits between the version line and the summary. */
+.about-update {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--menu-radius);
+}
+
+.about-update-status {
+  width: 100%;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.about-check-updates {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  font-size: 13px;
+}
+
+.about-check-updates:hover:not(:disabled) {
+  color: #fff;
+  background: var(--accent);
+}
+
+.about-check-updates:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Primary accent action: the validated installer download, or the release page
+   fallback when no installer matched this platform. */
+.about-download {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.about-download:hover {
+  filter: brightness(1.08);
+}
+
+.about-release-notes {
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.about-release-notes:hover {
+  text-decoration: underline;
+}
+
+.about-auto-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.about-auto-update-input {
+  accent-color: var(--accent);
+}
+
 .about-summary {
   margin: 0 0 16px;
   font-size: 13px;
