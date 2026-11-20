@@ -4,6 +4,23 @@ All notable changes to Notedown are documented in this file. The project follows
 [Semantic Versioning](https://semver.org/) and the format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.1] - 2026-11-21
+
+### Changed
+
+- **Dedicated update-check dialog.** Update checking moved out of the About
+  dialog into its own Check for updates dialog, with the same layout, version
+  line, installer/release-notes links, and auto-check toggle. The status-bar
+  "Update X.Y.Z available" pill opens the same dialog with the cached result.
+  About now shows only the app summary and the "Support Notedown" link.
+
+### Fixed
+
+- **Navigator navigation lands at the top.** Clicking a heading in the Navigator
+  panel now always scrolls that heading to the top of the viewport (clamped near
+  the end of the document) instead of using CodeMirror's default minimal scroll,
+  which aligned it to whichever edge — top or bottom — happened to be closer.
+
 ## [0.8.0] - 2026-11-16
 
 ### Added

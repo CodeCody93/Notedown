@@ -32,6 +32,7 @@ import { createNavigator } from './navigator'
 import type { NavigatorController } from './navigator'
 import { isSettingsOpen, openSettingsModal, wireSettingsModal } from './settingsUI'
 import { isAboutOpen, openAboutModal, wireAboutModal } from './about'
+import { isUpdatesOpen, openUpdatesModal, wireUpdatesModal } from './updatesUI'
 import { checkForUpdates, shouldAutoCheck, subscribeUpdateState, type UpdateState } from './updates'
 import { isHelpOpen, openHelpModal, wireHelpModal } from './help'
 import { isGraphBuilderOpen, openGraphBuilder } from './graphDialog'
@@ -1015,7 +1016,7 @@ function wireMenu(): void {
     help: () => openModalWithCaretRestore((opts) => openHelpModal(opts)),
     about: () => openModalWithCaretRestore((opts) => openAboutModal(opts)),
     'check-updates': () =>
-      openModalWithCaretRestore((opts) => openAboutModal({ ...opts, checkForUpdates: true })),
+      openModalWithCaretRestore((opts) => openUpdatesModal({ ...opts, checkForUpdates: true })),
     settings: () => openModalWithCaretRestore((opts) => openSettingsModal(opts)),
     'clear-recents': () => {
       void clearRecents()
@@ -1231,9 +1232,9 @@ function wireStatusMode(): void {
 
 /**
  * Reflect a finished update check in the status-bar pill: visible only when a
- * newer release is available, clicking it opens About with the cached result
- * (no forced network request). Guard a missing element so the module works
- * before/stale of the host HTML.
+ * newer release is available, clicking it opens the Check for updates dialog
+ * with the cached result (no forced network request). Guard a missing element
+ * so the module works before/stale of the host HTML.
  */
 function syncUpdateBadge(state: UpdateState): void {
   const badge = document.getElementById('status-update')
@@ -1250,16 +1251,16 @@ function syncUpdateBadge(state: UpdateState): void {
 let updateChecksWired = false
 
 /**
- * Update-check wiring: the status-bar pill opens About with the cached result,
- * successful checks persist lastUpdateCheckAt (the 24h auto-check throttle), and
- * an opted-in startup check runs non-forced/silently at the end. Called from
- * initApp() after the editor/menubar are up.
+ * Update-check wiring: the status-bar pill opens the Check for updates dialog
+ * with the cached result, successful checks persist lastUpdateCheckAt (the 24h
+ * auto-check throttle), and an opted-in startup check runs non-forced/silently
+ * at the end. Called from initApp() after the editor/menubar are up.
  */
 function wireUpdateChecks(): void {
   if (updateChecksWired) return
   updateChecksWired = true
   document.getElementById('status-update')?.addEventListener('click', () => {
-    openModalWithCaretRestore((opts) => openAboutModal(opts))
+    openModalWithCaretRestore((opts) => openUpdatesModal(opts))
   })
   subscribeUpdateState((state) => {
     if (
@@ -1290,8 +1291,8 @@ function wireUpdateChecks(): void {
 function wireWindowFocus(): void {
   window.addEventListener('focus', () => {
     if (editor === null) return
-    // Never steal focus while any modal dialog is open (settings/help/about/import/export/graph/table builder).
-    if (isSettingsOpen() || isHelpOpen() || isAboutOpen() || isImportDialogOpen() || isExportDialogOpen() || isGraphBuilderOpen() || isTableBuilderOpen()) return
+    // Never steal focus while any modal dialog is open (settings/help/about/check-for-updates/import/export/graph/table builder).
+    if (isSettingsOpen() || isHelpOpen() || isAboutOpen() || isUpdatesOpen() || isImportDialogOpen() || isExportDialogOpen() || isGraphBuilderOpen() || isTableBuilderOpen()) return
     const modalRoot = document.getElementById('settings-modal-root')
     if (modalRoot !== null && !modalRoot.hidden) return
     editor.focus()
@@ -1437,7 +1438,8 @@ export async function initApp(): Promise<void> {
   wireImportDialog()
   wireExportDialog()
   wireHelpModal()
-  wireAboutModal({ getSettings: () => appState.get().settings, onApply: (patch) => updateSettings(patch) })
+  wireAboutModal()
+  wireUpdatesModal({ getSettings: () => appState.get().settings, onApply: (patch) => updateSettings(patch) })
 
   // Render the menubar once before wiring; recents + data-action clicks live inside it.
   const menubarRoot = byId('menubar-root')

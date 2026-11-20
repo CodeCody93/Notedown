@@ -77,8 +77,12 @@ export interface EditorController {
   setLineHeight(n: number): void
   /** Clear the undo/redo history (after any full-document replace: new/open/recover). */
   resetHistory(): void
-  /** Move the main selection to the given 1-based line/col (clamped to the document). */
-  setCursor(line: number, col: number): void
+  /**
+   * Move the main selection to the given 1-based line/col (clamped to the document).
+   * `scrollAlign` controls where the line lands in the viewport: 'nearest' (default)
+   * scrolls minimally, 'start' pins the line to the top of the viewport where possible.
+   */
+  setCursor(line: number, col: number, scrollAlign?: 'nearest' | 'start'): void
   /** 1-based line/col of the main selection head. */
   getCursor(): EditorCursor
   /** Enable/disable native spell checking on the editable surface. */
@@ -331,11 +335,24 @@ export function createEditor(mount: HTMLElement, opts?: EditorCreateOptions): Ed
       view.dispatch({ effects: StateEffect.reconfigure.of(buildExtensions(mode, wrap, false)) })
       view.dispatch({ effects: StateEffect.reconfigure.of(buildExtensions(mode, wrap, true)) })
     },
-    setCursor(line: number, col: number): void {
+    setCursor(line: number, col: number, scrollAlign: 'nearest' | 'start' = 'nearest'): void {
       const doc = view.state.doc
       const lineNo = Math.max(1, Math.min(line, doc.lines))
       const lineInfo = doc.line(lineNo)
       const pos = Math.max(lineInfo.from, Math.min(lineInfo.to, lineInfo.from + Math.max(0, col - 1)))
+      if (scrollAlign === 'start') {
+        // Pin the target line to the top of the viewport. Unlike the default
+        // minimal scroll (`scrollIntoView: true`), which aligns the line to the
+        // nearest edge and so lands at the top or bottom depending on where the
+        // user already was, this always scrolls to the same place. CodeMirror
+        // clamps the scroll at the end of the document, so a line too close to
+        // the bottom simply lands as high as the document allows.
+        view.dispatch({
+          selection: { anchor: pos, head: pos },
+          effects: EditorView.scrollIntoView(pos, { y: 'start' }),
+        })
+        return
+      }
       view.dispatch({ selection: { anchor: pos, head: pos }, scrollIntoView: true })
     },
     getCursor(): EditorCursor {

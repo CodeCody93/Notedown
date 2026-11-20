@@ -1,0 +1,188 @@
+/* Check for updates dialog: mirrors about.css / settings.css class structure
+   (centered dialog on desktop, bottom sheet on narrow screens). Backdrop
+   z-index sits above menubar dropdowns (.dropdown-panel z 100) and the emoji
+   picker (z 200). */
+
+.updates-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+[data-theme="dark"] .updates-backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.updates-dialog {
+  width: 100%;
+  max-width: 420px;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--menu-radius);
+  box-shadow: var(--shadow);
+  color: var(--text);
+}
+
+.updates-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.updates-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.updates-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.updates-close:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.updates-version {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Update check block: sits between the version line and the actions. */
+.updates-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--menu-radius);
+}
+
+.updates-status {
+  width: 100%;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.updates-check-updates {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  font-size: 13px;
+}
+
+.updates-check-updates:hover:not(:disabled) {
+  color: #fff;
+  background: var(--accent);
+}
+
+.updates-check-updates:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Primary accent action: the validated installer download, or the release page
+   fallback when no installer matched this platform. */
+.updates-download {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.updates-download:hover {
+  filter: brightness(1.08);
+}
+
+.updates-release-notes {
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.updates-release-notes:hover {
+  text-decoration: underline;
+}
+
+.updates-auto-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.updates-auto-update-input {
+  accent-color: var(--accent);
+}
+
+.updates-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.updates-done {
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.updates-done:hover {
+  border-color: var(--accent);
+}
+
+/* Bottom sheet on narrow screens: flush to the bottom edge, rounded top. */
+@media (max-width: 640px) {
+  .updates-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .updates-dialog {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-width: 100%;
+    max-height: 85vh;
+    overflow-y: auto;
+    border-radius: 12px 12px 0 0;
+    border-bottom: 0;
+  }
+}

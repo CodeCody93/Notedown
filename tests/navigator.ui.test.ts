@@ -79,7 +79,7 @@ describe('createNavigator', () => {
     const links = mount.querySelectorAll<HTMLButtonElement>('.navigator-link')
     links[1].click()
 
-    expect(setCursor).toHaveBeenCalledWith(3, 1)
+    expect(setCursor).toHaveBeenCalledWith(3, 1, 'start')
     expect(focus).toHaveBeenCalledTimes(1)
     nav.destroy()
   })

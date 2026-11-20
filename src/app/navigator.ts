@@ -151,7 +151,9 @@ export function createNavigator(deps: NavigatorDeps): NavigatorController {
 
   function navigateTo(heading: OutlineHeading): void {
     const editor = deps.getEditor()
-    editor?.setCursor(heading.line, 1)
+    // 'start' pins the heading to the top of the viewport so quick navigation
+    // always lands in the same place instead of at whichever edge is nearer.
+    editor?.setCursor(heading.line, 1, 'start')
     editor?.focus()
     if (isNarrowViewport()) {
       // Overlay only: hide locally so the editor is visible. This is not a
