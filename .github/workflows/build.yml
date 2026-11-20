@@ -144,17 +144,21 @@ jobs:
         env:
           VITE_BASE: /${{ github.event.repository.name }}/
 
+      # Keep this trio on current majors. The v3/v4 pair runs on the retired
+      # Node 20 / upload-artifact v4 artifact path, and deploy-pages then fails
+      # with "No artifacts named \"github-pages\" were found" even though the
+      # upload step reports success.
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: dist
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
   build:
     name: ${{ matrix.name }}
