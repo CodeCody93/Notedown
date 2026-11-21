@@ -14,6 +14,12 @@ import {
   TOOLBAR_GROUPS,
 } from '../src/app/menu'
 import type { MenuEntry } from '../src/app/menu'
+import { FORMATTING_COMMANDS } from '../src/app/formatting'
+import {
+  EXTRA_MENU as SHARED_EXTRA_MENU,
+  FORMATTING_TOOLBAR_GROUPS,
+} from '../src/app/formattingMenu'
+import type { FormattingMenuEntry } from '../src/app/formattingMenu'
 import { labelFor } from '../src/app/shortcuts'
 
 afterEach(() => {
@@ -349,5 +355,71 @@ describe('dropdown exclusivity & blur', () => {
     window.dispatchEvent(new Event('blur'))
     expect(document.querySelectorAll('.dropdown.open').length).toBe(0)
     expect(document.querySelector('.emoji-picker')).toBeNull()
+  })
+})
+
+describe('shared formatting toolbar data', () => {
+  it('TOOLBAR_GROUPS keeps the locked 3-group app order', () => {
+    expect(TOOLBAR_GROUPS.map((group) => group.map((entry) => entry.id))).toEqual([
+      ['navigator', 'undo', 'redo', 'copy', 'cut', 'paste'],
+      ['bold', 'italic', 'underline', 'strikethrough', 'header', 'list'],
+      ['extra'],
+    ])
+  })
+
+  it('EXTRA_MENU re-export stays the shared definition through its Graph children', () => {
+    expect(EXTRA_MENU).toBe(SHARED_EXTRA_MENU)
+    expect(EXTRA_MENU.map((entry) => entry.id)).toEqual([
+      'blockquote',
+      'inline-code',
+      'code-block',
+      'link',
+      'image',
+      'table',
+      'hr',
+      'footnote',
+      'task-list',
+      'emoji',
+      'heading-id',
+      'def-list',
+      'sub',
+      'sup',
+      'highlight',
+      'spoiler',
+      'dropdown',
+      'graph',
+    ])
+    const graph = EXTRA_MENU.find((entry) => entry.id === 'graph')
+    expect(graph?.children?.map((child) => child.id)).toEqual([
+      'pie-graph',
+      'bar-graph',
+      'line-graph',
+    ])
+  })
+
+  it('every FORMATTING_TOOLBAR_GROUPS leaf is emoji or a FORMATTING_COMMANDS id', () => {
+    // Guards the shared-data/command registry contract the embed toolbar relies
+    // on: each leaf id must resolve to a real formatting command, except
+    // 'emoji', which opens the picker instead.
+    const leaves: string[] = []
+    const walk = (entries: FormattingMenuEntry[]): void => {
+      for (const entry of entries) {
+        if (entry.children !== undefined && entry.children.length > 0) {
+          walk(entry.children)
+        } else {
+          leaves.push(entry.id)
+        }
+      }
+    }
+    for (const group of FORMATTING_TOOLBAR_GROUPS) walk(group)
+
+    expect(leaves.length).toBeGreaterThan(0)
+    for (const id of leaves) {
+      const resolvable =
+        id === 'emoji' || Object.prototype.hasOwnProperty.call(FORMATTING_COMMANDS, id)
+      expect(resolvable, `formatting toolbar leaf "${id}" has no FORMATTING_COMMANDS entry`).toBe(
+        true,
+      )
+    }
   })
 })

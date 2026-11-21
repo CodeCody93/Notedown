@@ -72,7 +72,8 @@ const editor = createNotedownEditor({
   value: SAMPLE_MARKDOWN,
   mode: 'live',
   theme: 'system',
-  toolbar: true,
+  // Full preset: Header/List/Extra dropdowns plus inline styles and mode.
+  toolbar: { preset: 'full' },
   ariaLabel: 'Notedown embed demo editor',
   onChange: renderValue,
   onCursorChange: ({ line, col }) => {

@@ -133,7 +133,7 @@ The mount element must be in the DOM and must have a height (see
 | `lineHeight` | `number` | — | Editor line height multiplier. |
 | `lineWrapping` | `boolean` | `true` | Wrap long lines instead of horizontal scrolling. |
 | `spellCheck` | `boolean` | `true` | Enable/disable the native spell checker. |
-| `toolbar` | `boolean \| { items?: ToolbarItem[][] }` | `false` | Show the formatting toolbar. `true` uses the default groups; pass `items` groups to reorder or show a subset. |
+| `toolbar` | `boolean \| ToolbarOptions` | `false` | Show the formatting toolbar. `true` (or `{}`) uses the compact default groups; `{ preset: 'full' }` shows the expanded preset; `{ items }` supplies custom groups. See [Toolbar presets](#toolbar-presets). |
 | `onChange` | `(value: string) => void` | — | Fires on user edits with the full document (not on `setValue`). |
 | `onCursorChange` | `(cursor: { line: number; col: number }) => void` | — | Fires when the selection moves. Line and column are 1-based. |
 | `onSave` | `(value: string) => void \| Promise<void>` | — | Binds Ctrl+S / Cmd+S, prevents the browser save dialog, and calls the host to persist. |
@@ -144,12 +144,216 @@ The mount element must be in the DOM and must have a height (see
 | `extraKeymaps` | `KeyBinding[][]` | `[]` | Additional CodeMirror key-binding groups. They run before the built-in formatting/list keymaps but after the `onSave` `Mod-s` binding. |
 | `className` | `string` | — | Extra class name(s) added to the `.notedown-editor-root` wrapper. |
 
-`ToolbarItem` is one of `undo`, `redo`, `bold`, `italic`, `strikethrough`, `h1`,
-`h2`, `bullet-list`, `ordered-list`, `link`, `inline-code`, or `mode`. The
-default groups are `[undo, redo]`, `[bold, italic, strikethrough]`, `[h1, h2]`,
-`[bullet-list, ordered-list]`, `[link, inline-code]`, `[mode]`.
-`DEFAULT_TOOLBAR_GROUPS` is exported from the package if the host wants to
-extend or rearrange the defaults rather than rebuild the groups.
+### Toolbar presets
+
+`toolbar: true` and `toolbar: {}` render the compact six-group toolbar used by
+earlier releases: `[undo, redo]`, `[bold, italic, strikethrough]`, `[h1, h2]`,
+`[bullet-list, ordered-list]`, `[link, inline-code]`, `[mode]`. Pass a preset or
+custom groups to change it:
+
+```ts
+// Compact default — unchanged from earlier releases.
+const compact = createNotedownEditor({
+  mount: document.querySelector<HTMLElement>('#compact')!,
+  toolbar: true,
+})
+
+// Expanded preset: inline styles, Header/List/Extra dropdowns (with a nested
+// Graph menu), and the mode toggle.
+const full = createNotedownEditor({
+  mount: document.querySelector<HTMLElement>('#full')!,
+  toolbar: { preset: 'full' },
+})
+```
+
+| `toolbar` value | Result |
+| --- | --- |
+| `false` (default) | No toolbar. |
+| `true` or `{}` | Compact `'default'` preset, identical to earlier releases. |
+| `{ preset: 'default' }` | The same compact preset, stated explicitly. |
+| `{ preset: 'full' }` | Expanded preset described below. |
+| `{ items: [...] }` | Custom groups; overrides `preset`. |
+
+The full preset contains:
+
+- **History:** undo and redo.
+- **Inline styles:** bold, italic, underline, and strikethrough.
+- **Header ▾:** Paragraph and Heading 1–6.
+- **List ▾:** bulleted, numbered (decimal, alpha, roman), and task lists.
+- **Extra ▾:** blockquote, inline code, code block, link, image, table,
+  horizontal rule, footnote, task list, emoji picker, heading ID, definition
+  list, subscript, superscript, highlight, spoiler, and the Markdown collapsible
+  block.
+- **Graph ▾** (nested in Extra): pie, bar, and line chart starters.
+- **Mode:** live/source toggle.
+
+The full preset deliberately omits the navigator outline and the clipboard
+actions (copy/cut/paste): the outline belongs to the app shell, and clipboard
+commands are the host page's concern. `FULL_TOOLBAR_GROUPS` is exported if the
+host wants to copy the preset and adjust one group instead of rebuilding it.
+
+### Custom toolbar groups
+
+Pass `items` to build your own groups. A `ToolbarGroup` is an array of
+`ToolbarEntry` values, where an entry is either a `ToolbarItem` id or a
+`ToolbarDropdown` descriptor (`{ type: 'dropdown', label, items }`). Each inner
+array renders as one visually separated group.
+
+```ts
+import {
+  createNotedownEditor,
+  type ToolbarGroup,
+} from '@codecody93/notedown-editor'
+
+const groups: ToolbarGroup[] = [
+  ['undo', 'redo'],
+  ['bold', 'italic', 'underline'],
+  [
+    {
+      type: 'dropdown',
+      id: 'heading',
+      label: 'Heading',
+      glyph: 'H',
+      items: [
+        'header-0',
+        'header-1',
+        'header-2',
+        'header-3',
+        'header-4',
+        'header-5',
+        'header-6',
+      ],
+    },
+  ],
+  [
+    {
+      type: 'dropdown',
+      id: 'insert',
+      label: 'Insert',
+      glyph: '+',
+      items: [
+        'link',
+        'image',
+        'table',
+        'hr',
+        'footnote',
+        {
+          type: 'dropdown',
+          id: 'graph',
+          label: 'Graph',
+          glyph: 'G',
+          items: ['pie-graph', 'bar-graph', 'line-graph'],
+        },
+      ],
+    },
+  ],
+  ['mode'],
+]
+
+const editor = createNotedownEditor({
+  mount: '#editor',
+  value: '# Notes',
+  toolbar: { items: groups },
+})
+```
+
+`ToolbarDropdown` fields:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `type` | `'dropdown'` | Required discriminator. |
+| `label` | `string` | Accessible name and button text. |
+| `items` | `ToolbarEntry[]` | Menu contents; dropdowns may nest. |
+| `id` | `string` | Optional stable id copied to `data-*` attributes for host styling and tests. |
+| `icon` | `ToolbarIconName` | Optional built-in icon name (used instead of `glyph`). |
+| `glyph` | `string` | Optional short text fallback. |
+| `shortcut` | `string` | Optional shortcut id used only for the tooltip hint; it does not bind a key. |
+
+An item's label, icon, and command come from the built-in item table, so
+dropdown children are plain item ids; only the dropdown itself carries a
+host-supplied label.
+
+### Toolbar items
+
+Ids accepted by `ToolbarItem` and `items` groups:
+
+| Category | Ids |
+| --- | --- |
+| History | `undo`, `redo` |
+| Inline | `bold`, `italic`, `underline`, `strikethrough`, `inline-code`, `highlight`, `sub`, `sup`, `spoiler` |
+| Headings | `header-0` (paragraph) through `header-6`; aliases `h1`, `h2` |
+| Lists | `list-unordered` (alias `bullet-list`), `list-ordered` (alias `ordered-list`), `list-ordered-alpha`, `list-ordered-roman`, `list-task`, `task-list` |
+| Blocks | `blockquote`, `code-block`, `hr`, `link`, `image`, `table`, `footnote`, `heading-id`, `def-list`, `dropdown` (Markdown collapsible block) |
+| Insert | `emoji`, `pie-graph`, `bar-graph`, `line-graph` |
+| Mode | `mode` |
+
+### Toolbar behavior and limits
+
+- **Two different "dropdowns".** The `dropdown` toolbar item inserts a Markdown
+  collapsible block (`>>> Title`). A `{ type: 'dropdown', … }` entry is a
+  toolbar menu that opens a panel of more items. The word is the same; the
+  behavior is not.
+- **Table inserts a template.** `table` runs `FORMATTING_COMMANDS.table`, which
+  inserts a 3×3 GFM table at the cursor. The embed has no interactive table
+  builder dialog; build one in the host if you need a grid picker.
+- **Graph items insert starter syntax.** `pie-graph`, `bar-graph`, and
+  `line-graph` insert starter chart blocks. The embed has no graph builder
+  dialog.
+- **Emoji picker.** The full preset includes a searchable emoji picker; it
+  inserts the chosen emoji at the cursor.
+- **Shortcut hints are informational.** Tooltips use the app's canonical chords
+  from `SHORTCUTS`, but the embed only binds the formatting commands it already
+  binds. App-shell chords (table builder, graph builder, emoji, mode) may not be
+  bound; a `shortcut` field on a dropdown only changes the hint.
+- **Build your own dialogs.** `getController()` exposes `runFormatting`,
+  `replaceSelection`, the selection, and undo/redo, so a host can pair its own
+  form with `FORMATTING_COMMANDS` ids — for example a table builder that
+  generates Markdown and inserts it with `replaceSelection`.
+
+### Custom chrome
+
+`createToolbar` is exported for hosts that wire the toolbar into their own
+layout instead of passing `toolbar` to `createNotedownEditor`:
+
+```ts
+import {
+  createNotedownEditor,
+  createToolbar,
+  FORMATTING_COMMANDS,
+} from '@codecody93/notedown-editor'
+
+const editor = createNotedownEditor({ mount: '#editor', toolbar: false })
+
+// One-off button using the same command table as the built-in toolbar:
+const quote = document.createElement('button')
+quote.type = 'button'
+quote.textContent = 'Blockquote'
+quote.addEventListener('click', () => {
+  editor.getController().runFormatting(FORMATTING_COMMANDS['blockquote'])
+  editor.getController().focus()
+})
+document.querySelector('#host-chrome')!.append(quote)
+
+// Or a second toolbar with custom groups:
+const toolbar = createToolbar({
+  controller: editor.getController(),
+  mode: 'live',
+  items: [['bold', 'italic'], ['link']],
+  onModeChange: (mode) => editor.setMode(mode),
+})
+editor.element.prepend(toolbar.element)
+
+// On unmount: the editor does not own a host-created toolbar.
+toolbar.destroy()
+editor.destroy()
+```
+
+`createToolbar` returns `{ element, syncMode, destroy }`; call `syncMode(mode)`
+after changing the editor mode outside the toolbar. Mount `element` inside the
+`.notedown-editor-root` (as above) so the packaged, root-scoped toolbar and
+popover styles apply; outside the root, supply equivalent CSS. The built-in
+buttons prevent the default `mousedown` action so pressing them does not drop
+the editor selection, and they refocus the editor after running a command.
 
 ## Methods
 
@@ -171,16 +375,19 @@ extend or rearrange the defaults rather than rebuild the groups.
 The returned object is safe to keep for the lifetime of the host view. Do not
 call methods after `destroy()` (except another idempotent `destroy()`).
 
-The entry also exports pure helpers for hosts that build their own chrome:
-`FORMATTING_COMMANDS`, `SHORTCUTS`, `parseOutline`, `DEFAULT_TOOLBAR_GROUPS`,
-and the related TypeScript types (`CreateNotedownEditorOptions`,
-`NotedownEditor`, `NotedownMode`, `NotedownImageResolver`,
-`NotedownPasteImageHandler`, `EmbedTheme`, `ToolbarItem`, `ToolbarOptions`,
-`EditorController`, `EditorCursor`, `OutlineHeading`).
+The entry also exports pure helpers and toolbar builders for hosts that build
+their own chrome: `FORMATTING_COMMANDS`, `SHORTCUTS`, `parseOutline`,
+`DEFAULT_TOOLBAR_GROUPS`, `FULL_TOOLBAR_GROUPS`, `createToolbar`, and the
+related TypeScript types (`CreateNotedownEditorOptions`, `NotedownEditor`,
+`NotedownMode`, `NotedownImageResolver`, `NotedownPasteImageHandler`,
+`EmbedTheme`, `ToolbarItem`, `ToolbarOptions`, `ToolbarPreset`,
+`ToolbarDropdown`, `ToolbarEntry`, `ToolbarGroup`, `ToolbarHandle`,
+`CreateToolbarOptions`, `EditorController`, `EditorCursor`,
+`OutlineHeading`).
 
 The Node-only `@codecody93/notedown-editor/render` subpath is a separate package
-surface for Markdown-to-HTML rendering (see below). The root entry and its
-exports are unchanged.
+surface for Markdown-to-HTML rendering (see below). Importing it does not pull
+in the editor entry or its CSS.
 
 ## CSS and theming
 
@@ -202,6 +409,10 @@ With the CDN bundle, use the `<link>` shown in [CDN usage](#cdn-usage). Shell
 and toolbar rules are scoped under `.notedown-editor-root`; the shared editor
 rules target CodeMirror's `.cm-*` classes. Load the stylesheet once, and avoid
 mixing it with another differently themed CodeMirror instance on the same page.
+Toolbar menu panels are fixed-position elements rendered inside the toolbar
+itself (not portalled to `document.body`), so they inherit the root's theme
+variables and keep the editor selection; they close on Escape, outside click,
+scroll, and resize.
 The package also exposes the CSS as `@codecody93/notedown-editor/style.css` in
 its `exports` map.
 

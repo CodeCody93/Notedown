@@ -16,8 +16,18 @@ export type {
   NotedownPasteImageHandler,
 } from './create'
 export type { EmbedTheme, EmbedThemeController } from './theme'
-export type { ToolbarItem, ToolbarOptions } from './toolbar'
-export { DEFAULT_TOOLBAR_GROUPS } from './toolbar'
+export type {
+  CreateToolbarOptions,
+  ToolbarDropdown,
+  ToolbarEntry,
+  ToolbarGroup,
+  ToolbarHandle,
+  ToolbarIconName,
+  ToolbarItem,
+  ToolbarOptions,
+  ToolbarPreset,
+} from './toolbar'
+export { createToolbar, DEFAULT_TOOLBAR_GROUPS, FULL_TOOLBAR_GROUPS } from './toolbar'
 
 // Pure helpers exposed for consumers that build their own UI around the editor.
 export { FORMATTING_COMMANDS } from '../app/formatting'

@@ -105,7 +105,7 @@ See [`docs/web.md`](docs/web.md) for the deployment details and the browser QA c
 
 ## Embeddable editor
 
-`@codecody93/notedown-editor` packages the editor core as a framework-agnostic ES module plus CSS and TypeScript declarations. It is published to GitHub Packages and is also served from the Pages site. The package is editor-focused: it does not include Notedown's desktop menus, native file dialogs, recents, or drafts. The root entry supplies the editor; a separate Node-only subpath renders Markdown to sanitized HTML. The host page supplies the initial value, listens for changes, and decides where to save.
+`@codecody93/notedown-editor` packages the editor core as a framework-agnostic ES module plus CSS and TypeScript declarations. It is published to GitHub Packages and is also served from the Pages site. The package is editor-focused: it ships the formatting toolbar but not the desktop File menu or other app-shell actions, native file dialogs, recents, or drafts. The root entry supplies the editor; a separate Node-only subpath renders Markdown to sanitized HTML. The host page supplies the initial value, listens for changes, and decides where to save.
 
 ```ts
 import { createNotedownEditor } from '@codecody93/notedown-editor'
@@ -122,6 +122,8 @@ const editor = createNotedownEditor({
 // On unmount:
 editor.destroy()
 ```
+
+`toolbar: true` renders the compact six-group toolbar (undo/redo, inline styles, H1/H2, lists, link/inline code, mode). Pass `toolbar: { preset: 'full' }` for the expanded Header, List, Extra, and nested Graph menus, or `toolbar: { items }` to supply your own groups and dropdowns. See [`docs/embedding.md`](docs/embedding.md#toolbar-presets) for the full preset, the supported item ids, and the custom-chrome recipe.
 
 For server-side Markdown rendering, the package publishes a Node-only `@codecody93/notedown-editor/render` subpath. It converts Markdown to sanitized HTML with the same pipeline as the editor and File → Export HTML, and needs Node 20+ plus the optional `jsdom` peer:
 

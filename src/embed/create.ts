@@ -28,6 +28,7 @@ import { createEmbedTheme, type EmbedTheme } from './theme'
 import {
   createToolbar,
   DEFAULT_TOOLBAR_GROUPS,
+  FULL_TOOLBAR_GROUPS,
   type ToolbarHandle,
   type ToolbarOptions,
 } from './toolbar'
@@ -330,12 +331,13 @@ export function createNotedownEditor(opts: CreateNotedownEditorOptions): Notedow
     toolbar?.syncMode(next)
   }
 
-  const toolbarOption = opts.toolbar
-  if (toolbarOption !== undefined && toolbarOption !== false) {
-    const items =
-      typeof toolbarOption === 'object'
-        ? (toolbarOption.items ?? DEFAULT_TOOLBAR_GROUPS)
-        : DEFAULT_TOOLBAR_GROUPS
+  const toolbarOption: unknown = opts.toolbar
+  if (toolbarOption !== undefined && toolbarOption !== false && toolbarOption !== null) {
+    const options: ToolbarOptions =
+      typeof toolbarOption === 'object' ? (toolbarOption as ToolbarOptions) : {}
+    const presetGroups =
+      options.preset === 'full' ? FULL_TOOLBAR_GROUPS : DEFAULT_TOOLBAR_GROUPS
+    const items = options.items ?? presetGroups
     toolbar = createToolbar({
       controller: editor,
       mode,
